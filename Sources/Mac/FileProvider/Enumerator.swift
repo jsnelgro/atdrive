@@ -62,6 +62,9 @@ final class Enumerator: NSObject, NSFileProviderEnumerator {
         var updated: [Node] = []
         var deleted: [String] = []
         if revision != anchor.revision {
+            // The system has had the drive, which is now gone: not reported as emptied (that
+            // would delete everything here), nor re-listed as empty (the same).
+            if revision == DriveIndex.emptyRevision { throw NSFileProviderError(.serverUnreachable) }
             // Too old to diff against (e.g. the extension restarted): the system re-lists instead.
             guard let old = await index.tree(at: anchor.revision) else {
                 throw NSFileProviderError(.syncAnchorExpired)
@@ -91,18 +94,29 @@ final class Enumerator: NSObject, NSFileProviderEnumerator {
     private func listing(in tree: DriveTree) throws -> [Item] {
         switch scope {
         case .workingSet:
-            return tree.nodes.values.map { Item($0, in: tree) }
+            // Not what's inside a record this Mac can't read: it can't be placed.
+            return tree.nodes.values.filter { tree.unreadableContainer(of: $0.id) == nil }.map { Item($0, in: tree) }
         case .container(nil):
             return tree.children(of: nil).map { Item($0, in: tree) }
         case .container(let id?):
-            guard let node = tree.nodes[id] else { throw NSFileProviderError(.noSuchItem) }
+            guard let node = tree.nodes[id] else {
+                // A folder this Mac could read before but can't now: it's still there, and so is
+                // what's inside it.
+                if tree.unreadable[id] != nil { return tree.children(of: id).map { Item($0, in: tree) } }
+                throw NSFileProviderError(.noSuchItem)
+            }
             return node.isFolder ? tree.children(of: id).map { Item($0, in: tree) } : [Item(node, in: tree)]
         }
     }
 
     /// Whether a node belongs to what this enumerator covers, in a given tree.
     private func isInScope(_ id: String, in tree: DriveTree) -> Bool {
-        guard tree.nodes[id] != nil else { return false }
+        if tree.nodes[id] == nil {
+            // Unreadable in that tree (and since deleted): only the working set covers it, as
+            // its folder isn't known.
+            guard tree.unreadable[id] != nil, case .workingSet = scope else { return false }
+            return true
+        }
         switch scope {
         case .workingSet: return true
         case .container(let container):

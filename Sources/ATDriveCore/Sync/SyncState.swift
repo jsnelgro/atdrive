@@ -3,6 +3,8 @@ import Foundation
 public enum SyncError: Error, CustomStringConvertible, Equatable {
     case folderMissing(String)
     case stateMissing(String)
+    /// The drive this folder was synced with is gone from the server (folder path).
+    case driveMissing(String)
     case otherAccount(folder: String, owner: String)
     case alreadyRunning(String)
     case notAFolder(String)
@@ -14,6 +16,10 @@ public enum SyncError: Error, CustomStringConvertible, Equatable {
         case .stateMissing(let folder):
             "\(folder)/\(SyncIgnore.stateFolder) was removed, so syncing stopped. Run `atdrive sync` again "
                 + "to start over: the folder and the drive are merged, and nothing is deleted"
+        case .driveMissing(let folder):
+            "\(folder) was synced with a drive that's gone from the server, so syncing stopped (nothing in "
+                + "the folder was deleted). To put the folder in a new drive, remove "
+                + "\(folder)/\(SyncIgnore.stateFolder) and run `atdrive sync` again"
         case .otherAccount(let folder, let owner):
             "\(folder) is synced with another account's drive (\(owner))"
         case .alreadyRunning(let folder):
@@ -37,6 +43,9 @@ public struct SyncEvent: Sendable, CustomStringConvertible {
         case renamed
         /// Left alone for now (`detail` says why); tried again next time.
         case skipped
+        /// On the drive, but this device can't read it (`detail` says why). Left as it is, here
+        /// and on the drive, until it can.
+        case unreadable
     }
 
     public var kind: Kind
@@ -64,6 +73,7 @@ public struct SyncEvent: Sendable, CustomStringConvertible {
         case .conflict: "! \(path) changed in both places. Kept both: your version is \(detail ?? "")"
         case .renamed: "! two different items were named \(path); one is now \(detail ?? "")"
         case .skipped: "? skipped \(path): \(detail ?? "")"
+        case .unreadable: "? can't read \(path) on the drive: \(detail ?? ""). Left as it is, here and there"
         }
     }
 }
@@ -90,12 +100,14 @@ struct SyncState: Codable {
     var items: [String: Item] = [:]
 }
 
-/// The `.atdrive` folder inside a synced folder: the state file, a lock so only one sync runs,
-/// and scratch space for downloads and moves (on the same disk, so renames are atomic).
+/// The `.atdrive` folder inside a synced folder: the state file, the drive as last fetched, a
+/// lock so only one sync runs, and scratch space for downloads and moves (on the same disk, so
+/// renames are atomic).
 struct StateFolder {
     let root: String
     var path: String { "\(root)/\(SyncIgnore.stateFolder)" }
     var stateFile: String { "\(path)/state.json" }
+    var snapshotFile: String { "\(path)/drive.json" }
     var lockFile: String { "\(path)/lock" }
     var staging: String { "\(path)/staging" }
     var journal: String { "\(path)/staging.json" }
@@ -109,11 +121,32 @@ struct StateFolder {
     func save(_ state: SyncState) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        let temporary = "\(path)/.state.json.tmp"
-        guard FileManager.default.createFile(atPath: temporary, contents: try encoder.encode(state)) else {
+        try write(try encoder.encode(state), to: stateFile)
+    }
+
+    /// The drive as last fetched, if it was saved for the same drive by a compatible version.
+    func loadSnapshot(drive: Drive) -> DriveSnapshot? {
+        FileManager.default.contents(atPath: snapshotFile).flatMap { DriveSnapshot(saved: $0, drive: drive) }
+    }
+
+    /// Saves the drive as fetched. Only a head start for after a restart, so a failure to save
+    /// just removes the old one.
+    func saveSnapshot(_ snapshot: DriveSnapshot) {
+        do {
+            guard let data = try snapshot.saved() else { throw CocoaError(.fileWriteUnknown) }
+            try write(data, to: snapshotFile)
+        } catch {
+            try? FileManager.default.removeItem(atPath: snapshotFile)
+        }
+    }
+
+    /// Replaces a file atomically.
+    private func write(_ data: Data, to file: String) throws {
+        let temporary = "\(path)/.\(URL(fileURLWithPath: file).lastPathComponent).tmp"
+        guard FileManager.default.createFile(atPath: temporary, contents: data) else {
             throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: temporary])
         }
-        try replace(URL(fileURLWithPath: stateFile), with: URL(fileURLWithPath: temporary))
+        try replace(URL(fileURLWithPath: file), with: URL(fileURLWithPath: temporary))
     }
 
     /// Takes the lock for as long as the returned descriptor stays open.

@@ -8,23 +8,48 @@ import Testing
 #endif
 
 /// An in-memory stand-in for the handful of PDS endpoints `Drive` uses, so the drive logic
-/// (chunking, verification, paging, auto-creating the space) can be tested without a network.
-/// It is deliberately simple; behaviour against the real server is checked by `LiveTests`.
+/// (chunking, verification, paging, auto-creating the space, following the change feed) can be
+/// tested without a network. Behaviour against the real server is checked by `LiveTests`.
+///
+/// Like the reference PDS, every write gets a revision (a TID) and is logged with its index
+/// in the commit, its CID and the CID it replaced; `listRepoOps` serves that log with a value
+/// only for ops whose version is still current, and the commit once it reaches the head.
 final class FakePDS: HTTPTransport, @unchecked Sendable {
+    private struct Stored {
+        var cid: String
+        var json: Data
+    }
+    private struct Op {
+        var rev: String
+        var idx: Int
+        var collection: String
+        var rkey: String
+        var cid: String?
+        var prev: String?
+    }
+
     private let lock = NSLock()
     private(set) var spaceExists = false
     private(set) var blobs: [String: Data] = [:]
-    private var records: [String: (cid: String, json: Data)] = [:]
-    private var recordVersion = 0
+    /// By `collection/rkey`.
+    private var records: [String: Stored] = [:]
+    private var oplog: [Op] = []
+    /// The repo's revision: `nil` until its first write.
+    private var rev: String?
     private(set) var calls: [String] = []
     /// Flip a byte in every blob served, to simulate corruption.
     var corruptDownloads = false
     /// Records per listRecords page, to exercise paging.
     var pageSize = 2
+    /// The most ops per listRepoOps page (the client's limit applies too), to exercise paging.
+    var opsPageSize = 3
     /// Fail the next calls to these methods (e.g. `com.atproto.space.getBlob`) with a 500.
     var failing: [String: Int] = [:]
 
     var recordCount: Int { lock.withLock { records.count } }
+    /// The repo's current revision.
+    var revision: String? { lock.withLock { rev } }
+    var opCount: Int { lock.withLock { oplog.count } }
 
     /// Called with each method name before it's handled (e.g. to change something mid-sync).
     var onRequest: (@Sendable (String) -> Void)?
@@ -67,21 +92,24 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
 
         case "com.atproto.space.putRecord":
             guard spaceExists else { return error(400, "SpaceNotFound") }
+            let collection = body["collection"] as? String ?? Lexicon.node
             let rkey = body["rkey"] as! String
-            recordVersion += 1
-            let cid = "bafyrecord\(recordVersion)"
-            records[rkey] = (cid, try! JSONSerialization.data(withJSONObject: body["record"]!))
-            return json(["uri": "at://did:plc:test/x/\(rkey)", "cid": cid])
+            let cid = commit([(collection, rkey, body["record"]!)])
+            return json(["uri": "at://did:plc:test/\(collection)/\(rkey)", "cid": cid.first!])
 
         case "com.atproto.space.listRecords":
             guard spaceExists else { return error(400, "SpaceNotFound") }
             let cursor = query["cursor"]
-            let keys = records.keys.sorted().filter { key in cursor.map { key > $0 } ?? true }
+            let collection = query["collection"]
+            let keys = records.keys.sorted().filter { key in
+                (collection.map { key.hasPrefix($0 + "/") } ?? true) && (cursor.map { key > $0 } ?? true)
+            }
             let page = Array(keys.prefix(pageSize))
             var output: [String: Any] = [
                 "records": page.map { key in
-                    [
-                        "collection": Lexicon.node, "rkey": key, "cid": records[key]!.cid,
+                    let (collection, rkey) = split(key)
+                    return [
+                        "collection": collection, "rkey": rkey, "cid": records[key]!.cid,
                         "value": try! JSONSerialization.jsonObject(with: records[key]!.json),
                     ]
                 }
@@ -95,27 +123,157 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
             return (data, response(200))
 
         case "com.atproto.space.applyWrites":
+            guard spaceExists else { return error(400, "SpaceNotFound") }
+            // One transaction: checked in full before anything is written.
+            var writes: [(collection: String, rkey: String, value: Any?)] = []
+            var exists = Set(records.keys)
             for write in body["writes"] as! [[String: Any]] {
-                records[write["rkey"] as! String] = nil
+                let collection = write["collection"] as! String
+                let rkey = write["rkey"] as! String
+                let key = "\(collection)/\(rkey)"
+                switch write["$type"] as? String {
+                case "com.atproto.space.applyWrites#delete":
+                    guard exists.remove(key) != nil else { return error(400, "RecordNotFound") }
+                    writes.append((collection, rkey, nil))
+                case "com.atproto.space.applyWrites#create":
+                    guard exists.insert(key).inserted else { return error(400, "RecordAlreadyExists") }
+                    writes.append((collection, rkey, write["value"]!))
+                case "com.atproto.space.applyWrites#update":
+                    guard exists.contains(key) else { return error(400, "RecordNotFound") }
+                    writes.append((collection, rkey, write["value"]!))
+                default:
+                    return error(400, "InvalidRequest")
+                }
             }
-            recordVersion += 1
+            commit(writes)
             return json([:])
 
         case "com.atproto.space.getLatestCommit":
-            guard spaceExists else { return error(400, "RepoNotFound") }
-            return json(["commit": ["cid": "bafycommit\(recordVersion)", "rev": "rev\(recordVersion)"]])
+            guard let rev else { return error(400, "RepoNotFound") }
+            return json(["commit": commitJSON(rev)])
+
+        case "com.atproto.space.listRepoOps":
+            // As the reference PDS: no error for a missing space or repo, just no commit.
+            var position: (rev: String, idx: Int)?
+            if let cursor = query["cursor"] {
+                let parts = cursor.split(separator: "/")
+                position = (String(parts[0]), Int(parts[1])!)
+            } else if let since = query["since"] {
+                position = (since, Int.max)
+            }
+            let limit = min(Int(query["limit"] ?? "100")!, 1000, opsPageSize)
+            let after = oplog.filter { op in
+                guard let position else { return true }
+                return op.rev > position.rev || (op.rev == position.rev && op.idx > position.idx)
+            }
+            let page = after.prefix(limit)
+            var output: [String: Any] = [
+                "ops": page.map { op -> [String: Any] in
+                    var entry: [String: Any] = [
+                        "rev": op.rev, "collection": op.collection, "rkey": op.rkey,
+                        "cid": op.cid.map { $0 as Any } ?? NSNull(), "prev": op.prev.map { $0 as Any } ?? NSNull(),
+                    ]
+                    // Only the record's current value: a version a later op replaced has none.
+                    if let cid = op.cid, let stored = records["\(op.collection)/\(op.rkey)"], stored.cid == cid {
+                        entry["value"] = try! JSONSerialization.jsonObject(with: stored.json)
+                    }
+                    return entry
+                }
+            ]
+            // Like the reference: a full page has a cursor and no commit, even at the head.
+            if page.count == limit, let last = page.last {
+                output["cursor"] = "\(last.rev)/\(last.idx)"
+            } else if let rev {
+                output["commit"] = commitJSON(rev)
+            }
+            return json(output)
 
         default:
             return error(501, "MethodNotImplemented")
         }
     }
 
-    /// Stores a record exactly as given, bypassing `Drive`, to set up odd states.
-    func insertRawRecord(rkey: String, _ record: [String: Any]) {
+    /// Writes records (`nil` deletes) as one commit, logging an op for each. Returns their CIDs.
+    @discardableResult
+    private func commit(_ writes: [(collection: String, rkey: String, value: Any?)]) -> [String?] {
+        let newRev = TID.next()
+        var cids: [String?] = []
+        for (index, write) in writes.enumerated() {
+            let key = "\(write.collection)/\(write.rkey)"
+            let prev = records[key]?.cid
+            var cid: String?
+            if let value = write.value {
+                // Content-addressed, like real record CIDs: the same record has the same CID.
+                let json = try! JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+                cid = "bafyrecord" + CID.forBlob(json).dropFirst(7)
+                records[key] = Stored(cid: cid!, json: json)
+            } else {
+                records[key] = nil
+            }
+            oplog.append(
+                Op(rev: newRev, idx: index, collection: write.collection, rkey: write.rkey, cid: cid, prev: prev))
+            cids.append(cid)
+        }
+        rev = newRev
+        return cids
+    }
+
+    private func commitJSON(_ rev: String) -> [String: Any] {
+        // No LtHash here yet: 32 zero bytes, unpadded base64 as atproto writes it.
+        let data = Data(count: 32).base64EncodedString().replacingOccurrences(of: "=", with: "")
+        return [
+            "ver": 1, "repo": "did:plc:test", "space": "at://did:plc:test/space/\(Lexicon.driveSpace)/default",
+            "rev": rev, "data": ["$bytes": data],
+        ]
+    }
+
+    private func split(_ key: String) -> (collection: String, rkey: String) {
+        let slash = key.lastIndex(of: "/")!
+        return (String(key[..<slash]), String(key[key.index(after: slash)...]))
+    }
+
+    /// Stores a record exactly as given, bypassing `Drive`, to set up odd states. It goes
+    /// through the change feed like any write.
+    func insertRawRecord(rkey: String, collection: String = Lexicon.node, _ record: [String: Any]) {
         lock.withLock {
             spaceExists = true
-            recordVersion += 1
-            records[rkey] = ("bafyrecord\(recordVersion)", try! JSONSerialization.data(withJSONObject: record))
+            commit([(collection, rkey, record)])
+        }
+    }
+
+    /// Deletes a record, bypassing `Drive`.
+    func deleteRawRecord(rkey: String, collection: String = Lexicon.node) {
+        lock.withLock { _ = commit([(collection, rkey, nil)]) }
+    }
+
+    /// The record's CID, if it exists.
+    func cid(of rkey: String, collection: String = Lexicon.node) -> String? {
+        lock.withLock { records["\(collection)/\(rkey)"]?.cid }
+    }
+
+    /// Drops the change feed's ops up to and including `rev`, as a server may.
+    func compactOps(through rev: String) {
+        lock.withLock { oplog.removeAll { $0.rev <= rev } }
+    }
+
+    /// Like `com.atproto.space.clearRecords`: deletes every record and the whole change feed,
+    /// leaving the repo at a new revision.
+    func clearRecords() {
+        lock.withLock {
+            records = [:]
+            oplog = []
+            rev = TID.next()
+        }
+    }
+
+    /// Deletes the space, as a wiped server would have: records, change feed, repo and blobs.
+    func wipe() {
+        lock.withLock {
+            spaceExists = false
+            records = [:]
+            oplog = []
+            rev = nil
+            blobs = [:]
         }
     }
 
