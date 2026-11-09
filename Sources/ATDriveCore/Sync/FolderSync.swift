@@ -36,6 +36,9 @@ public final class FolderSync {
     /// Whether this process wrote to the drive since `remote` was fetched: it's brought up to
     /// date before it's trusted again.
     private var remoteIsStale = false
+    /// When `remote` was last saved, and at what revision. Saving rewrites the whole tree, so
+    /// it's done at most once a minute (any saved snapshot is a consistent one to resume from).
+    private var saved: (at: Date, revision: String?)?
 
     public struct Result: Sendable {
         /// How many things were uploaded, downloaded, moved, deleted or renamed.
@@ -111,8 +114,12 @@ public final class FolderSync {
         var checked = false
         if checkRemote || remote == nil || remoteIsStale || local.differs(from: base) {
             let updated = try await drive.update(remote)
-            if updated.revision != remote?.revision || updated.listedAt != remote?.listedAt {
+            let now = Date()
+            if updated.listedAt != remote?.listedAt
+                || (updated.revision != saved?.revision && now.timeIntervalSince(saved?.at ?? .distantPast) >= 60)
+            {
                 folder.saveSnapshot(updated)
+                saved = (now, updated.revision)
             }
             remote = updated
             remoteIsStale = false
