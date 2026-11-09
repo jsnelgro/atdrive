@@ -213,7 +213,9 @@ Mac app logs (app and extension):
 /usr/bin/log stream --level debug --predicate 'subsystem == "me.jsnelgro.atdrive"'
 ```
 
-See [PLAN.md](PLAN.md) for the roadmap and design notes.
+See [PLAN.md](PLAN.md) for the roadmap and design notes, and
+[`docs/explainer/index.html`](docs/explainer/index.html) (open it in a browser) for an illustrated
+walkthrough of the code: how it's organized, how it talks to atproto, and how sync works.
 
 ## Current limitations
 

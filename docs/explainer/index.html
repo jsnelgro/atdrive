@@ -1,0 +1,1568 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ATDrive Field Guide</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="An illustrated, scroll-driven walkthrough of the ATDrive codebase: how it is organized, how it talks to atproto spaces, and how sync works.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=IBM+Plex+Mono:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<style>
+:root {
+  /* Layout: a long-form scroller. Prose steps scroll past a sticky "bench" figure that redraws
+     for each step; the code map and the conflict matrix are full-width interludes.
+     Color roles: --local is this device / the folder, --remote is the drive / your PDS,
+     --base is the last agreed state, --clash is a conflict. */
+  --bg: #ECEFF3;
+  --surface: #F8F9FB;
+  --ink: #131A2A;
+  --muted: #566176;
+  --line: #C7CEDA;
+  --remote: #2350D6;
+  --local: #A9530A;
+  --base: #5D6A85;
+  --clash: #BA2257;
+  --ok: #157A4E;
+  --remote-soft: color-mix(in srgb, var(--remote) 11%, var(--surface));
+  --local-soft: color-mix(in srgb, var(--local) 13%, var(--surface));
+  --base-soft: color-mix(in srgb, var(--base) 12%, var(--surface));
+  --clash-soft: color-mix(in srgb, var(--clash) 12%, var(--surface));
+  --ok-soft: color-mix(in srgb, var(--ok) 13%, var(--surface));
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --body: "Source Serif 4", "Iowan Old Style", Georgia, serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --nav: 52px;
+  --measure: 62ch;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0D121B; --surface: #151C28; --ink: #E4E8F0; --muted: #9AA4B8; --line: #2B3548;
+    --remote: #84A2FF; --local: #F0A24F; --base: #A3AEC6; --clash: #F27BA3; --ok: #55CB93;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0D121B; --surface: #151C28; --ink: #E4E8F0; --muted: #9AA4B8; --line: #2B3548;
+  --remote: #84A2FF; --local: #F0A24F; --base: #A3AEC6; --clash: #F27BA3; --ok: #55CB93;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font-family: var(--body); font-size: 1.0625rem; line-height: 1.62;
+  font-optical-sizing: auto; -webkit-font-smoothing: antialiased;
+}
+body::before {
+  content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px);
+  z-index: 30; background: var(--bg);
+}
+a { color: var(--remote); text-underline-offset: 2px; }
+a:focus-visible, button:focus-visible, input:focus-visible + .tog {
+  outline: 2px solid var(--remote); outline-offset: 2px; border-radius: 4px;
+}
+code, kbd, .mono { font-family: var(--mono); font-size: .84em; }
+:not(pre) > code {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 4px;
+  padding: .05em .32em; white-space: nowrap;
+}
+p code { white-space: normal; overflow-wrap: anywhere; }
+strong { font-weight: 600; }
+.svg-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+
+/* ---------- Nav ---------- */
+.nav {
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20;
+  height: var(--nav); display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  background: color-mix(in srgb, var(--bg) 90%, transparent);
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.brand { font-family: var(--display); font-weight: 800; font-stretch: 118%; font-size: 1rem; color: var(--ink); text-decoration: none; letter-spacing: .01em; white-space: nowrap; }
+.brand span { font-family: var(--mono); font-weight: 400; font-stretch: 100%; color: var(--muted); font-size: .78rem; margin-left: .5em; letter-spacing: 0; }
+.nav-ch { font-family: var(--mono); font-size: .78rem; color: var(--muted); text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.nav-ch b { color: var(--ink); font-weight: 500; }
+.nav-bar { position: absolute; left: 0; bottom: -1px; height: 2px; width: 100%; background: var(--remote); transform-origin: 0 50%; transform: scaleX(var(--p, 0)); }
+
+/* ---------- Page frame ---------- */
+main, .foot {
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.wrap { max-width: 1180px; margin-inline: auto; }
+section[id] { scroll-margin-top: calc(var(--nav) + 8px); }
+
+/* ---------- Hero ---------- */
+.hero { padding-block: clamp(36px, 7vw, 84px) 40px; }
+.eyebrow { font-family: var(--mono); font-size: .74rem; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); margin: 0; }
+h1 {
+  font-family: var(--display); font-weight: 820; font-stretch: 125%;
+  font-size: clamp(2.6rem, 8vw, 5.6rem); line-height: .92; letter-spacing: -.012em;
+  margin: .28em 0 .32em; text-wrap: balance;
+}
+.dek { font-size: clamp(1.12rem, 2vw, 1.32rem); line-height: 1.5; max-width: 40em; margin: 0 0 34px; }
+.uri { margin: 0 0 28px; padding: 22px 0 6px; border-top: 1px solid var(--line); }
+.uri-line {
+  font-family: var(--mono); font-size: clamp(.95rem, 2.1vw, 1.45rem); font-weight: 500;
+  line-height: 2.3; display: flex; flex-wrap: wrap; align-items: baseline; row-gap: 0;
+}
+.useg { position: relative; display: inline-block; padding-top: .1em; }
+.useg::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: .25em; height: 2px; background: var(--ink);
+  transform-origin: 0 50%; animation: draw 1s .25s cubic-bezier(.2,.7,.2,1) both;
+}
+.useg[data-n]::before {
+  content: attr(data-n); position: absolute; left: 0; top: -.95em; font-size: .52em; color: var(--remote); font-weight: 600;
+}
+.usep { color: var(--muted); }
+@keyframes draw { from { transform: scaleX(.02); } to { transform: scaleX(1); } }
+.uri-notes { list-style: none; margin: 10px 0 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 22px; font-size: .92rem; }
+.uri-notes li { min-width: 0; color: var(--muted); }
+.uri-notes b { font-family: var(--mono); font-weight: 600; color: var(--remote); margin-right: .35em; }
+.uri-notes strong { color: var(--ink); display: block; font-family: var(--mono); font-size: .8rem; font-weight: 500; }
+.facts { font-family: var(--mono); font-size: .8rem; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 26px 0 0; padding: 0; list-style: none; font-variant-numeric: tabular-nums; }
+.facts b { color: var(--ink); font-weight: 600; }
+.toc { margin: 42px 0 0; padding: 22px 0 0; border-top: 1px solid var(--line); list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr)); gap: 4px 36px; counter-reset: ch; }
+.toc li { counter-increment: ch; min-width: 0; }
+.toc a { display: grid; grid-template-columns: 2.2em minmax(0, 1fr); gap: 2px 8px; padding: 9px 0; text-decoration: none; color: var(--ink); border-bottom: 1px dashed var(--line); }
+.toc a::before { content: counter(ch, decimal-leading-zero); font-family: var(--mono); font-size: .78rem; color: var(--muted); grid-row: span 2; padding-top: .2em; }
+.toc a span { font-family: var(--display); font-weight: 700; font-stretch: 108%; font-size: 1.02rem; }
+.toc a small { color: var(--muted); font-size: .88rem; line-height: 1.4; }
+.toc a:hover span { color: var(--remote); }
+
+/* ---------- Chapters ---------- */
+.chapter { padding-block: clamp(56px, 8vw, 96px) 12px; border-top: 1px solid var(--line); }
+.ch-head { max-width: 780px; margin-bottom: 18px; }
+h2 {
+  font-family: var(--display); font-weight: 800; font-stretch: 114%;
+  font-size: clamp(1.85rem, 4.4vw, 3rem); line-height: 1.02; letter-spacing: -.01em;
+  margin: .3em 0 .42em; text-wrap: balance;
+}
+h3 { font-family: var(--display); font-weight: 750; font-stretch: 108%; font-size: 1.22rem; line-height: 1.2; margin: 0 0 .4em; text-wrap: balance; }
+.lede { font-size: 1.15rem; max-width: var(--measure); margin: 0; }
+.prose { max-width: var(--measure); }
+.prose p { margin: 0 0 1em; }
+.files { font-family: var(--mono); font-size: .74rem; color: var(--muted); letter-spacing: .02em; }
+.files::before { content: "\2192\00a0"; color: var(--remote); }
+
+/* ---------- Scrolly ---------- */
+.scrolly { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); gap: clamp(24px, 4vw, 64px); align-items: start; margin-top: 20px; }
+.steps { padding-block: 6vh 38vh; min-width: 0; }
+.step { min-height: 62vh; padding-block: 2vh; }
+.step-in { border-left: 2px solid var(--line); padding-left: 20px; color: var(--muted); transition: color .35s, border-color .35s; }
+.step.is-active .step-in { border-color: var(--remote); color: var(--ink); }
+.step-label { display: block; font-family: var(--mono); font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-bottom: .55em; }
+.step.is-active .step-label { color: var(--remote); }
+.step p { margin: 0 0 .85em; }
+.step p:last-child { margin-bottom: 0; }
+.bench {
+  position: sticky; top: calc(env(safe-area-inset-top, 0px) + var(--nav) + 10px);
+  height: calc(100vh - var(--nav) - 20px); max-height: 900px; min-width: 0;
+  display: flex; flex-direction: column; justify-content: center; gap: 12px;
+}
+.bench > svg { width: 100%; height: auto; max-height: calc(100vh - var(--nav) - 96px); display: block; }
+.bench-cap { font-family: var(--mono); font-size: .74rem; color: var(--muted); display: flex; gap: 10px; align-items: baseline; min-height: 1.4em; }
+.bench-cap .n { color: var(--remote); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* SVG figure styles */
+.fig text { font-family: var(--mono); font-size: 11px; fill: var(--ink); }
+.fig .t-h { font-family: var(--display); font-weight: 750; font-stretch: 108%; font-size: 15px; }
+.fig .t-s { fill: var(--muted); font-size: 10px; }
+.fig .t-k { fill: var(--muted); font-size: 8.5px; letter-spacing: .1em; }
+.fig .t-b { font-weight: 600; }
+.fig .t-r { fill: var(--remote); }
+.fig .t-l { fill: var(--local); }
+.fig .t-ok { fill: var(--ok); }
+.box { fill: var(--surface); stroke: var(--line); stroke-width: 1.25; }
+.box-r { fill: var(--remote-soft); stroke: var(--remote); stroke-width: 1.25; }
+.box-l { fill: var(--local-soft); stroke: var(--local); stroke-width: 1.25; }
+.box-soft-r { fill: var(--remote-soft); stroke: color-mix(in srgb, var(--remote) 45%, var(--line)); stroke-width: 1; }
+.box-soft-l { fill: var(--local-soft); stroke: color-mix(in srgb, var(--local) 45%, var(--line)); stroke-width: 1; }
+.chipr { fill: var(--bg); stroke: var(--line); stroke-width: 1; }
+.wire { stroke: var(--line); stroke-width: 1.6; fill: none; }
+.wire.hl { stroke: var(--remote); stroke-dasharray: 5 5; animation: march 1s linear infinite; }
+@keyframes march { to { stroke-dashoffset: -10; } }
+.arr { stroke: var(--muted); stroke-width: 1.4; fill: none; marker-end: url(#ah); }
+.arr2 { marker-start: url(#ah); }
+.arr-r { stroke: var(--remote); marker-end: url(#ah-r); stroke-width: 1.6; }
+.arr-l { stroke: var(--local); marker-end: url(#ah-l); stroke-width: 1.6; }
+.lifeline { stroke: var(--line); stroke-dasharray: 3 4; stroke-width: 1.2; }
+.mk { fill: var(--muted); } .mk-r { fill: var(--remote); } .mk-l { fill: var(--local); }
+.msg text { font-size: 10.5px; fill: var(--muted); }
+.msg.ret .arr { stroke-dasharray: 4 3; }
+.msg.now .arr { stroke: var(--remote); stroke-width: 2; marker-end: url(#ah-r); }
+.msg.now .arr2 { marker-start: url(#ah-r); }
+.msg.now text { fill: var(--ink); font-weight: 600; }
+.note-box { fill: var(--local-soft); stroke: var(--local); stroke-width: 1; }
+.ic-folder { fill: var(--remote-soft); stroke: var(--remote); stroke-width: 1.1; }
+.ic-file { fill: var(--surface); stroke: var(--muted); stroke-width: 1.1; }
+.card { fill: var(--surface); stroke: var(--line); stroke-width: 1.1; }
+.card.flash { stroke: var(--local); stroke-width: 1.8; }
+.space-ring { fill: none; stroke: var(--remote); stroke-width: 1.2; stroke-dasharray: 6 4; }
+.link { stroke: var(--muted); stroke-dasharray: 2 3; stroke-width: 1; }
+.arc { fill: none; stroke: var(--remote); stroke-width: 1.3; marker-end: url(#ah-r); }
+.arc-l { stroke: var(--local); marker-end: url(#ah-l); stroke-width: 1.8; }
+.filebar { fill: var(--local-soft); stroke: var(--local); stroke-width: 1.2; }
+.fillbar { fill: color-mix(in srgb, var(--remote) 22%, transparent); transform-origin: 20px 0; transform: scaleX(0); }
+.bench[data-step="4"] .fillbar { animation: fillup 2.4s .2s cubic-bezier(.3,.6,.2,1) forwards; }
+@keyframes fillup { to { transform: scaleX(1); } }
+.pill { fill: var(--surface); stroke: var(--remote); stroke-width: 1.1; }
+.okdot { fill: var(--ok); }
+.okdot + text { fill: var(--surface); font-weight: 700; font-size: 10px; }
+.mv { transition: transform .8s cubic-bezier(.2,.7,.2,1); }
+.bench[data-step="4"] .mv, .bench[data-step="5"] .mv { transform: translateX(22px); }
+.bench[data-step="4"] .mv text, .bench[data-step="5"] .mv text { fill: var(--local); }
+.revchip { fill: var(--bg); stroke: var(--line); }
+.revchip.nowc { stroke: var(--remote); fill: var(--remote-soft); }
+.bench[data-step="3"] .revchip.nowc { animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { stroke-width: 2.6; } }
+
+.fig *, .bench [data-s], .bench [data-f], .bench [data-only], .bench [data-from] { transition: opacity .45s ease, stroke .3s, fill .3s, background-color .3s, color .3s; }
+.future { opacity: .13; }
+.off { opacity: 0 !important; }
+.dim { opacity: .2; }
+
+/* ---------- Code map ---------- */
+.targets { display: flex; flex-wrap: wrap; gap: 8px; margin: 24px 0 8px; padding: 0; list-style: none; }
+.targets li { font-family: var(--mono); font-size: .76rem; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--muted); }
+.targets li b { color: var(--ink); font-weight: 600; }
+.targets li.mac { border-style: dashed; }
+.mapwrap { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 330px); gap: 28px; margin-top: 22px; align-items: start; }
+.map { display: grid; gap: 10px; min-width: 0; }
+.layer { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 14px; padding: 12px 0; border-top: 1px solid var(--line); }
+.layer:first-child { border-top: 0; padding-top: 0; }
+.layer-name { font-family: var(--display); font-weight: 750; font-stretch: 106%; font-size: .98rem; line-height: 1.2; }
+.layer-name small { display: block; font-family: var(--body); font-weight: 400; font-stretch: 100%; color: var(--muted); font-size: .82rem; line-height: 1.35; margin-top: 3px; }
+.groups { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.group-name { font-family: var(--mono); font-size: .7rem; color: var(--muted); letter-spacing: .04em; margin-bottom: 5px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  font: inherit; font-family: var(--mono); font-size: .76rem; color: var(--ink); cursor: pointer;
+  display: grid; grid-template-columns: auto auto; gap: 1px 10px; align-items: baseline;
+  padding: 6px 9px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); text-align: left;
+  transition: border-color .2s, background-color .2s, transform .2s;
+}
+.chip:hover { border-color: var(--remote); }
+.chip[aria-pressed="true"] { border-color: var(--remote); background: var(--remote-soft); }
+.chip .ln { color: var(--muted); font-size: .68rem; font-variant-numeric: tabular-nums; text-align: right; }
+.chip .bar { grid-column: 1 / -1; height: 3px; border-radius: 2px; background: var(--line); position: relative; overflow: hidden; margin-top: 3px; }
+.chip .bar::after { content: ""; position: absolute; inset: 0 auto 0 0; width: calc(var(--w) * 100%); background: var(--remote); border-radius: 2px; }
+.chip.net .bar::after { background: var(--local); }
+.detail { position: sticky; top: calc(var(--nav) + 20px); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px 18px 20px; min-width: 0; }
+.detail .d-path { font-family: var(--mono); font-size: .74rem; color: var(--muted); overflow-wrap: anywhere; margin: 0 0 6px; }
+.detail h3 { font-size: 1.3rem; overflow-wrap: anywhere; }
+.detail .d-meta { font-family: var(--mono); font-size: .76rem; color: var(--remote); margin: 0 0 12px; font-variant-numeric: tabular-nums; }
+.detail .d-role { margin: 0; font-size: 1rem; }
+.detail .d-hint { margin: 14px 0 0; font-size: .82rem; color: var(--muted); }
+.totals { font-family: var(--mono); font-size: .76rem; color: var(--muted); margin-top: 14px; font-variant-numeric: tabular-nums; }
+
+/* ---------- Tables ---------- */
+.tbl-wrap { overflow-x: auto; margin: 22px 0 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: .95rem; }
+th, td { text-align: left; vertical-align: top; padding: 11px 14px; border-top: 1px solid var(--line); }
+thead th { border-top: 0; font-family: var(--mono); font-size: .7rem; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+td.ep { font-family: var(--mono); font-size: .8rem; white-space: nowrap; }
+td.ep .ns { color: var(--muted); }
+td.kind { font-family: var(--mono); font-size: .76rem; color: var(--muted); white-space: nowrap; }
+tr.space td.ep b { color: var(--remote); font-weight: 600; }
+
+.fails { list-style: none; margin: 18px 0 0; padding: 0; display: grid; gap: 8px; }
+.fails li { display: grid; grid-template-columns: minmax(0, 15em) minmax(0, 1fr); gap: 14px; align-items: baseline; padding: 10px 0; border-top: 1px dashed var(--line); }
+.fails .when { font-family: var(--mono); font-size: .8rem; }
+.fails .when b { display: inline-block; padding: 1px 7px; margin-right: 6px; border-radius: 4px; background: var(--ink); color: var(--bg); font-weight: 500; }
+.fails .then { color: var(--ink); }
+.fails li.stop .when b { background: var(--clash); }
+
+.two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: clamp(24px, 4vw, 56px); margin-top: 28px; align-items: start; }
+
+/* ---------- Specimen (record JSON) ---------- */
+.specimen { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 28px; margin-top: 12px; align-items: start; }
+pre.code {
+  margin: 0; padding: 16px 18px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+  font-family: var(--mono); font-size: .78rem; line-height: 1.6; overflow-x: auto; color: var(--ink); min-width: 0;
+}
+pre.code .k { color: var(--remote); }
+pre.code .s { color: var(--ink); }
+pre.code .c { color: var(--muted); }
+pre.code .hl { background: var(--local-soft); border-radius: 3px; }
+.annot { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+.annot li { padding-left: 14px; border-left: 2px solid var(--line); font-size: .96rem; }
+.annot code { color: var(--remote); }
+
+/* ---------- Revision ticker ---------- */
+.revs { margin: 26px 0 6px; position: relative; overflow-x: auto; }
+.rev-track { display: grid; grid-template-columns: repeat(8, minmax(84px, 1fr)); gap: 0; min-width: 640px; position: relative; padding-top: 10px; }
+.tick { border-left: 1px solid var(--line); padding: 8px 10px 10px; font-family: var(--mono); font-size: .74rem; line-height: 1.5; font-variant-numeric: tabular-nums; }
+.tick .tm { color: var(--muted); display: block; }
+.tick .rv { display: block; color: var(--ink); }
+.tick .res { display: block; color: var(--muted); }
+.tick.moved { background: var(--remote-soft); border-left: 2px solid var(--remote); }
+.tick.moved .res { color: var(--remote); font-weight: 600; }
+.playhead { position: absolute; top: 0; bottom: 0; left: 0; width: 2px; background: var(--remote); opacity: .7; animation: play 12s linear infinite; }
+@keyframes play { from { left: 0; } to { left: 100%; } }
+
+/* ---------- Sync bench (HTML) ---------- */
+.legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 18px 0 0; padding: 0; list-style: none; font-family: var(--mono); font-size: .76rem; }
+.legend li::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 7px; vertical-align: -1px; background: var(--c); }
+.pipe { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; font-family: var(--mono); font-size: .72rem; }
+.pipe li { padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.pipe li.hl { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.pipe li.dim { opacity: 1; }
+.sg { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); overflow: hidden; font-family: var(--mono); font-size: .76rem; line-height: 1.35; }
+.sg-row { display: grid; grid-template-columns: .82fr 1fr 1fr 1fr 1.18fr; border-top: 1px solid var(--line); }
+.sg-row:first-child { border-top: 0; }
+.sg-row > div { padding: 8px 8px 7px; min-width: 0; min-height: 3.6em; overflow-wrap: anywhere; transition: background-color .35s; }
+.sg-head > div { min-height: 0; font-size: .64rem; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); padding-block: 8px; }
+.sg-head small { display: block; text-transform: none; letter-spacing: 0; font-size: .95em; }
+.sg .c-id { color: var(--muted); }
+.stack { display: grid; }
+.stack > * { grid-area: 1 / 1; }
+.nt { display: block; font-size: .9em; color: var(--muted); margin-top: 2px; }
+.h { display: inline-block; min-width: 1.45em; text-align: center; border-radius: 4px; font-weight: 600; font-size: .92em; padding: 0 .25em; background: var(--base-soft); color: var(--base); }
+.h-l { background: var(--local-soft); color: var(--local); }
+.h-r { background: var(--remote-soft); color: var(--remote); }
+.gone { text-decoration: line-through; color: var(--muted); }
+.tag { display: inline-block; padding: 1px 6px; border-radius: 4px; font-weight: 600; font-size: .92em; }
+.tag-up { background: var(--local-soft); color: var(--local); }
+.tag-down { background: var(--remote-soft); color: var(--remote); }
+.tag-clash { background: var(--clash-soft); color: var(--clash); }
+.bench-sync[data-step="1"] .c-local, .bench-sync[data-step="2"] .c-local, .bench-sync[data-step="2"] .c-id { background: var(--local-soft); }
+.bench-sync[data-step="3"] .c-remote { background: var(--remote-soft); }
+.bench-sync[data-step="4"] .c-plan, .bench-sync[data-step="5"] .c-plan { background: var(--clash-soft); }
+.bench-sync[data-step="6"] .c-base, .bench-sync[data-step="6"] .c-id { background: var(--base-soft); }
+.sg-head > div { background: transparent !important; }
+
+.callouts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 14px; margin-top: 26px; }
+.callout { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; min-width: 0; }
+.callout p, .callout ul { margin: 0; font-size: .95rem; }
+.callout ul { padding-left: 1.1em; display: grid; gap: 6px; }
+
+/* ---------- Conflict matrix ---------- */
+.mx { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: clamp(20px, 3vw, 40px); margin-top: 24px; align-items: start; }
+.mx-grid-wrap { overflow-x: auto; min-width: 0; }
+.mx-grid { border-collapse: separate; border-spacing: 5px; width: 100%; min-width: 420px; margin: -5px; }
+.mx-grid th { font-family: var(--mono); font-size: .68rem; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); padding: 4px 2px; border: 0; vertical-align: bottom; }
+.mx-grid th.rowh { text-align: right; vertical-align: middle; padding-right: 6px; white-space: nowrap; }
+.mx-grid .axis { font-family: var(--display); font-stretch: 106%; font-weight: 700; text-transform: none; letter-spacing: 0; font-size: .82rem; color: var(--ink); }
+.mx-grid td { padding: 0; border: 0; }
+.cell {
+  width: 100%; min-height: 64px; display: flex; flex-direction: column; justify-content: center; gap: 2px;
+  font: inherit; font-family: var(--mono); font-size: .74rem; line-height: 1.25; text-align: left; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 9px; color: var(--ink); background: var(--surface);
+  transition: transform .15s, box-shadow .2s, border-color .2s;
+}
+.cell:hover { border-color: var(--ink); }
+.cell[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--ink); border-color: var(--ink); }
+.cell small { color: var(--muted); font-size: .9em; }
+.cell.k-none { background: var(--surface); color: var(--muted); }
+.cell.k-down { background: var(--remote-soft); }
+.cell.k-up { background: var(--local-soft); }
+.cell.k-both { background: linear-gradient(135deg, var(--local-soft) 50%, var(--remote-soft) 50%); }
+.cell.k-clash { background: var(--clash-soft); color: var(--clash); font-weight: 600; }
+.cell.k-kept { background: var(--ok-soft); color: var(--ok); font-weight: 600; }
+.cell.k-del, .cell.k-gone { background: var(--bg); color: var(--muted); }
+.cell.k-del b, .cell.k-gone b { text-decoration: line-through; font-weight: 400; }
+.cell b { font-weight: inherit; }
+.toggle { display: flex; align-items: center; gap: 10px; margin-top: 16px; font-size: .92rem; cursor: pointer; }
+.toggle input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.tog { width: 34px; height: 20px; border-radius: 999px; background: var(--line); position: relative; flex: none; transition: background-color .2s; }
+.tog::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--surface); transition: transform .2s; }
+.toggle input:checked + .tog { background: var(--remote); }
+.toggle input:checked + .tog::after { transform: translateX(14px); }
+.mx-detail { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px; min-width: 0; }
+.mx-detail h3 { margin-bottom: 12px; }
+.lanes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.lane { border-radius: 8px; padding: 9px 10px; min-width: 0; font-family: var(--mono); font-size: .74rem; line-height: 1.4; }
+.lane h4 { margin: 0 0 4px; font-size: .64rem; font-weight: 500; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
+.lane-base { background: var(--base-soft); }
+.lane-local { background: var(--local-soft); }
+.lane-remote { background: var(--remote-soft); }
+.lane .fl { overflow-wrap: anywhere; }
+.lane .none { color: var(--muted); font-style: italic; }
+.result { margin-top: 10px; border: 1.5px solid var(--ink); border-radius: 8px; padding: 10px 12px; font-family: var(--mono); font-size: .78rem; }
+.result h4 { margin: 0 0 6px; font-size: .64rem; font-weight: 500; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
+.result .fl { display: flex; gap: 8px; align-items: baseline; overflow-wrap: anywhere; padding: 2px 0; }
+.result .fl .from { color: var(--muted); font-size: .9em; margin-left: auto; white-space: nowrap; }
+.result.pop { animation: pop .45s cubic-bezier(.2,.7,.2,1); }
+@keyframes pop { from { transform: translateY(6px); opacity: .3; } }
+.acts { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; margin-top: 12px; font-size: .9rem; }
+.acts h5 { margin: 0 0 3px; font-family: var(--mono); font-size: .66rem; font-weight: 500; letter-spacing: .07em; text-transform: uppercase; }
+.acts .a-l h5 { color: var(--local); }
+.acts .a-r h5 { color: var(--remote); }
+.acts ul { margin: 0; padding-left: 1.05em; }
+.rule { margin: 12px 0 0; padding: 10px 12px; border-radius: 8px; background: var(--bg); font-family: var(--mono); font-size: .74rem; line-height: 1.55; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rule .why { font-family: var(--body); font-size: 1.12em; color: var(--ink); display: block; margin-top: 4px; white-space: normal; }
+
+.trees { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.tree { border-radius: 8px; padding: 10px 12px; font-family: var(--mono); font-size: .76rem; line-height: 1.6; min-width: 0; }
+.tree h4 { margin: 0 0 4px; font-size: .64rem; font-weight: 500; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
+.tree .in { padding-left: 1.2em; display: block; }
+.tree .x { text-decoration: line-through; color: var(--muted); }
+.tree .new { color: var(--ok); font-weight: 600; }
+
+/* ---------- Comparison table ---------- */
+.cmp td:first-child { font-weight: 600; white-space: nowrap; }
+.cmp td { font-size: .93rem; }
+
+/* ---------- Footer ---------- */
+.foot { border-top: 1px solid var(--line); margin-top: 64px; padding-block: 28px 48px; }
+.foot p { max-width: 1180px; margin: 0 auto; font-family: var(--mono); font-size: .76rem; color: var(--muted); }
+
+/* ---------- Responsive ---------- */
+@media (max-width: 1000px) {
+  .mapwrap { grid-template-columns: minmax(0, 1fr); }
+  .detail { position: static; order: -1; }
+  .mx { grid-template-columns: minmax(0, 1fr); }
+  .uri-notes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 860px) {
+  .scrolly { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .bench {
+    order: -1; top: calc(env(safe-area-inset-top, 0px) + var(--nav)); z-index: 6;
+    height: auto; max-height: none; background: var(--bg); padding-block: 10px 8px;
+    border-bottom: 1px solid var(--line);
+  }
+  .bench > svg { max-height: 44vh; }
+  .steps { padding-block: 3vh 40vh; }
+  .step { min-height: 60vh; }
+  .two, .specimen { grid-template-columns: minmax(0, 1fr); }
+  .layer { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .fails li { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .sg { font-size: .66rem; }
+  .sg-row > div { padding: 6px 5px; }
+  .sg-head > div { font-size: .56rem; }
+}
+@media (max-width: 560px) {
+  .uri-notes { grid-template-columns: minmax(0, 1fr); }
+  .lanes, .acts, .trees { grid-template-columns: minmax(0, 1fr); }
+  .brand span { display: none; }
+  .bench-cap { font-size: .68rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+  .fillbar { transform: scaleX(1); }
+}
+</style>
+</head>
+<body>
+<svg class="svg-defs" aria-hidden="true" focusable="false">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk" d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="ah-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-r" d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="ah-l" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-l" d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+</svg>
+
+<header class="nav">
+  <a class="brand" href="#top">ATDrive<span>field guide</span></a>
+  <a class="nav-ch" href="#contents" id="navch">Contents</a>
+  <div class="nav-bar" id="navbar"></div>
+</header>
+
+<main id="top">
+<div class="wrap">
+
+<!-- ================= HERO ================= -->
+<section class="hero">
+  <p class="eyebrow">A field guide to the code · jsnelgro/atdrive</p>
+  <h1>How ATDrive works</h1>
+  <p class="dek">ATDrive is a Dropbox-style drive that lives inside your own atproto account. Your files sit in a private <em>space</em> on your PDS. On a Mac they show up in Finder; on Linux a normal folder stays in sync with them. This guide follows the code from your desktop down to the wire and back.</p>
+
+  <figure class="uri" aria-label="The address of your drive">
+    <div class="uri-line">
+      <span class="usep">at://</span><span class="useg" data-n="1">did:plc:q4fz2ajm7kcd5hrsxw3b6tyn</span><span class="usep">/</span><span class="useg" data-n="2">space</span><span class="usep">/</span><span class="useg" data-n="3">me.jsnelgro.atdrive.drive</span><span class="usep">/</span><span class="useg" data-n="4">default</span>
+    </div>
+    <ol class="uri-notes">
+      <li><b>1</b><strong>Your DID</strong>The account that owns the drive. Looked up from your handle, never hardcoded.</li>
+      <li><b>2</b><strong>space</strong>A permissioned set of records, separate from your public repo. Spaces are an alpha atproto feature.</li>
+      <li><b>3</b><strong>Space type</strong>An NSID that ATDrive defines in <code>lexicons/</code>.</li>
+      <li><b>4</b><strong>Space key</strong>One drive per account for now, so it's always <code>default</code>.</li>
+    </ol>
+  </figure>
+  <p class="prose" style="margin:0">That one address is your whole drive. Everything below happens inside it.</p>
+
+  <ul class="facts">
+    <li><b>5,487</b> lines of Swift</li>
+    <li><b>1,552</b> lines of tests</li>
+    <li><b>1</b> SwiftPM package, <b>6</b> targets</li>
+    <li><b>70</b> tests</li>
+    <li><b>2</b> lexicons</li>
+    <li><b>0</b> hardcoded servers</li>
+  </ul>
+
+  <ol class="toc" id="contents">
+    <li><a href="#shape"><span>One core, three ways in</span><small>The big picture and the three front ends</small></a></li>
+    <li><a href="#map"><span>Where the code lives</span><small>An explorable map of every source file</small></a></li>
+    <li><a href="#signin"><span>Finding your server and signing in</span><small>Handle to PDS, then atproto OAuth with DPoP</small></a></li>
+    <li><a href="#requests"><span>Every request ATDrive sends</span><small>The XRPC calls, and what happens when one fails</small></a></li>
+    <li><a href="#records"><span>Files and folders are records</span><small>Spaces, node records, parent IDs and TIDs</small></a></li>
+    <li><a href="#blobs"><span>File contents are chunked blobs</span><small>4 MiB chunks, CIDs, and verified downloads</small></a></li>
+    <li><a href="#changes"><span>Noticing changes</span><small>One cheap question every 30 seconds</small></a></li>
+    <li><a href="#sync"><span>A sync pass, step by step</span><small>The three-way merge behind the Linux folder</small></a></li>
+    <li><a href="#conflicts"><span>Who wins when both sides changed</span><small>Try every combination of the conflict rules</small></a></li>
+    <li><a href="#mac"><span>On the Mac, Finder does the syncing</span><small>The File Provider extension and its build quirk</small></a></li>
+    <li><a href="#tests"><span>Tests, and what it can't do yet</span><small>FakePDS, live tests, CI, and the known limits</small></a></li>
+  </ol>
+</section>
+
+<!-- ================= 1. SHAPE ================= -->
+<section class="chapter" id="shape" data-title="One core, three ways in">
+  <div class="ch-head">
+    <p class="files">Package.swift</p>
+    <h2>One core, three ways in</h2>
+    <p class="lede">Everything is one SwiftPM package with no Xcode project. A single library does the real work, and the things you click or type are thin layers on top of it.</p>
+  </div>
+
+  <div class="scrolly">
+    <div class="steps">
+      <div class="step" data-label="Front ends"><div class="step-in">
+        <span class="step-label">Three ways in</span>
+        <p><strong>On a Mac</strong>, the drive appears in Finder through a File Provider extension, with a small menu-bar app that signs you in. <strong>On Linux</strong>, <code>atdrive sync</code> keeps an ordinary folder, <code>~/atdrive</code>, mirrored with the drive. <strong>Everywhere</strong>, the <code>atdrive</code> command line lists, uploads and downloads directly.</p>
+      </div></div>
+      <div class="step" data-label="ATDriveCore"><div class="step-in">
+        <span class="step-label">One core</span>
+        <p>All three link the same library, <code>ATDriveCore</code>. It has no AppKit and no UI, so it builds on Linux as well as macOS.</p>
+        <p>Identity lookup, OAuth, the HTTP client, the record model, the tree, uploads, the conflict rules and the folder sync all live here. The front ends mostly translate between their world (Finder callbacks, a folder on disk, command-line flags) and calls into the core.</p>
+      </div></div>
+      <div class="step" data-label="Your PDS"><div class="step-in">
+        <span class="step-label">One place in your account</span>
+        <p>The core talks to one server: your <strong>PDS</strong> (personal data server), the same server that holds your Bluesky posts. Your drive is a single private space there. Files and folders are <em>records</em> in it; file contents are <em>blobs</em>.</p>
+      </div></div>
+      <div class="step" data-label="Identity"><div class="step-in">
+        <span class="step-label">Nothing hardcoded</span>
+        <p>ATDrive doesn't know where your PDS is ahead of time. It starts from your handle and looks the server up, the same way every atproto app does. Chapter 3 walks through it.</p>
+      </div></div>
+    </div>
+
+    <div class="bench" data-total="4">
+      <svg class="fig" viewBox="0 0 480 380" role="img" aria-label="Diagram: three front ends (Finder on macOS, a synced folder on Linux, the terminal) all use one core library, ATDriveCore, which talks to identity services and to your PDS.">
+        <g data-f="1 2">
+          <path class="wire" d="M81,80 V122"/><path class="wire" d="M240,80 V122"/><path class="wire" d="M399,80 V122"/>
+        </g>
+        <path class="wire" data-f="4" d="M76,250 V290"/>
+        <path class="wire" data-f="3" d="M316,250 V290"/>
+        <g data-f="1 2">
+          <g transform="translate(8,8)"><rect class="box" width="146" height="72" rx="8"/><text class="t-k" x="12" y="19">MACOS</text><text class="t-h" x="12" y="42">Finder</text><text class="t-s" x="12" y="60">File Provider</text></g>
+          <g transform="translate(167,8)"><rect class="box" width="146" height="72" rx="8"/><text class="t-k" x="12" y="19">LINUX</text><text class="t-h" x="12" y="42">~/atdrive</text><text class="t-s" x="12" y="60">atdrive sync</text></g>
+          <g transform="translate(326,8)"><rect class="box" width="146" height="72" rx="8"/><text class="t-k" x="12" y="19">MACOS + LINUX</text><text class="t-h" x="12" y="42">Terminal</text><text class="t-s" x="12" y="60">atdrive put · get</text></g>
+        </g>
+        <g data-f="2 3 4">
+          <rect class="box-r" x="8" y="122" width="464" height="128" rx="10"/>
+          <text class="t-h" x="22" y="147">ATDriveCore</text>
+          <text class="t-s" x="458" y="147" text-anchor="end">one library · builds on Linux</text>
+          <g>
+            <rect class="chipr" x="20" y="162" width="104" height="30" rx="6"/><text x="72" y="181" text-anchor="middle">Identity</text>
+            <rect class="chipr" x="132" y="162" width="104" height="30" rx="6"/><text x="184" y="181" text-anchor="middle">OAuth · DPoP</text>
+            <rect class="chipr" x="244" y="162" width="104" height="30" rx="6"/><text x="296" y="181" text-anchor="middle">XRPC</text>
+            <rect class="chipr" x="356" y="162" width="104" height="30" rx="6"/><text x="408" y="181" text-anchor="middle">Spaces</text>
+            <rect class="chipr" x="20" y="202" width="104" height="30" rx="6"/><text x="72" y="221" text-anchor="middle">DriveTree</text>
+            <rect class="chipr" x="132" y="202" width="104" height="30" rx="6"/><text x="184" y="221" text-anchor="middle">Drive</text>
+            <rect class="chipr" x="244" y="202" width="104" height="30" rx="6"/><text x="296" y="221" text-anchor="middle">ConflictRules</text>
+            <rect class="chipr" x="356" y="202" width="104" height="30" rx="6"/><text x="408" y="221" text-anchor="middle">Sync</text>
+          </g>
+        </g>
+        <g data-f="4">
+          <rect class="box" x="8" y="290" width="136" height="82" rx="8"/>
+          <text class="t-k" x="20" y="308">ELSEWHERE</text>
+          <text class="t-h" x="20" y="330">Identity</text>
+          <text class="t-s" x="20" y="348">handle → DID</text>
+          <text class="t-s" x="20" y="362">DID → PDS URL</text>
+        </g>
+        <g data-f="3">
+          <rect class="box-r" x="160" y="290" width="312" height="82" rx="8"/>
+          <text class="t-k" x="174" y="308">YOUR ACCOUNT</text>
+          <text class="t-h" x="174" y="330">Your PDS</text>
+          <text class="t-s" x="174" y="348">space me.jsnelgro.atdrive.drive</text>
+          <text class="t-s" x="174" y="362">records + blobs</text>
+          <g>
+            <rect class="card" x="384" y="300" width="12" height="15" rx="2"/><rect class="card" x="400" y="300" width="12" height="15" rx="2"/><rect class="card" x="416" y="300" width="12" height="15" rx="2"/><rect class="card" x="432" y="300" width="12" height="15" rx="2"/>
+            <rect class="card" x="384" y="319" width="12" height="15" rx="2"/><rect class="card" x="400" y="319" width="12" height="15" rx="2"/><rect class="card" x="416" y="319" width="12" height="15" rx="2"/>
+            <circle class="pill" cx="390" cy="352" r="6"/><circle class="pill" cx="406" cy="352" r="6"/><circle class="pill" cx="422" cy="352" r="6"/>
+          </g>
+        </g>
+      </svg>
+      <p class="bench-cap"><span class="n" data-cap-n>1 / 4</span><span data-cap>Front ends</span></p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 2. MAP ================= -->
+<section class="chapter" id="map" data-title="Where the code lives">
+  <div class="ch-head">
+    <p class="files">Sources/ · Tests/</p>
+    <h2>Where the code lives</h2>
+    <p class="lede">Roughly, the lower a file sits on this map, the less it knows about the rest. Pick any file to see what it's for. Bar length is lines of code, and the orange bar marks the one file that touches the network.</p>
+  </div>
+
+  <ul class="targets" aria-label="Package targets">
+    <li><b>ATDriveCore</b> · library · macOS + Linux</li>
+    <li><b>atdrive</b> · the CLI</li>
+    <li><b>ATDriveCoreTests</b> · Swift Testing</li>
+    <li class="mac"><b>ATDriveApp</b> · macOS only</li>
+    <li class="mac"><b>ATDriveFileProvider</b> · macOS, dynamic library</li>
+    <li class="mac"><b>ATDriveMacSupport</b> · macOS only</li>
+  </ul>
+  <p class="prose" style="font-size:.95rem;color:var(--muted);margin:6px 0 0">Two dependencies: <code>swift-crypto</code> (CryptoKit's API on Linux) and <code>swift-argument-parser</code>. The dashed targets are only added to the package when building on macOS.</p>
+
+  <div class="mapwrap">
+    <div class="map" id="codemap" aria-label="Source files by layer"></div>
+    <aside class="detail" id="codedetail" aria-live="polite"></aside>
+  </div>
+</section>
+
+<!-- ================= 3. SIGN-IN ================= -->
+<section class="chapter" id="signin" data-title="Finding your server and signing in">
+  <div class="ch-head">
+    <p class="files">Identity.swift · OAuth.swift · DPoP.swift · LoopbackServer.swift · Session.swift</p>
+    <h2>Finding your server and signing in</h2>
+    <p class="lede"><code>atdrive login alice.example.com</code>, or the menu-bar app's sign-in, runs the full atproto OAuth flow. You approve ATDrive on your own PDS's page in the browser, so ATDrive never sees your password.</p>
+  </div>
+
+  <div class="scrolly">
+    <div class="steps">
+      <div class="step" data-label="Resolve the handle"><div class="step-in">
+        <span class="step-label">1 · Handle → DID → PDS</span>
+        <p>First: who are you, and where is your data? ATDrive fetches <code>https://alice.example.com/.well-known/atproto-did</code>, falling back to <code>com.atproto.identity.resolveHandle</code> on a public server, and gets a DID like <code>did:plc:…</code>.</p>
+        <p>Then it downloads the DID document from <code>plc.directory</code> (or <code>/.well-known/did.json</code> for a <code>did:web</code>) and reads the service tagged <code>#atproto_pds</code>. That URL is your PDS. Both lookup servers can be changed with environment variables.</p>
+      </div></div>
+      <div class="step" data-label="Discover"><div class="step-in">
+        <span class="step-label">2 · Find the authorization server</span>
+        <p>The PDS's <code>/.well-known/oauth-protected-resource</code> names the server that handles sign-in (usually the PDS itself), and that server's <code>/.well-known/oauth-authorization-server</code> lists its endpoints. ATDrive checks that the issuer it was sent to is the one that answered.</p>
+      </div></div>
+      <div class="step" data-label="Pushed request"><div class="step-in">
+        <span class="step-label">3 · Make secrets, push the request</span>
+        <p>ATDrive makes three things that never leave the machine: a fresh P-256 <strong>DPoP key</strong>, a <strong>PKCE verifier</strong>, and a random <strong>state</strong>. It sends a <em>pushed authorization request</em> (PAR) with the verifier's hash, the scope and a DPoP proof, and gets back a short <code>request_uri</code>.</p>
+        <p>The scope it asks for:</p>
+        <pre class="code">atproto space:*?collection=me.jsnelgro.atdrive.node&amp;manage=create blob:*/*</pre>
+        <p style="margin-top:.8em"><code>space:*</code> is broader than ATDrive needs. Naming its own space type would make the PDS look up the published lexicon for the consent screen, and that lexicon isn't published yet (PLAN.md has the steps).</p>
+      </div></div>
+      <div class="step" data-label="Approve"><div class="step-in">
+        <span class="step-label">4 · You approve in the browser</span>
+        <p>ATDrive opens your PDS's authorize page and you sign in there. ATDrive is a <em>public native client</em> with no website of its own, so its client ID is atproto's loopback form, <code>http://localhost?scope=…</code>, which needs no hosted metadata.</p>
+      </div></div>
+      <div class="step" data-label="Redirect"><div class="step-in">
+        <span class="step-label">5 · The browser comes back to 127.0.0.1</span>
+        <p><code>LoopbackServer</code> listens on a random local port and catches the redirect, <code>?code=…&amp;state=…&amp;iss=…</code>.</p>
+        <p>Over SSH the browser is on another device, so that page fails to load. You paste its address into the terminal instead, and whichever arrives first wins. Pasting is safe: the code is useless without this process's PKCE verifier and DPoP key.</p>
+      </div></div>
+      <div class="step" data-label="Tokens"><div class="step-in">
+        <span class="step-label">6 · Swap the code for tokens</span>
+        <p>The code, the PKCE verifier and a DPoP proof go to the token endpoint. Back come an access token and a refresh token, both <strong>bound to the DPoP key</strong>.</p>
+        <p>ATDrive checks that the token's <code>sub</code> is the DID it resolved in step 1, then saves the tokens and the key to <code>~/.config/atdrive/session.json</code>, readable only by you. The Mac app saves them in its App Group container instead.</p>
+      </div></div>
+      <div class="step" data-label="Every request"><div class="step-in">
+        <span class="step-label">7 · Every request carries a proof</span>
+        <p>Each call sends <code>Authorization: DPoP &lt;token&gt;</code> plus a <code>DPoP</code> header: a fresh JWT signed with the key, naming the method, the URL, the time and a hash of the token. A stolen token is useless on its own.</p>
+        <p>When the server asks for a new nonce (<code>use_dpop_nonce</code>), the request is signed again and retried once. When the token expires, the <code>SessionManager</code> actor refreshes it once, even if many requests notice at the same moment. Sessions end after two weeks; then you sign in again.</p>
+      </div></div>
+    </div>
+
+    <div class="bench" data-total="7">
+      <svg class="fig" viewBox="0 0 480 446" role="img" aria-label="Sequence diagram of the OAuth sign-in between atdrive, identity services, your PDS and a browser.">
+        <line class="lifeline" x1="58" y1="46" x2="58" y2="440"/><line class="lifeline" x1="178" y1="46" x2="178" y2="440"/><line class="lifeline" x1="298" y1="46" x2="298" y2="440"/><line class="lifeline" x1="418" y1="46" x2="418" y2="440"/>
+        <g><rect class="box-l" x="6" y="6" width="104" height="40" rx="7"/><text class="t-h" x="58" y="24" text-anchor="middle" style="font-size:13px">atdrive</text><text class="t-s" x="58" y="38" text-anchor="middle" style="font-size:9px">your computer</text></g>
+        <g><rect class="box" x="126" y="6" width="104" height="40" rx="7"/><text class="t-h" x="178" y="24" text-anchor="middle" style="font-size:13px">Identity</text><text class="t-s" x="178" y="38" text-anchor="middle" style="font-size:9px">plc.directory</text></g>
+        <g><rect class="box-r" x="246" y="6" width="104" height="40" rx="7"/><text class="t-h" x="298" y="24" text-anchor="middle" style="font-size:13px">Your PDS</text><text class="t-s" x="298" y="38" text-anchor="middle" style="font-size:9px">auth + data</text></g>
+        <g><rect class="box" x="366" y="6" width="104" height="40" rx="7"/><text class="t-h" x="418" y="24" text-anchor="middle" style="font-size:13px">Browser</text><text class="t-s" x="418" y="38" text-anchor="middle" style="font-size:9px">any device</text></g>
+
+        <g class="msg" data-s="1"><line class="arr" x1="58" y1="70" x2="176" y2="70"/><text x="118" y="64" text-anchor="middle">handle → DID</text></g>
+        <g class="msg ret" data-s="1"><line class="arr" x1="178" y1="94" x2="60" y2="94"/><text x="118" y="88" text-anchor="middle">DID doc → PDS URL</text></g>
+        <g class="msg" data-s="2"><line class="arr" x1="58" y1="124" x2="296" y2="124"/><text x="178" y="118" text-anchor="middle">GET /.well-known/oauth-*</text></g>
+        <g class="msg ret" data-s="2"><line class="arr" x1="298" y1="148" x2="60" y2="148"/><text x="178" y="142" text-anchor="middle">auth server endpoints</text></g>
+        <g class="msg" data-s="3"><rect class="note-box" x="6" y="160" width="150" height="26" rx="5"/><text x="81" y="177" text-anchor="middle" style="fill:var(--ink)">DPoP key · PKCE · state</text></g>
+        <g class="msg" data-s="3"><line class="arr" x1="58" y1="212" x2="296" y2="212"/><text x="178" y="206" text-anchor="middle">PAR · scope · PKCE · DPoP proof</text></g>
+        <g class="msg ret" data-s="3"><line class="arr" x1="298" y1="236" x2="60" y2="236"/><text x="178" y="230" text-anchor="middle">request_uri</text></g>
+        <g class="msg" data-s="4"><line class="arr" x1="58" y1="266" x2="416" y2="266"/><text x="238" y="260" text-anchor="middle">open /oauth/authorize?request_uri</text></g>
+        <g class="msg" data-s="4"><line class="arr arr2" x1="414" y1="292" x2="302" y2="292"/><text x="358" y="286" text-anchor="middle">sign in · approve</text></g>
+        <g class="msg" data-s="5"><line class="arr" x1="418" y1="322" x2="60" y2="322"/><text x="238" y="316" text-anchor="middle">redirect 127.0.0.1:port/?code=…</text></g>
+        <g class="msg" data-s="6"><line class="arr" x1="58" y1="352" x2="296" y2="352"/><text x="178" y="346" text-anchor="middle">code + verifier + DPoP proof</text></g>
+        <g class="msg ret" data-s="6"><line class="arr" x1="298" y1="376" x2="60" y2="376"/><text x="178" y="370" text-anchor="middle">DPoP-bound access + refresh</text></g>
+        <g class="msg" data-s="7"><line class="arr" x1="58" y1="406" x2="296" y2="406"/><text x="178" y="400" text-anchor="middle">every XRPC call: token + new proof</text></g>
+        <g class="msg ret" data-s="7"><line class="arr" x1="298" y1="430" x2="60" y2="430"/><text x="178" y="424" text-anchor="middle">DPoP-Nonce → sign again, retry</text></g>
+      </svg>
+      <p class="bench-cap"><span class="n" data-cap-n>1 / 7</span><span data-cap>Resolve the handle</span></p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 4. REQUESTS ================= -->
+<section class="chapter" id="requests" data-title="Every request ATDrive sends">
+  <div class="ch-head">
+    <p class="files">XRPC.swift · Spaces.swift · HTTP.swift</p>
+    <h2>Every request ATDrive sends</h2>
+    <p class="lede">atproto's HTTP API is called XRPC: GET for queries, POST for procedures, and method names that are NSIDs. Outside of sign-in, ATDrive uses eleven methods. The six from the spaces alpha all live in <code>Spaces.swift</code>, because that API changes weekly and this keeps a protocol change to one file.</p>
+  </div>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Method</th><th>Kind</th><th>What ATDrive uses it for</th></tr></thead>
+      <tbody>
+        <tr class="space"><td class="ep"><span class="ns">com.atproto.space.</span><b>getLatestCommit</b></td><td class="kind">query</td><td>"Has anything changed?" Returns the space's revision. Asked every 30 seconds.</td></tr>
+        <tr class="space"><td class="ep"><span class="ns">com.atproto.space.</span><b>listRecords</b></td><td class="kind">query</td><td>The whole drive, 1,000 records a page. A record that won't decode is skipped, so one odd record can't break the listing.</td></tr>
+        <tr class="space"><td class="ep"><span class="ns">com.atproto.space.</span><b>putRecord</b></td><td class="kind">procedure</td><td>Create, edit, rename or move one file or folder.</td></tr>
+        <tr class="space"><td class="ep"><span class="ns">com.atproto.space.</span><b>applyWrites</b></td><td class="kind">procedure</td><td>Delete records, 200 per request (the server's limit), deepest first.</td></tr>
+        <tr class="space"><td class="ep"><span class="ns">com.atproto.space.</span><b>createSpace</b></td><td class="kind">procedure</td><td>Create the drive with the personal-space policy, the first time a write gets <code>SpaceNotFound</code>.</td></tr>
+        <tr class="space"><td class="ep"><span class="ns">com.atproto.space.</span><b>getBlob</b></td><td class="kind">query</td><td>Download one chunk of a file.</td></tr>
+        <tr><td class="ep"><span class="ns">com.atproto.repo.</span>uploadBlob</td><td class="kind">procedure</td><td>Upload one 4 MiB chunk. It stays private until a record in the space references it.</td></tr>
+        <tr><td class="ep"><span class="ns">com.atproto.identity.</span>resolveHandle</td><td class="kind">query</td><td>Find a DID when the handle has no <code>/.well-known/atproto-did</code>.</td></tr>
+        <tr><td class="ep"><span class="ns">com.atproto.server.</span>createSession<br><span class="ns">com.atproto.server.</span>refreshSession<br><span class="ns">com.atproto.server.</span>deleteSession</td><td class="kind">procedure</td><td>App-password sign-in (<code>atdrive login --app-password</code>), for scripts and tests only.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="two">
+    <div class="prose">
+      <h3>When a request fails</h3>
+      <p>All of these go through one method, <code>XRPCClient.send</code>. It signs the request through the <code>SessionManager</code>, then decides what to do with a failure. Writes are not retried after a network error, because the client can't tell whether they landed.</p>
+      <p>Below it sits <code>HTTPTransport</code>, a one-method protocol. It's the only code that touches the network, which is why the tests can swap in an in-memory PDS.</p>
+    </div>
+    <ul class="fails" aria-label="How XRPCClient handles failures">
+      <li><span class="when"><b>network</b>on a GET</span><span class="then">Retry up to 3 more times, after 0.5, 1 and 2 seconds.</span></li>
+      <li><span class="when"><b>401</b>use_dpop_nonce</span><span class="then">Sign again with the server's new nonce and retry once.</span></li>
+      <li><span class="when"><b>401</b>expired token</span><span class="then">Refresh the token (one refresh shared by every waiting request), then retry.</span></li>
+      <li><span class="when"><b>429</b>rate limited</span><span class="then">Wait until <code>ratelimit-reset</code>, at most 60 seconds, up to 5 times.</span></li>
+      <li><span class="when"><b>5xx</b>on a GET</span><span class="then">Back off and retry, up to 3 more times.</span></li>
+      <li class="stop"><span class="when"><b>refresh</b>rejected</span><span class="then">Stop with "your session has ended; sign in again".</span></li>
+    </ul>
+  </div>
+</section>
+
+<!-- ================= 5. RECORDS ================= -->
+<section class="chapter" id="records" data-title="Files and folders are records">
+  <div class="ch-head">
+    <p class="files">Records.swift · DriveTree.swift · TID.swift · Lexicon.swift · lexicons/</p>
+    <h2>Files and folders are records</h2>
+    <p class="lede">A space is a private collection of records. ATDrive defines two lexicons: the space type <code>me.jsnelgro.atdrive.drive</code>, and the record type <code>me.jsnelgro.atdrive.node</code>.</p>
+  </div>
+
+  <div class="scrolly">
+    <div class="steps">
+      <div class="step" data-label="One space"><div class="step-in">
+        <span class="step-label">One space</span>
+        <p>Your drive is one space, under the <code>personalspace</code> policy: only your account can read or write it. The first write creates it.</p>
+        <p>Spaces control who can access data. They don't encrypt it, so whoever runs your PDS can read your files.</p>
+      </div></div>
+      <div class="step" data-label="One record each"><div class="step-in">
+        <span class="step-label">One record per item</span>
+        <p>Every file and folder on the left is one <code>node</code> record on the right, whatever its depth. No folder listing is stored anywhere. Each time the drive is listed, <code>DriveTree</code> rebuilds the tree from the flat list of records.</p>
+      </div></div>
+      <div class="step" data-label="Parent by ID"><div class="step-in">
+        <span class="step-label">Parents by ID</span>
+        <p>A record stores its <code>name</code> and its <code>parent</code>: the record key of the folder it's in, or nothing at the top. Paths like <code>/Photos/cat.jpg</code> are worked out in memory by following parents upward.</p>
+      </div></div>
+      <div class="step" data-label="A move is one write"><div class="step-in">
+        <span class="step-label">A move is one write</span>
+        <p>Drag <code>Photos</code> into <code>Archive</code>. In the tree a whole branch moves, but on the PDS only one record changes: Photos' <code>parent</code>. Renaming works the same way. It doesn't matter how much the folder holds.</p>
+      </div></div>
+      <div class="step" data-label="TIDs"><div class="step-in">
+        <span class="step-label">Keys are TIDs</span>
+        <p>Record keys are TIDs: 13 characters of sortable base32, 11 for the time in microseconds and 2 for a random clock ID. ATDrive's generator never repeats or goes backwards within a process.</p>
+        <p>A key never changes, through any rename or move, so it is the item's identity everywhere: in the Mac's File Provider and in the folder sync's state file.</p>
+      </div></div>
+    </div>
+
+    <div class="bench" data-total="5">
+      <svg class="fig" viewBox="0 0 480 390" role="img" aria-label="A folder tree beside the flat list of node records that represents it. Each record points to its parent folder by record key.">
+        <text class="t-k" x="12" y="22">YOUR DRIVE AS A TREE</text>
+        <text class="t-k" x="222" y="22">IN YOUR PDS</text>
+        <rect class="space-ring" x="214" y="32" width="262" height="286" rx="10" data-f="1 2 3 4 5"/>
+        <text class="t-s t-r" x="224" y="50" style="font-size:9.5px">space · me.jsnelgro.atdrive.drive/default</text>
+
+        <!-- tree -->
+        <g transform="translate(0,76)"><g transform="translate(14,0)"><path class="ic-folder" d="M0,-6 h5 l2,2 h7 v10 h-14 z"/><text x="20" y="4">Archive</text></g></g>
+        <g transform="translate(0,112)"><g class="mv"><g transform="translate(14,0)"><path class="ic-folder" d="M0,-6 h5 l2,2 h7 v10 h-14 z"/><text x="20" y="4">Photos</text></g></g></g>
+        <g transform="translate(0,148)"><g class="mv"><g transform="translate(36,0)"><path class="ic-file" d="M1,-7 h8 l4,4 v11 h-12 z"/><text x="20" y="4">cat.jpg</text></g></g></g>
+        <g transform="translate(0,184)"><g class="mv"><g transform="translate(36,0)"><path class="ic-file" d="M1,-7 h8 l4,4 v11 h-12 z"/><text x="20" y="4">dog.jpg</text></g></g></g>
+        <g transform="translate(0,220)"><g transform="translate(14,0)"><path class="ic-folder" d="M0,-6 h5 l2,2 h7 v10 h-14 z"/><text x="20" y="4">Taxes</text></g></g>
+        <g transform="translate(0,256)"><g transform="translate(36,0)"><path class="ic-file" d="M1,-7 h8 l4,4 v11 h-12 z"/><text x="20" y="4">2026.pdf</text></g></g>
+        <g transform="translate(0,292)"><g transform="translate(14,0)"><path class="ic-file" d="M1,-7 h8 l4,4 v11 h-12 z"/><text x="20" y="4">notes.txt</text></g></g>
+
+        <!-- links tree -> cards -->
+        <g data-only="2">
+          <path class="link" d="M130,76 H220"/><path class="link" d="M130,112 H220"/><path class="link" d="M130,148 H220"/><path class="link" d="M130,184 H220"/><path class="link" d="M130,220 H220"/><path class="link" d="M130,256 H220"/><path class="link" d="M130,292 H220"/>
+        </g>
+
+        <!-- cards -->
+        <g style="font-size:10.5px">
+          <g transform="translate(222,76)"><rect class="card" y="-14" width="232" height="28" rx="6"/><text class="t-r" x="10" y="4">3mzfirnvxi2n7</text><text x="102" y="4">Archive</text><text class="t-s" x="224" y="4" text-anchor="end">↑ —</text></g>
+          <g transform="translate(222,112)"><rect class="card" y="-14" width="232" height="28" rx="6" data-only="1 2 3 5"/><rect class="card flash" y="-14" width="232" height="28" rx="6" data-only="4"/><text class="t-r" x="10" y="4">3mzgdlxqh7jn7</text><text x="102" y="4">Photos</text><text class="t-s" x="224" y="4" text-anchor="end" data-only="1 2 3">↑ —</text><text class="t-l t-b" x="224" y="4" text-anchor="end" data-only="4 5">↑ 3mzfir…</text></g>
+          <g transform="translate(222,148)"><rect class="card" y="-14" width="232" height="28" rx="6"/><text class="t-r" x="10" y="4">3mzh6gbkwwyn7</text><text x="102" y="4">cat.jpg</text><text class="t-s" x="224" y="4" text-anchor="end">↑ 3mzgdl…</text></g>
+          <g transform="translate(222,184)"><rect class="card" y="-14" width="232" height="28" rx="6"/><text class="t-r" x="10" y="4">3mzhzalfgohn7</text><text x="102" y="4">dog.jpg</text><text class="t-s" x="224" y="4" text-anchor="end">↑ 3mzgdl…</text></g>
+          <g transform="translate(222,220)"><rect class="card" y="-14" width="232" height="28" rx="6"/><text class="t-r" x="10" y="4">3mziu2v7wfwn7</text><text x="102" y="4">Taxes</text><text class="t-s" x="224" y="4" text-anchor="end">↑ —</text></g>
+          <g transform="translate(222,256)"><rect class="card" y="-14" width="232" height="28" rx="6" data-only="1 2 3 4"/><rect class="card flash" y="-14" width="232" height="28" rx="6" data-only="5"/><text class="t-r" x="10" y="4">3mzjov72g5fn7</text><text x="102" y="4">2026.pdf</text><text class="t-s" x="224" y="4" text-anchor="end">↑ 3mziu2…</text></g>
+          <g transform="translate(222,292)"><rect class="card" y="-14" width="232" height="28" rx="6"/><text class="t-r" x="10" y="4">3mzkjpiuvuun7</text><text x="102" y="4">notes.txt</text><text class="t-s" x="224" y="4" text-anchor="end">↑ —</text></g>
+        </g>
+
+        <!-- parent arcs -->
+        <g data-from="3">
+          <path class="arc" d="M454,148 C468,148 468,112 457,112"/>
+          <path class="arc" d="M454,184 C475,184 475,112 457,112"/>
+          <path class="arc" d="M454,256 C468,256 468,220 457,220"/>
+        </g>
+        <path class="arc arc-l" data-from="4" d="M454,112 C468,112 468,76 457,76"/>
+
+        <!-- captions -->
+        <g data-only="1 2 3">
+          <text class="t-h" x="12" y="346" style="font-size:14px">7 items → 7 records</text>
+          <text class="t-s" x="12" y="364">No paths are stored. The tree is rebuilt</text>
+          <text class="t-s" x="12" y="378">from parent IDs every time it's listed.</text>
+        </g>
+        <g data-only="4">
+          <text class="t-h" x="12" y="346" style="font-size:14px">Move Photos/ into Archive/ → 1 putRecord</text>
+          <text class="t-s" x="12" y="364">Only Photos' parent changes. cat.jpg and</text>
+          <text class="t-s" x="12" y="378">dog.jpg aren't touched: they still point at Photos.</text>
+        </g>
+        <g data-only="5">
+          <text x="12" y="356" style="font-size:20px;font-weight:500"><tspan class="t-r">3mzjov72g5f</tspan><tspan class="t-l">n7</tspan></text>
+          <path class="link" d="M12,366 H142" style="stroke:var(--remote);stroke-dasharray:none"/><path class="link" d="M146,366 H168" style="stroke:var(--local);stroke-dasharray:none"/>
+          <text class="t-s" x="190" y="342"><tspan class="t-r">11 chars</tspan>: microseconds since 1970</text>
+          <text class="t-s" x="190" y="358"><tspan class="t-l">2 chars</tspan>: random clock ID</text>
+          <text class="t-s" x="190" y="374">= 2026-11-05 01:14:07 UTC</text>
+        </g>
+      </svg>
+      <p class="bench-cap"><span class="n" data-cap-n>1 / 5</span><span data-cap>One space</span></p>
+    </div>
+  </div>
+
+  <div class="specimen">
+    <pre class="code" aria-label="Example node record"><span class="c">// one file, as the PDS stores it</span>
+{
+  <span class="k">"$type"</span>: "me.jsnelgro.atdrive.node",
+  <span class="k">"name"</span>: "2026.pdf",
+  <span class="k hl">"parent"</span>: "3mziu2v7wfwn7",
+  <span class="k">"kind"</span>: "file",
+  <span class="k">"size"</span>: 9437184,
+  <span class="k">"sha256"</span>: "27f650028cdae184fe256b186f025e5a…",
+  <span class="k">"chunks"</span>: [
+    { "$type": "blob", "mimeType": "application/octet-stream", "size": 4194304,
+      "ref": { "$link": "bafkreiclrq6vxxygalonwcrgqd4pd7uys…" } },
+    { …, "size": 4194304, "ref": { "$link": "bafkreigaremdjfnft…" } },
+    { …, "size": 1048576, "ref": { "$link": "bafkreiaw25xfl5mtx…" } }
+  ],
+  <span class="k">"createdAt"</span>: "2026-11-05T01:14:07.039Z",
+  <span class="k">"modifiedAt"</span>: "2026-11-04T18:02:51.000Z"
+}</pre>
+    <ul class="annot">
+      <li><code>parent</code> is the folder's record key. A move or rename rewrites this record and nothing else.</li>
+      <li><code>sha256</code> covers the whole file and is checked after every download. The sync also uses it to tell whether two files are the same.</li>
+      <li><code>chunks</code> are blob references, in order. Joined together, they are the file (next chapter).</li>
+      <li><code>createdAt</code> survives a replace: an edited file keeps its record key and creation date, so other devices see an edit rather than a new file.</li>
+      <li>If two devices move folders into each other, or something is left in a folder deleted elsewhere, <code>DriveTree</code> shows the stranded items at the top level, so nothing is ever hidden.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ================= 6. BLOBS ================= -->
+<section class="chapter" id="blobs" data-title="File contents are chunked blobs">
+  <div class="ch-head">
+    <p class="files">Drive.swift · Encoding.swift</p>
+    <h2>File contents are chunked blobs</h2>
+    <p class="lede">The record says what a file is. Its bytes live beside it as blobs, and ATDrive checks every one of them on the way up and on the way down.</p>
+  </div>
+
+  <div class="scrolly">
+    <div class="steps">
+      <div class="step" data-label="Split"><div class="step-in">
+        <span class="step-label">1 · Split into 4 MiB chunks</span>
+        <p><code>Drive.upload</code> reads the file 4 MiB at a time and feeds each chunk into a running SHA-256 of the whole file. This 9 MiB PDF becomes three chunks: 4, 4 and 1 MiB.</p>
+      </div></div>
+      <div class="step" data-label="Upload and check"><div class="step-in">
+        <span class="step-label">2 · Upload each chunk, then check it</span>
+        <p>Each chunk goes up with <code>com.atproto.repo.uploadBlob</code>, and the PDS answers with the chunk's CID, a content identifier. ATDrive computes the CID itself and stops if the two differ.</p>
+        <p>A blob CID is just a hash with a short header, so it's cheap to compute locally:</p>
+        <pre class="code" style="font-size:.74rem">"b" + base32( 01 55 12 20 <span class="k">digest</span> )
+              <span class="c">│  │  │  │  └ SHA-256 of the chunk</span>
+              <span class="c">│  │  │  └ length: 32 bytes</span>
+              <span class="c">│  │  └ hash: sha2-256</span>
+              <span class="c">│  └ codec: raw bytes</span>
+              <span class="c">└ CID version 1</span>
+→ <span class="k">bafkrei</span>clrq6vxxygalonwcrgqd4pd7…</pre>
+      </div></div>
+      <div class="step" data-label="Write the record"><div class="step-in">
+        <span class="step-label">3 · Then write the record</span>
+        <p>The record lists the chunks in order, with the size and the whole-file SHA-256, and goes up with <code>putRecord</code>. Uploaded blobs stay private until a record in the space references them. If none ever does, the PDS deletes them.</p>
+        <p>If the space doesn't exist yet, <code>putRecord</code> fails with <code>SpaceNotFound</code>. ATDrive creates the space and tries once more. That's the only place a drive gets created.</p>
+      </div></div>
+      <div class="step" data-label="Download"><div class="step-in">
+        <span class="step-label">4 · Downloads check everything</span>
+        <p>Each chunk from <code>com.atproto.space.getBlob</code> must match its CID, and the whole file must match its size and SHA-256. The bytes go to a hidden <code>.2026.pdf.atdrive-partial</code> file, which is renamed into place only when every check passes. The file gets its original modification time back.</p>
+        <p>A file's chunk list has to fit in one record (1 MiB at most), which caps a single file at about 30 GB.</p>
+      </div></div>
+    </div>
+
+    <div class="bench" data-total="4">
+      <svg class="fig" viewBox="0 0 480 390" role="img" aria-label="A 9 MiB file is split into three chunks, each uploaded as a blob and checked by CID; then a record listing the chunks is written to the space.">
+        <rect class="box-soft-r" x="6" y="6" width="468" height="164" rx="12"/>
+        <text class="t-h" x="20" y="30">Your PDS</text>
+        <text class="t-s" x="460" y="30" text-anchor="end">space records + blob store</text>
+        <g data-s="3">
+          <rect class="card" x="20" y="42" width="440" height="64" rx="8"/>
+          <text x="32" y="62"><tspan class="t-r">node 3mzjov72g5fn7</tspan> · 2026.pdf · 9,437,184 bytes</text>
+          <text class="t-s" x="32" y="80">sha256 27f650028cda…33c5c7b6</text>
+          <text class="t-s" x="32" y="98">chunks: [ blob, blob, blob ]</text>
+          <path class="link" d="M86,106 V124"/><path class="link" d="M240,106 V124"/><path class="link" d="M394,106 V124"/>
+        </g>
+        <g data-s="2">
+          <rect class="pill" x="20" y="124" width="132" height="28" rx="14"/><text x="32" y="142" style="font-size:10px">bafkreiclrq…xb3m</text>
+          <rect class="pill" x="174" y="124" width="132" height="28" rx="14"/><text x="186" y="142" style="font-size:10px">bafkreigare…zo2i</text>
+          <rect class="pill" x="328" y="124" width="132" height="28" rx="14"/><text x="340" y="142" style="font-size:10px">bafkreiaw25…a2iy</text>
+          <circle class="okdot" cx="139" cy="138" r="7"/><text x="139" y="141.5" text-anchor="middle">✓</text>
+          <circle class="okdot" cx="293" cy="138" r="7"/><text x="293" y="141.5" text-anchor="middle">✓</text>
+          <circle class="okdot" cx="447" cy="138" r="7"/><text x="447" y="141.5" text-anchor="middle">✓</text>
+        </g>
+
+        <g data-only="2 3">
+          <line class="arr arr-l" x1="117.8" y1="274" x2="87" y2="156"/>
+          <line class="arr arr-l" x1="313.3" y1="274" x2="241" y2="156"/>
+          <line class="arr arr-l" x1="435.6" y1="274" x2="396" y2="156"/>
+          <text class="t-l t-b" x="14" y="200">uploadBlob</text>
+          <text class="t-s" x="14" y="214">×3 · CID ✓</text>
+        </g>
+        <g data-only="3">
+          <line class="arr arr-l" x1="163" y1="236" x2="163" y2="110"/>
+          <text class="t-l t-b" x="170" y="214">putRecord</text>
+        </g>
+        <g data-only="4">
+          <line class="arr arr-r" x1="87" y1="154" x2="116" y2="270"/>
+          <line class="arr arr-r" x1="241" y1="154" x2="311" y2="270"/>
+          <line class="arr arr-r" x1="396" y1="154" x2="434" y2="270"/>
+          <text class="t-r t-b" x="14" y="200">getBlob</text>
+          <text class="t-s" x="14" y="214">×3 · CID ✓</text>
+        </g>
+
+        <rect class="box-soft-l" x="6" y="236" width="468" height="146" rx="12"/>
+        <text class="t-h" x="20" y="260">This computer</text>
+        <text class="t-s" x="460" y="260" text-anchor="end" data-only="1 2 3">~/Taxes/2026.pdf · 9 MiB</text>
+        <text class="t-s t-r" x="460" y="260" text-anchor="end" data-only="4">~/Taxes/.2026.pdf.atdrive-partial</text>
+        <rect class="filebar" x="20" y="274" width="440" height="38" rx="6"/>
+        <rect class="fillbar" x="20" y="274" width="440" height="38" rx="6" data-only="4"/>
+        <line x1="215.6" y1="274" x2="215.6" y2="312" style="stroke:var(--local);stroke-width:1.2"/>
+        <line x1="411.1" y1="274" x2="411.1" y2="312" style="stroke:var(--local);stroke-width:1.2"/>
+        <text x="117.8" y="297" text-anchor="middle" style="font-size:10.5px">chunk 1 · 4 MiB</text>
+        <text x="313.3" y="297" text-anchor="middle" style="font-size:10.5px">chunk 2 · 4 MiB</text>
+        <text x="435.6" y="297" text-anchor="middle" style="font-size:10.5px">1 MiB</text>
+        <g data-only="1 2 3">
+          <text class="t-s" x="20" y="336">running SHA-256 of the whole file</text>
+          <text x="20" y="354" style="font-size:10.5px">→ 27f650028cdae184fe256b18…33c5c7b6</text>
+        </g>
+        <g data-only="4">
+          <text class="t-ok t-b" x="20" y="336" style="font-size:10.5px">✓ CIDs  ✓ 9,437,184 bytes  ✓ SHA-256</text>
+          <text x="20" y="354" style="font-size:10.5px">→ renamed to 2026.pdf, modified time restored</text>
+        </g>
+      </svg>
+      <p class="bench-cap"><span class="n" data-cap-n>1 / 4</span><span data-cap>Split</span></p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 7. CHANGES ================= -->
+<section class="chapter" id="changes" data-title="Noticing changes">
+  <div class="ch-head">
+    <p class="files">Drive.latestRevision() · DriveIndex.swift · FolderSync.swift</p>
+    <h2>Noticing changes: one cheap question</h2>
+    <p class="lede">Listing every record is the expensive part, so nothing lists the drive on a timer. Every 30 seconds the folder sync and the Mac ask <code>getLatestCommit</code> for the space's revision, a TID that moves on every write. Only when it has moved do they list everything again.</p>
+  </div>
+
+  <div class="revs" aria-label="Example: eight checks, 30 seconds apart. The revision moves once, and only that check lists the drive.">
+    <div class="rev-track">
+      <div class="tick"><span class="tm">0:00</span><span class="rv">3mzk…xa</span><span class="res">first: list</span></div>
+      <div class="tick"><span class="tm">0:30</span><span class="rv">3mzk…xa</span><span class="res">same</span></div>
+      <div class="tick"><span class="tm">1:00</span><span class="rv">3mzk…xa</span><span class="res">same</span></div>
+      <div class="tick"><span class="tm">1:30</span><span class="rv">3mzk…xa</span><span class="res">same</span></div>
+      <div class="tick moved"><span class="tm">2:00</span><span class="rv">3mzm…q2</span><span class="res">moved: list</span></div>
+      <div class="tick"><span class="tm">2:30</span><span class="rv">3mzm…q2</span><span class="res">same</span></div>
+      <div class="tick"><span class="tm">3:00</span><span class="rv">3mzm…q2</span><span class="res">same</span></div>
+      <div class="tick"><span class="tm">3:30</span><span class="rv">3mzm…q2</span><span class="res">same</span></div>
+      <div class="playhead" aria-hidden="true"></div>
+    </div>
+  </div>
+
+  <div class="callouts">
+    <div class="callout"><h3>In <code>atdrive sync</code></h3><p>A change in the folder wakes the loop within about a second (inotify on Linux). That pass asks the drive first only if the folder now differs from the last agreed state; otherwise the drive waits for its regular 30-second check.</p></div>
+    <div class="callout"><h3>On the Mac</h3><p>The revision doubles as the File Provider's sync anchor. "What changed since revision X?" is answered by comparing two cached trees (chapter 10).</p></div>
+    <div class="callout"><h3>The cost</h3><p>This is polling, not push. A change made on another device shows up within about 30 seconds.</p></div>
+  </div>
+</section>
+
+<!-- ================= 8. SYNC ================= -->
+<section class="chapter" id="sync" data-title="A sync pass, step by step">
+  <div class="ch-head">
+    <p class="files">Sync/FolderSync.swift · Sync/SyncPlan.swift · Sync/SyncState.swift · Sync/LocalFiles.swift</p>
+    <h2>A sync pass, step by step</h2>
+    <p class="lede"><code>atdrive sync</code> keeps <code>~/atdrive</code> and the drive the same in both directions. It works in passes, and each pass compares three versions of every item. Two versions can't tell "deleted here" from "new on the drive". The third one, the last state both sides agreed on, can.</p>
+    <ul class="legend">
+      <li style="--c:var(--base)">Last agreed: <code>.atdrive/state.json</code></li>
+      <li style="--c:var(--local)">This folder, now</li>
+      <li style="--c:var(--remote)">The drive, now</li>
+    </ul>
+  </div>
+
+  <div class="scrolly">
+    <div class="steps">
+      <div class="step" data-label="Scan"><div class="step-in">
+        <span class="step-label">1 · Look at the folder, cheaply</span>
+        <p><code>FolderScan</code> lists everything with <code>lstat</code> only. A file is read and hashed only when its size, times or inode changed since the last pass. <code>todo.txt</code> didn't change, so its saved hash is reused. <code>plan.md</code> did, so it's hashed: it was edited.</p>
+        <p>Files written in the last 2 seconds wait for the next pass, since they may still be being written.</p>
+      </div></div>
+      <div class="step" data-label="Match IDs"><div class="step-in">
+        <span class="step-label">2 · Give every local item a node ID</span>
+        <p>Items still at their old path keep their ID. Then renames and moves are found by <strong>inode</strong>: <code>kitty.jpg</code> is the old <code>cat.jpg</code>. Files copied and deleted (across disks, say) are found by <strong>hash</strong>.</p>
+        <p>Anything left is new and gets a temporary ID, <code>+ideas.txt</code>. Record keys never contain <code>+</code>, so the two can't collide.</p>
+      </div></div>
+      <div class="step" data-label="Check the drive"><div class="step-in">
+        <span class="step-label">3 · Ask the drive</span>
+        <p>One <code>getLatestCommit</code>. The revision moved, so the pass lists the drive. Another device edited <code>plan.md</code> and deleted <code>todo.txt</code>, and <code>receipt.pdf</code> is new.</p>
+      </div></div>
+      <div class="step" data-label="Merge"><div class="step-in">
+        <span class="step-label">4 · Merge, item by item</span>
+        <p><code>SyncPlan</code> takes each ID and asks <code>ConflictRules</code> (next chapter).</p>
+        <p>Edited on both sides, differently: the drive's version keeps the name, and yours becomes <code>plan (conflicted copy 2026-11-09 1432).md</code>. Renamed only here: the rename goes to the drive. Deleted on the drive and untouched here: deleted here. New on one side: copied to the other.</p>
+        <p>The plan is a pure function of the three views. It touches neither the disk nor the network, which makes it easy to test.</p>
+      </div></div>
+      <div class="step" data-label="Apply"><div class="step-in">
+        <span class="step-label">5 · Apply it in three phases</span>
+        <p><strong>① The folder.</strong> Moves go through <code>.atdrive/staging</code>, with a journal so a killed pass can put things back. A file is deleted only if its <code>lstat</code> hasn't changed since the scan.</p>
+        <p><strong>② The drive.</strong> New folders, uploads and moves, then deletes, deepest first.</p>
+        <p><strong>③ Downloads.</strong> Into <code>.atdrive/downloads</code>, then renamed into place. For the conflict, your <code>plan.md</code> is renamed to the copy first, then the drive's version arrives under the original name.</p>
+      </div></div>
+      <div class="step" data-label="Save"><div class="step-in">
+        <span class="step-label">6 · Save only what finished</span>
+        <p>The new agreed state goes to <code>state.json</code>, but only for items that got through every phase. Temporary IDs are replaced by the record keys the drive just assigned.</p>
+        <p>Anything interrupted keeps its old entry, so the next pass picks up where this one stopped, and an interrupted conflict doesn't produce two copies.</p>
+      </div></div>
+    </div>
+
+    <div class="bench bench-sync" data-total="6">
+      <ol class="pipe" aria-label="Phases of a pass">
+        <li data-f="1">scan</li><li data-f="2">match</li><li data-f="3">drive</li><li data-f="4">merge</li><li data-f="5">apply</li><li data-f="6">save</li>
+      </ol>
+      <div class="sg" role="table" aria-label="One pass over six items: last agreed, this folder, the drive, and the plan">
+        <div class="sg-row sg-head" role="row">
+          <div role="columnheader">Node ID</div><div role="columnheader">Last agreed<small>state.json</small></div><div role="columnheader">This folder</div><div role="columnheader">The drive</div><div role="columnheader">Plan</div>
+        </div>
+        <div class="sg-row" role="row">
+          <div class="c-id" role="cell">3mzh6g…</div>
+          <div class="c-base" role="cell"><span class="stack"><span data-only="1 2 3 4 5">plan.md <span class="h">A</span></span><span data-only="6">plan.md <span class="h h-r">C</span></span></span></div>
+          <div class="c-local" role="cell">plan.md <span class="h h-l">B</span><span class="nt" data-only="1">changed: hash it</span></div>
+          <div class="c-remote" role="cell"><span data-s="3">plan.md <span class="h h-r">C</span></span></div>
+          <div class="c-plan" role="cell"><span class="tag tag-clash" data-s="4">conflict</span><span class="nt" data-from="5">③ ↓ C here; yours → copy</span></div>
+        </div>
+        <div class="sg-row" role="row">
+          <div class="c-id" role="cell">3mzhza…<span class="nt" data-only="2">by inode</span></div>
+          <div class="c-base" role="cell"><span class="stack"><span data-only="1 2 3 4 5">cat.jpg <span class="h">P</span></span><span data-only="6">kitty.jpg <span class="h">P</span></span></span></div>
+          <div class="c-local" role="cell">kitty.jpg <span class="h h-l">P</span><span class="stack nt"><span data-only="1">new path?</span><span data-only="2">same inode as cat.jpg</span></span></div>
+          <div class="c-remote" role="cell"><span data-s="3">cat.jpg <span class="h h-r">P</span></span></div>
+          <div class="c-plan" role="cell"><span class="tag tag-up" data-s="4">↑ rename</span><span class="nt" data-from="5">② move on drive</span></div>
+        </div>
+        <div class="sg-row" role="row">
+          <div class="c-id" role="cell">3mziu2…</div>
+          <div class="c-base" role="cell"><span class="stack"><span data-only="1 2 3 4 5">todo.txt <span class="h">T</span></span><span data-only="6" class="gone">forgotten</span></span></div>
+          <div class="c-local" role="cell">todo.txt <span class="h h-l">T</span><span class="nt" data-only="1">unchanged: reuse hash</span></div>
+          <div class="c-remote" role="cell"><span class="gone" data-s="3">deleted</span></div>
+          <div class="c-plan" role="cell"><span class="tag tag-down" data-s="4">↓ delete</span><span class="nt" data-from="5">① delete here</span></div>
+        </div>
+        <div class="sg-row" role="row">
+          <div class="c-id" role="cell"><span class="stack"><span data-only="1">?</span><span data-only="2 3 4 5">+ideas.txt</span><span data-only="6">3mzm7e…</span></span></div>
+          <div class="c-base" role="cell"><span class="stack"><span data-only="1 2 3 4 5" class="gone" style="text-decoration:none">—</span><span data-only="6">ideas.txt <span class="h">I</span></span></span></div>
+          <div class="c-local" role="cell">ideas.txt <span class="h h-l">I</span><span class="nt" data-only="1">new</span></div>
+          <div class="c-remote" role="cell"><span data-s="3" style="color:var(--muted)">—</span></div>
+          <div class="c-plan" role="cell"><span class="tag tag-up" data-s="4">↑ upload</span><span class="nt" data-from="5">② upload</span></div>
+        </div>
+        <div class="sg-row" role="row">
+          <div class="c-id" role="cell"><span data-s="3">3mzlej…</span></div>
+          <div class="c-base" role="cell"><span class="stack"><span data-only="1 2 3 4 5" style="color:var(--muted)">—</span><span data-only="6">receipt.pdf <span class="h">R</span></span></span></div>
+          <div class="c-local" role="cell" style="color:var(--muted)">—</div>
+          <div class="c-remote" role="cell"><span data-s="3">receipt.pdf <span class="h h-r">R</span></span></div>
+          <div class="c-plan" role="cell"><span class="tag tag-down" data-s="4">↓ download</span><span class="nt" data-from="5">③ download</span></div>
+        </div>
+        <div class="sg-row" role="row" data-from="4">
+          <div class="c-id" role="cell"><span class="stack"><span data-only="4 5">+plan (c…</span><span data-only="6">3mzm8f…</span></span></div>
+          <div class="c-base" role="cell"><span class="stack"><span data-only="4 5" style="color:var(--muted)">—</span><span data-only="6">plan (conflicted copy…).md <span class="h">B</span></span></span></div>
+          <div class="c-local" role="cell" style="color:var(--muted)">your B</div>
+          <div class="c-remote" role="cell" style="color:var(--muted)">—</div>
+          <div class="c-plan" role="cell"><span class="tag tag-clash">↑ copy</span><span class="nt" data-from="5">② upload as new</span></div>
+        </div>
+      </div>
+      <p class="bench-cap"><span class="n" data-cap-n>1 / 6</span><span data-cap>Scan</span></p>
+    </div>
+  </div>
+
+  <div class="callouts">
+    <div class="callout"><h3>The loop around it</h3><ul>
+      <li>inotify wakes a pass about a second after the folder changes; the drive is checked every 30 seconds (<code>--interval</code>).</li>
+      <li>After an error it waits 15 seconds, doubling up to 5 minutes.</li>
+      <li>When the session ends it waits for <code>atdrive login</code>, then carries on.</li>
+      <li><code>--install</code> writes a systemd user service. Exit status 78 marks problems a restart won't fix, so systemd doesn't retry them.</li>
+    </ul></div>
+    <div class="callout"><h3>Guards</h3><ul>
+      <li>If the folder or <code>.atdrive</code> disappears (an unmounted disk, say), syncing stops instead of deleting the drive.</li>
+      <li>A folder synced with one account refuses another.</li>
+      <li>A lock file lets only one sync run per folder.</li>
+      <li>Nothing local is overwritten or deleted if it changed after the scan. It waits for the next pass.</li>
+    </ul></div>
+    <div class="callout"><h3>First sync, and what's skipped</h3><ul>
+      <li>A first sync is a merge from an empty state: matching files and folders pair up, and nothing is deleted.</li>
+      <li>Not synced: symlinks and special files, <code>.DS_Store</code>, <code>Thumbs.db</code>, and editor swap and lock files (Vim, Emacs, LibreOffice, Office).</li>
+    </ul></div>
+  </div>
+</section>
+
+<!-- ================= 9. CONFLICTS ================= -->
+<section class="chapter" id="conflicts" data-title="Who wins when both sides changed">
+  <div class="ch-head">
+    <p class="files">ConflictRules.swift · ConflictName.swift</p>
+    <h2>Who wins when both sides changed</h2>
+    <p class="lede">The rules live in one 71-line file. Both the Linux folder sync and the Mac extension call it, so a change ends up the same whichever device made it. Pick what happened to <code>/docs/notes.txt</code> on each side since the last sync.</p>
+  </div>
+
+  <div class="mx">
+    <div>
+      <div class="mx-grid-wrap">
+        <table class="mx-grid" id="mxgrid" aria-label="Outcome for each combination of changes"></table>
+      </div>
+      <label class="toggle" for="sameedit"><input type="checkbox" id="sameedit"><span class="tog" aria-hidden="true"></span>Both edits produced identical bytes</label>
+    </div>
+    <div class="mx-detail" id="mxdetail" aria-live="polite"></div>
+  </div>
+
+  <div class="two">
+    <div>
+      <h3>The three functions behind the matrix</h3>
+      <pre class="code"><span class="c">// base = last agreed, local = this device, remote = the drive</span>
+static func contents(base: String?, local: String?, remote: String?) -&gt; Contents {
+    if local == remote || local == base { return .remote }
+    return remote == base ? .local : .conflict
+}
+
+static func location&lt;L: Equatable&gt;(base: L, local: L, remote: L) -&gt; L {
+    local == base || remote != base ? remote : local
+}
+
+static func deleteStands(base: String?, other: String?) -&gt; Bool { base == other }</pre>
+      <p class="prose" style="margin-top:14px">Contents are compared by SHA-256, so an identical edit on both sides counts as no conflict. When both sides moved a file, the drive's move wins because it's the one other devices already see.</p>
+    </div>
+    <div>
+      <h3>Two rules that span several items</h3>
+      <p class="prose" style="margin-bottom:6px"><strong>A deleted folder keeps what changed inside it.</strong> You delete <code>/trip</code> here while, on another device, a photo was added to it:</p>
+      <div class="trees" aria-label="Deleted folder example">
+        <div class="tree lane-local"><h4>Here</h4><span class="x">trip/</span><span class="in x">a.jpg</span><span class="in x">b.jpg</span></div>
+        <div class="tree lane-remote"><h4>The drive</h4>trip/<span class="in">a.jpg</span><span class="in">b.jpg</span><span class="in new">new.jpg</span></div>
+        <div class="tree lane-base"><h4>Result</h4>trip/<span class="in new">new.jpg</span></div>
+      </div>
+      <p class="prose" style="margin-top:14px"><strong>Two different things, one name:</strong> the one that arrives second is renamed <code>name (conflicted copy 2026-11-09 1432)</code>. Two identical things (two folders, or two files with the same contents) become one.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 10. MAC ================= -->
+<section class="chapter" id="mac" data-title="On the Mac, Finder does the syncing">
+  <div class="ch-head">
+    <p class="files">Sources/Mac · scripts/build-app.sh</p>
+    <h2>On the Mac, Finder does the syncing</h2>
+    <p class="lede">On macOS, ATDrive doesn't keep a folder in sync itself. It plugs into Apple's File Provider framework, the one iCloud Drive and Dropbox use: macOS keeps the local copies and calls the extension whenever data needs to move.</p>
+  </div>
+
+  <div class="scrolly">
+    <div class="steps">
+      <div class="step" data-label="The app"><div class="step-in">
+        <span class="step-label">Sign in, add the drive</span>
+        <p>The menu-bar app runs the same OAuth sign-in and saves the session in an App Group container that it shares with the extension. Then it registers a File Provider <em>domain</em>, and ATDrive appears in Finder's sidebar under Locations.</p>
+        <p>The app is small on purpose. Every transfer happens in the extension.</p>
+      </div></div>
+      <div class="step" data-label="The nudge"><div class="step-in">
+        <span class="step-label">A nudge every 30 seconds</span>
+        <p>The app calls <code>signalEnumerator(for: .workingSet)</code>. macOS then asks the extension what changed since the last <em>sync anchor</em> it handed out.</p>
+      </div></div>
+      <div class="step" data-label="The anchor"><div class="step-in">
+        <span class="step-label">The anchor is the revision</span>
+        <p><code>DriveIndex</code>, an actor, checks <code>getLatestCommit</code>. If the revision moved, it lists the drive and keeps the tree, remembering the last 16 by revision.</p>
+        <p>To answer "what changed since revision X", the enumerator diffs the tree at X against the tree now and reports updates and deletions. If X is too old to remember (the extension restarted), it reports the anchor as expired and macOS lists everything again.</p>
+      </div></div>
+      <div class="step" data-label="Opening a file"><div class="step-in">
+        <span class="step-label">Files download when you open them</span>
+        <p>Finder shows placeholders. Opening one makes macOS call <code>fetchContents</code>, which runs the same verified <code>Drive.download</code> into a temporary file and hands it over. Remove Download frees the space again.</p>
+      </div></div>
+      <div class="step" data-label="Changes from Finder"><div class="step-in">
+        <span class="step-label">Changes from Finder, same rules</span>
+        <p>Saving, dragging in, renaming or deleting arrives as <code>createItem</code>, <code>modifyItem</code> or <code>deleteItem</code>, along with the item version macOS based the change on.</p>
+        <p>ATDrive puts the SHA-256 in that version's content half and the folder and name in its metadata half. So it can hand <code>ConflictRules</code> the same base, local and remote it uses on Linux.</p>
+      </div></div>
+      <div class="step" data-label="Packaging"><div class="step-in">
+        <span class="step-label">A build quirk worth knowing</span>
+        <p>An app extension's executable must not have a <code>main</code>: the extension runtime calls it if it exists, and a <code>main</code> that starts the extension recurses until it crashes. SwiftPM always gives executables one.</p>
+        <p>So the extension is built as a dynamic library, and <code>build-app.sh</code> links a code-free executable around it with <code>-e _NSExtensionMain</code>, as Xcode does. The script also fills in the Info.plists and entitlements and signs everything. Adding the drive to Finder needs an Apple Development certificate.</p>
+      </div></div>
+    </div>
+
+    <div class="bench" data-total="6">
+      <svg class="fig" viewBox="0 0 480 390" role="img" aria-label="The menu-bar app, the App Group container, Finder, macOS, the ATDrive extension with its DriveIndex, and your PDS, with the messages between them.">
+        <g data-f="1 2"><rect class="box" x="8" y="8" width="150" height="76" rx="8"/><text class="t-k" x="20" y="26">MENU BAR</text><text class="t-h" x="20" y="46">ATDrive app</text><text class="t-s" x="20" y="62">OAuth sign-in</text><text class="t-s" x="20" y="76">nudge every 30 s</text></g>
+        <g data-f="1"><rect class="box" x="180" y="8" width="136" height="76" rx="8"/><text class="t-k" x="192" y="26">APP GROUP</text><text class="t-h" x="192" y="46">Container</text><text class="t-s" x="192" y="62">session.json</text><text class="t-s" x="192" y="76">app + extension</text></g>
+        <line class="arr" data-f="1" x1="158" y1="46" x2="178" y2="46"/>
+        <line class="arr" data-f="1" x1="292" y1="84" x2="318" y2="106"/>
+        <g data-f="1 4 5"><rect class="box" x="8" y="150" width="92" height="84" rx="8"/><text class="t-k" x="20" y="168">YOU</text><text class="t-h" x="20" y="188">Finder</text><text class="t-s" x="20" y="206">open · save</text><text class="t-s" x="20" y="220">drag · rename</text></g>
+        <g data-f="2 4 5"><rect class="box" x="130" y="150" width="104" height="84" rx="8"/><text class="t-k" x="142" y="168">MACOS</text><text class="t-h" x="142" y="188">System</text><text class="t-s" x="142" y="206">keeps local</text><text class="t-s" x="142" y="220">copies</text></g>
+        <g data-f="2"><line class="arr" x1="141" y1="84" x2="141" y2="148"/><text class="t-s" x="134" y="112" text-anchor="end">signalEnumerator</text><text class="t-s" x="134" y="126" text-anchor="end">every 30 s</text></g>
+        <line class="arr arr2" data-f="4 5" x1="102" y1="192" x2="128" y2="192"/>
+        <g data-f="2 4 5"><line class="arr" x1="234" y1="178" x2="250" y2="178"/><line class="arr" x1="252" y1="210" x2="236" y2="210"/></g>
+        <g data-f="2 3 4 5 6">
+          <rect class="box-r" x="252" y="108" width="220" height="168" rx="10"/>
+          <text class="t-k" x="264" y="126">EXTENSION</text>
+          <text class="t-h" x="264" y="146">ATDrive extension</text>
+          <rect class="card" x="264" y="156" width="196" height="108" rx="7"/>
+          <text class="t-b" x="276" y="174">DriveIndex</text>
+          <text class="t-s" x="276" y="189">trees by revision, last 16</text>
+          <rect class="revchip" x="276" y="198" width="88" height="17" rx="4"/><text x="284" y="210.5" style="font-size:10px">3mzk…xa</text><text class="t-s" x="372" y="210.5">← anchor</text>
+          <rect class="revchip" x="276" y="219" width="88" height="17" rx="4"/><text x="284" y="231.5" style="font-size:10px">3mzl…c7</text>
+          <rect class="revchip nowc" x="276" y="240" width="88" height="17" rx="4"/><text x="284" y="252.5" style="font-size:10px">3mzm…q2</text><text class="t-s t-r" x="372" y="252.5">← now</text>
+        </g>
+        <g data-f="3 4 5"><line class="arr arr2" x1="362" y1="280" x2="362" y2="304"/><text class="t-s" x="370" y="296">XRPC</text></g>
+        <g data-f="3 4 5"><rect class="box-r" x="252" y="306" width="220" height="76" rx="8"/><text class="t-k" x="264" y="324">YOUR ACCOUNT</text><text class="t-h" x="264" y="344">Your PDS</text><text class="t-s" x="264" y="360">getLatestCommit · listRecords</text><text class="t-s" x="264" y="374">getBlob · uploadBlob · putRecord</text></g>
+
+        <!-- per-step info card, bottom left -->
+        <g data-only="1"><rect class="box-soft-l" x="8" y="262" width="226" height="74" rx="8"/><text class="t-k" x="20" y="280">FINDER SIDEBAR · LOCATIONS</text><path class="ic-folder" d="M20,298 h5 l2,2 h7 v10 h-14 z"/><text class="t-b" x="42" y="308">ATDrive</text><text class="t-s" x="20" y="326">added by NSFileProviderManager</text></g>
+        <g data-only="2"><rect class="box-soft-l" x="8" y="262" width="226" height="74" rx="8"/><text class="t-k" x="20" y="280">EVERY 30 SECONDS</text><text class="t-s" x="20" y="298">app: signalEnumerator</text><text class="t-s" x="20" y="312">macOS: enumerateChanges(from:)</text><text class="t-s" x="20" y="326">extension: what changed?</text></g>
+        <g data-only="3"><rect class="box-soft-l" x="8" y="262" width="226" height="74" rx="8"/><text class="t-k" x="20" y="280">ENUMERATE CHANGES</text><text class="t-s" x="20" y="298">tree at anchor vs tree now</text><text class="t-s" x="20" y="312">→ didUpdate · didDeleteItems</text><text class="t-s" x="20" y="326">forgotten → syncAnchorExpired</text></g>
+        <g data-only="4"><rect class="box-soft-l" x="8" y="262" width="226" height="74" rx="8"/><text class="t-k" x="20" y="280">OPENING A FILE</text><text class="t-s" x="20" y="298">fetchContents(for: id)</text><text class="t-s" x="20" y="312">Drive.download → temp file</text><text class="t-s" x="20" y="326">macOS moves it into place</text></g>
+        <g data-only="5"><rect class="box-soft-l" x="8" y="262" width="226" height="74" rx="8"/><text class="t-k" x="20" y="280">ITEM VERSION</text><text class="t-s" x="20" y="298">content  = SHA-256 27f650…</text><text class="t-s" x="20" y="312">metadata = folder + name</text><text class="t-s" x="20" y="326">→ ConflictRules(base, here, drive)</text></g>
+        <g data-only="6"><rect class="box-soft-l" x="8" y="262" width="226" height="120" rx="8"/><text class="t-k" x="20" y="280">INSIDE ATDriveFileProvider.appex</text><text x="20" y="298" style="font-size:10px">MacOS/ATDriveFileProvider</text><text class="t-s" x="20" y="312">  no code: -e _NSExtensionMain</text><text x="20" y="332" style="font-size:10px">Frameworks/</text><text x="20" y="346" style="font-size:10px">  libATDriveFileProvider.dylib</text><text class="t-s" x="20" y="360">  the extension's real code</text></g>
+      </svg>
+      <p class="bench-cap"><span class="n" data-cap-n>1 / 6</span><span data-cap>The app</span></p>
+    </div>
+  </div>
+
+  <h3 style="margin-top:8px">Same rules, different base</h3>
+  <div class="tbl-wrap">
+    <table class="cmp">
+      <thead><tr><th></th><th><code>atdrive sync</code> (Linux)</th><th>Mac app (File Provider)</th></tr></thead>
+      <tbody>
+        <tr><td>Last agreed version</td><td><code>.atdrive/state.json</code> in the folder</td><td>The item version macOS passes with each change</td></tr>
+        <tr><td>Contents</td><td>SHA-256 saved in the state</td><td>Content version = SHA-256</td></tr>
+        <tr><td>Folder and name</td><td>Parent ID and name in the state</td><td>Metadata version = folder + name</td></tr>
+        <tr><td>Folder deleted, changed elsewhere</td><td>Folders stay if something kept is inside</td><td><code>keptWhenDeleting</code>, against what this Mac has seen; kept items are reported again so macOS puts them back</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ================= 11. TESTS ================= -->
+<section class="chapter" id="tests" data-title="Tests, and what it can't do yet">
+  <div class="ch-head">
+    <p class="files">Tests/ATDriveCoreTests · .github/workflows/ci.yml</p>
+    <h2>Tests, and what it can't do yet</h2>
+  </div>
+  <div class="two" style="margin-top:8px">
+    <div class="prose">
+      <h3>How it's tested</h3>
+      <p>70 tests, written with Swift Testing. Most run against <code>FakePDS</code>, an in-memory <code>HTTPTransport</code> that implements the few endpoints the drive uses. It can corrupt downloads, fail chosen calls with a 500, and page results two records at a time.</p>
+      <p><code>FolderSyncTests</code> (30 tests) syncs real temporary folders: first-sync merges, edits, moves and deletes in both directions, conflicts, interrupted passes and the inotify watcher. <code>ConflictRulesAgreeWithSyncTests</code> checks that the folder sync keeps exactly what <code>keptWhenDeleting</code> keeps.</p>
+      <p>Two suites run only when you ask: <code>OAuthLiveTests</code> starts a real sign-in up to the approval page (<code>ATDRIVE_LIVE_HANDLE</code>), and <code>LiveTests</code> does a full upload and download with an app password. CI runs everything on Linux and macOS, and assembles the Mac app unsigned.</p>
+      <pre class="code">scripts/test.sh                 # unit tests, no network
+scripts/test.sh --filter SyncPlan
+scripts/build.sh                # build/atdrive
+scripts/run-app.sh              # macOS: build, install, launch</pre>
+    </div>
+    <div>
+      <h3>Known limits</h3>
+      <ul class="annot">
+        <li><strong>No compare-and-swap.</strong> The spaces alpha can't make a write conditional, so <code>put</code>, <code>mv</code> and <code>rm</code> are last-write-wins, and an edit made elsewhere in the second before a sync uploads can still be overwritten.</li>
+        <li><strong>Polling.</strong> Changes from elsewhere take up to 30 seconds.</li>
+        <li><strong>Whole files.</strong> <code>atdrive sync</code> re-uploads a whole file even when a little of it changed, and transfers run one at a time.</li>
+        <li><strong>Not encrypted.</strong> Spaces limit who can read; your PDS operator still can.</li>
+        <li><strong>Two-week sessions</strong> for apps without a backend, then sign in again.</li>
+        <li><strong>Broad scope</strong> (<code>space:*</code>) until the lexicons are published.</li>
+        <li><strong>No trash, no symlinks,</strong> and one drive per account.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+</div>
+</main>
+
+<footer class="foot">
+  <p>Written from <code>main</code> at commit 73ac23b, November 2026. File paths are relative to the repository root; line counts include comments.</p>
+</footer>
+
+<script>
+(() => {
+  /* ---------- Scroll-driven steps ---------- */
+  const narrow = matchMedia('(max-width: 860px)');
+  const scrollies = [...document.querySelectorAll('.scrolly')].map(sec => {
+    const bench = sec.querySelector('.bench');
+    return {
+      bench,
+      steps: [...sec.querySelectorAll('.step')],
+      capN: bench.querySelector('[data-cap-n]'),
+      cap: bench.querySelector('[data-cap]'),
+      s: [...bench.querySelectorAll('[data-s]')],
+      from: [...bench.querySelectorAll('[data-from]')],
+      only: [...bench.querySelectorAll('[data-only]')],
+      f: [...bench.querySelectorAll('[data-f]')],
+      n: 0,
+    };
+  });
+  const has = (list, n) => list.split(' ').includes(String(n));
+  function setStep(sc, n) {
+    if (sc.n === n) return;
+    sc.n = n;
+    sc.bench.dataset.step = n;
+    sc.steps.forEach((el, i) => el.classList.toggle('is-active', i + 1 === n));
+    sc.s.forEach(el => { const s = +el.dataset.s; el.classList.toggle('future', s > n); el.classList.toggle('now', s === n); });
+    sc.from.forEach(el => el.classList.toggle('off', +el.dataset.from > n));
+    sc.only.forEach(el => el.classList.toggle('off', !has(el.dataset.only, n)));
+    sc.f.forEach(el => { const on = has(el.dataset.f, n); el.classList.toggle('hl', on); el.classList.toggle('dim', !on); });
+    if (sc.capN) sc.capN.textContent = n + ' / ' + sc.steps.length;
+    if (sc.cap) sc.cap.textContent = sc.steps[n - 1].dataset.label || '';
+  }
+  scrollies.forEach(sc => setStep(sc, 1));
+
+  const chapters = [...document.querySelectorAll('.chapter')];
+  const navch = document.getElementById('navch');
+  const navbar = document.getElementById('navbar');
+  let current = null, ticking = false;
+
+  function update() {
+    ticking = false;
+    const h = innerHeight;
+    const line = h * (narrow.matches ? 0.76 : 0.52);
+    for (const sc of scrollies) {
+      const r = sc.bench.parentElement.getBoundingClientRect();
+      if (r.bottom < -h || r.top > 2 * h) continue;
+      let n = 1;
+      sc.steps.forEach((el, i) => { if (el.getBoundingClientRect().top < line) n = i + 1; });
+      setStep(sc, n);
+    }
+    let ch = null;
+    chapters.forEach((c, i) => { if (c.getBoundingClientRect().top < h * 0.35) ch = i; });
+    if (ch !== current) {
+      current = ch;
+      if (ch === null) { navch.innerHTML = 'Contents'; navch.href = '#contents'; }
+      else { navch.innerHTML = '<b>' + String(ch + 1).padStart(2, '0') + '</b> ' + chapters[ch].dataset.title; navch.href = '#' + chapters[ch].id; }
+    }
+    const max = document.documentElement.scrollHeight - h;
+    navbar.style.setProperty('--p', max > 0 ? Math.min(1, scrollY / max).toFixed(4) : 0);
+  }
+  addEventListener('scroll', () => { if (!ticking) { ticking = true; requestAnimationFrame(update); } }, { passive: true });
+  addEventListener('resize', update);
+  update();
+
+  /* ---------- Code map ---------- */
+  const L = [
+    { name: 'Front ends', note: 'Thin: they translate Finder, a folder or flags into core calls.', groups: [
+      { name: 'Sources/atdrive · the CLI', files: [
+        ['ATDrive.swift', 97, 'Sources/atdrive/', 'The entry point. Lists the subcommands, and loads the saved session and drive once per command (Context).'],
+        ['AccountCommands.swift', 160, 'Sources/atdrive/', 'login, logout, whoami. login opens the browser for OAuth, accepts the pasted redirect address over SSH, or takes an app password with --app-password.'],
+        ['FileCommands.swift', 418, 'Sources/atdrive/', 'ls, tree, put, get, cat, mkdir, mv, rm. Paths are resolved against a DriveTree; put and get skip files whose SHA-256 already matches.'],
+        ['SyncCommand.swift', 277, 'Sources/atdrive/', 'atdrive sync: the watch-and-poll loop around FolderSync, waiting out expired sessions, backing off after errors, and --install, which writes a systemd user service.'],
+      ]},
+      { name: 'Sources/Mac · app and extension (macOS only)', files: [
+        ['FileProviderExtension.swift', 366, 'Sources/Mac/FileProvider/', 'The NSFileProviderReplicatedExtension. Answers the system’s requests (item, fetchContents, createItem, modifyItem, deleteItem) using Drive and ConflictRules.'],
+        ['AppModel.swift', 132, 'Sources/Mac/App/', 'Signs in with OAuth, saves the session to the App Group, adds the File Provider domain, and calls signalEnumerator every 30 seconds.'],
+        ['Enumerator.swift', 112, 'Sources/Mac/FileProvider/', 'Lists a folder (or everything, for the working set) and reports changes since a sync anchor by diffing two cached trees.'],
+        ['Item.swift', 99, 'Sources/Mac/FileProvider/', 'A node as macOS sees it. Its version holds the SHA-256 (content) and the folder and name (metadata), so a change can be compared with what it was based on.'],
+        ['DriveIndex.swift', 95, 'Sources/Mac/FileProvider/', 'An actor caching drive trees by revision (the last 16) and what this Mac has seen, for the deleted-folder rule.'],
+        ['ATDriveApp.swift', 86, 'Sources/Mac/App/', 'The SwiftUI MenuBarExtra: the sign-in form and the menu.'],
+        ['AppGroup.swift', 46, 'Sources/Mac/Support/', 'Shared by the app and the extension: the App Group container, where session.json lives, and the Finder domain.'],
+        ['FileProviderErrors.swift', 39, 'Sources/Mac/FileProvider/', 'Maps ATDrive errors to the File Provider errors Finder understands.'],
+      ]},
+    ]},
+    { name: 'Sync engine', note: 'atdrive sync, the Linux synced folder.', groups: [
+      { name: 'Sources/ATDriveCore/Sync', files: [
+        ['FolderSync.swift', 601, 'Sources/ATDriveCore/Sync/', 'One pass (FolderSync.sync) and the code that applies a plan (SyncRun): rearrange the folder, update the drive, then download. Saves only what finished.'],
+        ['SyncPlan.swift', 375, 'Sources/ATDriveCore/Sync/', 'The pure three-way merge. Builds the folder’s view (IDs by path, then inode, then hash), the drive’s view, and the plan for what both should look like.'],
+        ['LocalFiles.swift', 170, 'Sources/ATDriveCore/Sync/', 'POSIX helpers that never follow symlinks or overwrite, the folder scan (lstat only), and the ignore list.'],
+        ['FolderWatcher.swift', 136, 'Sources/ATDriveCore/Sync/', 'inotify on Linux, one watch per folder: wakes the loop after a burst of changes settles. Elsewhere, the loop polls.'],
+        ['SyncState.swift', 131, 'Sources/ATDriveCore/Sync/', '.atdrive/state.json (the last agreed state), the lock file, the events printed to the log, and sync errors.'],
+      ]},
+    ]},
+    { name: 'Conflict rules', note: 'Shared by the sync engine and the Mac extension.', groups: [
+      { name: 'Sources/ATDriveCore', files: [
+        ['ConflictRules.swift', 71, 'Sources/ATDriveCore/', 'The one place that decides what happens when something changed in two places: contents, location, deletes and deleted folders.'],
+        ['ConflictName.swift', 30, 'Sources/ATDriveCore/', 'Names the second copy: report (conflicted copy 2026-11-09 1432).pdf, numbered if taken, kept under 255 bytes.'],
+      ]},
+    ]},
+    { name: 'Drive model', note: 'Files and folders as records, the tree, transfers.', groups: [
+      { name: 'Sources/ATDriveCore', files: [
+        ['Drive.swift', 233, 'Sources/ATDriveCore/', 'Operations by node ID: list the tree, read and download (verified), upload in 4 MiB chunks, move, restore and delete.'],
+        ['DriveTree.swift', 188, 'Sources/ATDriveCore/', 'The whole drive in memory, indexed for path lookups. Lifts orphans and move cycles to the top so nothing hides, and diffs two trees.'],
+        ['Records.swift', 124, 'Sources/ATDriveCore/', 'NodeRecord and BlobRef: the Swift shape of a me.jsnelgro.atdrive.node record. Keep it in step with lexicons/.'],
+        ['Encoding.swift', 50, 'Sources/ATDriveCore/', 'Computes blob CIDs locally (CIDv1, raw, SHA-256, base32), so neither the upload nor the download has to be trusted.'],
+        ['TID.swift', 46, 'Sources/ATDriveCore/', 'Timestamp IDs: sortable 13-character record keys, strictly increasing within a process.'],
+        ['Lexicon.swift', 12, 'Sources/ATDriveCore/', 'The NSIDs: the drive space type, the node collection, the default key and the personal-space policy.'],
+      ]},
+    ]},
+    { name: 'atproto client', note: 'Who you are, signing in, and every request.', groups: [
+      { name: 'Requests', files: [
+        ['XRPC.swift', 197, 'Sources/ATDriveCore/', 'The HTTP API client: queries and procedures, auth headers, retries on network errors, 5xx and 429, DPoP-nonce retries and token refresh.'],
+        ['Spaces.swift', 150, 'Sources/ATDriveCore/', 'Every com.atproto.space.* call. The alpha API changes weekly, so it’s all kept in this one file.'],
+        ['Identity.swift', 122, 'Sources/ATDriveCore/', 'Handle → DID → DID document → PDS URL, for did:plc and did:web. Nothing about your account is hardcoded.'],
+      ]},
+      { name: 'Sign-in and sessions', files: [
+        ['OAuth.swift', 370, 'Sources/ATDriveCore/', 'atproto OAuth: discovery, the pushed request with PKCE and DPoP, the browser round trip (or a pasted address), and the token exchange.'],
+        ['Session.swift', 214, 'Sources/ATDriveCore/', 'Session (who, where, tokens) and the SessionManager actor: signs requests, tracks DPoP nonces, refreshes once for everyone. Also app-password login.'],
+        ['LoopbackServer.swift', 138, 'Sources/ATDriveCore/', 'A one-shot web server on 127.0.0.1 that catches the browser’s redirect after you approve.'],
+        ['DPoP.swift', 73, 'Sources/ATDriveCore/', 'The P-256 key the tokens are bound to, and the signed proof JWT sent with every request.'],
+        ['SessionStore.swift', 59, 'Sources/ATDriveCore/', 'Saves the session to ~/.config/atdrive/session.json, mode 600, written atomically.'],
+      ]},
+    ]},
+    { name: 'Transport', note: 'The only code that touches the network.', groups: [
+      { name: 'Sources/ATDriveCore', files: [
+        ['HTTP.swift', 35, 'Sources/ATDriveCore/', 'HTTPTransport, a one-method protocol, and its URLSession implementation. The only code that touches the network; tests swap in FakePDS.', true],
+        ['Errors.swift', 35, 'Sources/ATDriveCore/', 'ATDriveError and the messages people see, such as "your session has ended".'],
+      ]},
+    ]},
+    { name: 'Tests', note: 'Swift Testing, mostly against an in-memory PDS.', groups: [
+      { name: 'Tests/ATDriveCoreTests', files: [
+        ['FolderSyncTests.swift', 611, 'Tests/ATDriveCoreTests/', '30 tests of the folder sync against real temporary folders and FakePDS: merges, moves, deletes, conflicts, interrupted passes, the watcher.'],
+        ['OAuthTests.swift', 217, 'Tests/ATDriveCoreTests/', 'The OAuth flow against a fake authorization server, plus OAuthLiveTests, which runs a real sign-in up to the approval page when ATDRIVE_LIVE_HANDLE is set.'],
+        ['FakePDS.swift', 159, 'Tests/ATDriveCoreTests/', 'An in-memory PDS (space, records, blobs) that can corrupt downloads, fail chosen calls and page results.'],
+        ['DriveTests.swift', 116, 'Tests/ATDriveCoreTests/', 'Chunking, verification, paging and auto-creating the space, against FakePDS.'],
+        ['LiveTests.swift', 101, 'Tests/ATDriveCoreTests/', 'A full upload and download round trip on a real PDS with an app password. Runs only when asked, and cleans up after itself.'],
+        ['DriveTreeTests.swift', 97, 'Tests/ATDriveCoreTests/', 'Path lookup, orphans, move cycles and tree diffs.'],
+        ['ConflictRulesTests.swift', 96, 'Tests/ATDriveCoreTests/', 'The rules themselves, and a check that the folder sync agrees with keptWhenDeleting.'],
+        ['XRPCTests.swift', 86, 'Tests/ATDriveCoreTests/', 'Retries, refresh and error handling in the HTTP client.'],
+        ['EncodingTests.swift', 69, 'Tests/ATDriveCoreTests/', 'Base32, CIDs and TIDs.'],
+      ]},
+    ]},
+  ];
+  const MAX = 611;
+  const map = document.getElementById('codemap');
+  const detail = document.getElementById('codedetail');
+  const all = [];
+  const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  L.forEach(layer => {
+    const row = document.createElement('div');
+    row.className = 'layer';
+    let html = '<div class="layer-name">' + esc(layer.name) + '<small>' + esc(layer.note) + '</small></div><div class="groups">';
+    layer.groups.forEach(g => {
+      html += '<div><div class="group-name">' + esc(g.name) + '</div><div class="chips">';
+      g.files.forEach(f => {
+        const i = all.push({ name: f[0], lines: f[1], dir: f[2], role: f[3], layer: layer.name }) - 1;
+        html += '<button type="button" class="chip' + (f[4] ? ' net' : '') + '" data-i="' + i + '" aria-pressed="false"><span class="nm">' + esc(f[0].replace('.swift', '')) + '</span><span class="ln">' + f[1] + '</span><span class="bar" style="--w:' + (f[1] / MAX).toFixed(3) + '"></span></button>';
+      });
+      html += '</div></div>';
+    });
+    row.innerHTML = html + '</div>';
+    map.appendChild(row);
+  });
+  const sum = all.reduce((a, f) => a + (f.layer === 'Tests' ? 0 : f.lines), 0);
+  const tsum = all.reduce((a, f) => a + (f.layer === 'Tests' ? f.lines : 0), 0);
+  const tot = document.createElement('p');
+  tot.className = 'totals';
+  tot.textContent = all.length + ' files · ' + sum.toLocaleString('en-US') + ' lines of source · ' + tsum.toLocaleString('en-US') + ' lines of tests';
+  map.appendChild(tot);
+  function pick(i) {
+    const f = all[i];
+    map.querySelectorAll('.chip').forEach(c => c.setAttribute('aria-pressed', String(+c.dataset.i === i)));
+    detail.innerHTML = '<p class="d-path">' + esc(f.dir) + '</p><h3>' + esc(f.name) + '</h3><p class="d-meta">' + f.lines + ' lines · ' + esc(f.layer) + '</p><p class="d-role">' + esc(f.role) + '</p><p class="d-hint">Pick another file on the map.</p>';
+  }
+  map.addEventListener('click', e => { const c = e.target.closest('.chip'); if (c) pick(+c.dataset.i); });
+  pick(all.findIndex(f => f.name === 'Spaces.swift'));
+
+  /* ---------- Conflict matrix: a port of ConflictRules ---------- */
+  const ACTS = ['none', 'edit', 'move', 'delete'];
+  const LOCAL_L = { none: 'Nothing', edit: 'Edited', move: 'Moved', delete: 'Deleted' };
+  const contents = (b, l, r) => (l === r || l === b) ? 'remote' : (r === b ? 'local' : 'conflict');
+  const location = (b, l, r) => (l === b || r !== b) ? r : l;
+  const deleteStands = (b, o) => b === o;
+  const COPY = 'notes (conflicted copy 2026-11-09 1432).txt';
+  let same = false, sel = ['edit', 'edit'];
+  function sideState(a, who) {
+    if (a === 'delete') return null;
+    const s = { dir: '/docs', sha: 'A' };
+    if (a === 'edit') s.sha = who === 'local' ? 'B' : (same ? 'B' : 'C');
+    if (a === 'move') s.dir = who === 'local' ? '/archive' : '/old';
+    return s;
+  }
+  const P = s => s.dir + '/notes.txt';
+  function solve(la, ra) {
+    const b = { dir: '/docs', sha: 'A' }, l = sideState(la, 'local'), r = sideState(ra, 'remote');
+    const out = { b, l, r, here: [], there: [], result: [], rules: [], why: '' };
+    if (!l && !r) { out.kind = 'gone'; out.label = 'Gone'; out.why = 'Deleted on both sides. There is nothing left to settle.'; return out; }
+    if (!l) {
+      const st = deleteStands(b.sha, r.sha);
+      out.rules.push('deleteStands(base: ' + b.sha + ', other: ' + r.sha + ') → ' + st);
+      if (st) { out.kind = 'del'; out.label = 'Deleted'; out.there.push('Delete ' + P(r)); out.why = ra === 'move' ? 'Moving or renaming isn’t an edit, so your delete goes ahead.' : 'Nobody changed its contents, so your delete goes ahead.'; }
+      else { out.kind = 'kept'; out.label = 'Kept'; out.result.push({ p: P(r), sha: r.sha, from: 'the drive’s edit' }); out.here.push('Download ' + P(r) + ' again'); out.why = 'It was edited on the drive after you deleted it here, so the edit is kept.'; }
+      return out;
+    }
+    if (!r) {
+      const st = deleteStands(b.sha, l.sha);
+      out.rules.push('deleteStands(base: ' + b.sha + ', other: ' + l.sha + ') → ' + st);
+      if (st) { out.kind = 'del'; out.label = 'Deleted'; out.here.push('Delete ' + P(l)); out.why = la === 'move' ? 'Moving or renaming isn’t an edit, so the drive’s delete goes ahead.' : 'You didn’t change its contents, so the drive’s delete goes ahead.'; }
+      else { out.kind = 'kept'; out.label = 'Kept'; out.result.push({ p: P(l), sha: l.sha, from: 'your edit' }); out.there.push('Upload ' + P(l) + ' as a new record'); out.why = 'You edited it after it was deleted on the drive, so your edit is kept, under a new record key.'; }
+      return out;
+    }
+    const dir = location(b.dir, l.dir, r.dir);
+    const c = contents(b.sha, l.sha, r.sha);
+    out.rules.push('location(base: ' + b.dir + ', local: ' + l.dir + ', remote: ' + r.dir + ') → ' + dir);
+    out.rules.push('contents(base: ' + b.sha + ', local: ' + l.sha + ', remote: ' + r.sha + ') → .' + c);
+    const at = dir + '/notes.txt';
+    if (l.dir !== dir) out.here.push('Move it to ' + at);
+    if (r.dir !== dir) out.there.push('Move it to ' + at);
+    if (c === 'remote') { out.result.push({ p: at, sha: r.sha }); if (l.sha !== r.sha) out.here.push('Download version ' + r.sha); }
+    else if (c === 'local') { out.result.push({ p: at, sha: l.sha }); out.there.push('Upload version ' + l.sha); }
+    else {
+      out.result.push({ p: at, sha: r.sha, from: 'the drive’s' }, { p: dir + '/' + COPY, sha: l.sha, from: 'yours' });
+      out.here.push('Rename yours to “' + COPY + '”', 'Download version ' + r.sha + ' as notes.txt');
+      out.there.push('Upload your version ' + l.sha + ' as the copy');
+    }
+    if (c === 'conflict') { out.kind = 'clash'; out.label = 'Conflicted copy'; out.why = 'Both sides changed the contents, differently. The drive’s version keeps the name, and yours is saved beside it. No edit is lost.'; }
+    else if (!out.here.length && !out.there.length) { out.kind = 'none'; out.label = la === 'edit' && ra === 'edit' ? 'Same edit' : 'No change'; out.why = la === 'edit' ? 'Both sides ended with the same bytes, so there is nothing to do.' : 'Nothing changed on either side.'; }
+    else if (la === 'move' && ra === 'move') { out.kind = 'down'; out.label = '↓ Drive’s move wins'; out.why = 'Moved on both sides: the drive’s move wins, because other devices already see it.'; }
+    else if (out.here.length && out.there.length) { out.kind = 'both'; out.label = 'Both apply'; out.why = 'The two changes touch different things (contents and location), so both are kept.'; }
+    else if (out.there.length) { out.kind = 'up'; out.label = '↑ Your ' + (la === 'edit' ? 'edit' : 'move'); out.why = 'Only this side changed it, so the change goes to the drive.'; }
+    else { out.kind = 'down'; out.label = '↓ Drive’s ' + (ra === 'edit' ? 'edit' : 'move'); out.why = 'Only the drive changed it, so the change comes here.'; }
+    return out;
+  }
+  const grid = document.getElementById('mxgrid');
+  const mxd = document.getElementById('mxdetail');
+  function renderGrid() {
+    let h = '<thead><tr><th></th><th colspan="4" class="axis" style="text-align:left">On the drive →</th></tr><tr><th class="rowh axis">This folder ↓</th>';
+    ACTS.forEach(a => { h += '<th>' + LOCAL_L[a] + '</th>'; });
+    h += '</tr></thead><tbody>';
+    ACTS.forEach(la => {
+      h += '<tr><th class="rowh" scope="row">' + LOCAL_L[la] + '</th>';
+      ACTS.forEach(ra => {
+        const o = solve(la, ra);
+        const pressed = sel[0] === la && sel[1] === ra;
+        h += '<td><button type="button" class="cell k-' + o.kind + '" data-l="' + la + '" data-r="' + ra + '" aria-pressed="' + pressed + '" aria-label="This folder: ' + LOCAL_L[la] + '. The drive: ' + LOCAL_L[ra] + '. Outcome: ' + o.label + '"><b>' + o.label + '</b></button></td>';
+      });
+      h += '</tr>';
+    });
+    grid.innerHTML = h + '</tbody>';
+  }
+  const fileLine = s => s ? '<div class="fl">' + P(s) + ' <span class="h">' + s.sha + '</span></div>' : '<div class="fl none">deleted</div>';
+  function renderDetail(animate) {
+    const [la, ra] = sel;
+    const o = solve(la, ra);
+    let h = '<h3>' + LOCAL_L[la] + ' here, ' + LOCAL_L[ra].toLowerCase() + ' on the drive</h3>';
+    h += '<div class="lanes"><div class="lane lane-base"><h4>Last agreed</h4>' + fileLine(o.b) + '</div><div class="lane lane-local"><h4>This folder</h4>' + fileLine(o.l) + '</div><div class="lane lane-remote"><h4>The drive</h4>' + fileLine(o.r) + '</div></div>';
+    h += '<div class="result' + (animate ? ' pop' : '') + '"><h4>After the sync, on both sides</h4>';
+    if (!o.result.length) h += '<div class="fl" style="color:var(--muted)">no notes.txt anywhere</div>';
+    o.result.forEach(x => { h += '<div class="fl">' + x.p + ' <span class="h">' + x.sha + '</span>' + (x.from ? '<span class="from">' + x.from + '</span>' : '') + '</div>'; });
+    h += '</div><div class="acts"><div class="a-l"><h5>In this folder</h5><ul>' + (o.here.length ? o.here.map(x => '<li>' + x + '</li>').join('') : '<li>Nothing to do</li>') + '</ul></div><div class="a-r"><h5>On the drive</h5><ul>' + (o.there.length ? o.there.map(x => '<li>' + x + '</li>').join('') : '<li>Nothing to do</li>') + '</ul></div></div>';
+    h += '<div class="rule">' + (o.rules.length ? o.rules.join('\n') : 'no rule needed') + '<span class="why">' + o.why + '</span></div>';
+    mxd.innerHTML = h;
+  }
+  grid.addEventListener('click', e => {
+    const c = e.target.closest('.cell');
+    if (!c) return;
+    sel = [c.dataset.l, c.dataset.r];
+    grid.querySelectorAll('.cell').forEach(x => x.setAttribute('aria-pressed', String(x === c)));
+    renderDetail(true);
+  });
+  document.getElementById('sameedit').addEventListener('change', e => { same = e.target.checked; renderGrid(); renderDetail(true); });
+  renderGrid();
+  renderDetail(false);
+})();
+</script>
+</body>
+</html>
