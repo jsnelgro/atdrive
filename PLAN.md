@@ -18,27 +18,34 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
 
 - [x] **Phase 1, CLI (macOS + Linux):** `login`, `logout`, `whoami`, `ls`, `tree`, `put`, `get`,
   `cat`, `mkdir`, `mv`, `rm`.
-  - Unit tests pass on Linux (Swift 6.4.2).
-  - CLI smoke-tested against an in-memory fake PDS.
-  - Login checked against the live alpha PDS (handle → DID → PDS → `createSession`).
-  - Builds and passes tests on macOS too (CI).
-  - **Not yet run against the live alpha:** the full upload/download round trip (`LiveTests`
-    needs an app password).
-- [ ] **Phase 2, macOS File Provider** (written, **not yet run on a Mac**):
-  - A menu-bar host app plus an `NSFileProviderReplicatedExtension`, assembled by
-    `scripts/build-app.sh` without an .xcodeproj.
-  - Sync anchor = repo revision (`getLatestCommit`). Changes are found by diffing tree snapshots
-    held in memory.
-  - Conflicted copies when a file changed remotely during an edit.
-  - To verify on a real Mac: domain registration and signing (whether a provisioning profile
-    is needed), placeholder downloads, uploads, rename/move/delete, remote changes appearing
-    via polling.
-  - Next: persist snapshots across extension restarts, push instead of polling, upload/download
-    progress in Finder.
+  - Unit tests pass on Linux and macOS (CI).
+  - Used against the live alpha PDS: OAuth sign-in, `ls`, `cat`, `put`.
+  - Remote machines sign in by pasting the browser's redirect address. The flow has been tested
+    up to the browser approval; a full remote sign-in is still to be tried.
+- [x] **Phase 2, macOS File Provider:** a menu-bar host app plus an
+  `NSFileProviderReplicatedExtension`, assembled by `scripts/build-app.sh` without an .xcodeproj.
+  - **Verified on a real Mac against the alpha PDS:**
+    - OAuth sign-in from the menu bar, and enabling the drive in Finder (the first-run prompt).
+    - Uploading by drag-and-drop.
+    - Re-downloading after "Remove Download".
+    - A file `put` from the CLI appearing in Finder.
+    - Apple Development signing works; no provisioning profile needed.
+  - **How it works:** the sync anchor is the repo revision (`getLatestCommit`), and changes are
+    found by diffing tree snapshots held in memory. A file that changed remotely during an edit
+    gets a conflicted copy.
+  - **Not yet exercised:** rename, move and delete from Finder; conflicted copies; large files.
+  - **Next:**
+    - Persist snapshots across extension restarts.
+    - Push instead of polling.
+    - Upload/download progress in Finder.
+    - Show "click Enable in Finder" in the menu until the drive is enabled.
 - [ ] **Phase 3, Linux:** `atdrive mount <dir>` over FUSE (libfuse3 via a C module).
 - [ ] **Phase 4, iOS:** the same extension code with an iOS host app.
-- [ ] **Later:** OAuth with `space:` scopes, shared folders (`memberspace`), client-side
-  encryption, parallel transfers.
+- [ ] **Later:**
+  - Publish the lexicons and narrow the OAuth scope (see below).
+  - Shared folders (`memberspace`).
+  - Client-side encryption.
+  - Parallel transfers.
 
 ## Data model
 
