@@ -32,8 +32,9 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
 - `Sources/atdrive`: the CLI (swift-argument-parser). Commands are thin; logic belongs in the core.
 - `Sources/Mac` (targets added in Package.swift only `#if os(macOS)`, Swift 5 language mode):
   - `FileProvider/`: `NSFileProviderReplicatedExtension`. `DriveIndex` caches trees by repo
-    revision, and the revision is the sync anchor; enumerators diff snapshots. `main.swift` calls
-    `NSExtensionMain` (declared in `CExtensionMain/`) because SwiftPM can't build an .appex.
+    revision, and the revision is the sync anchor; enumerators diff snapshots. No `main`: the
+    target links with `-e _NSExtensionMain`, as Xcode does (a `main` that calls NSExtensionMain
+    recurses until it crashes, since the extension runtime calls `main` itself).
   - `App/`: SwiftUI `MenuBarExtra`. Signs in, adds the File Provider domain, polls with
     `signalEnumerator`.
   - `Support/`: shared by both. App Group container (the ID comes from Info.plist

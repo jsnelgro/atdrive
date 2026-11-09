@@ -131,7 +131,7 @@ ATDRIVE_LIVE_HANDLE=you.spaces-alpha.bsky.network ATDRIVE_LIVE_PASSWORD=xxxx-xxx
 Mac app logs (app and extension):
 
 ```bash
-log stream --level debug --predicate 'subsystem == "me.jsnelgro.atdrive"'
+/usr/bin/log stream --level debug --predicate 'subsystem == "me.jsnelgro.atdrive"'
 ```
 
 See [PLAN.md](PLAN.md) for the roadmap and design notes.

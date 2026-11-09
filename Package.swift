@@ -53,14 +53,16 @@ var targets: [Target] = [
             swiftSettings: appleSettings
         ),
         // The File Provider extension: does the actual syncing for Finder.
+        // Like Xcode, it has no `main`: the linker makes Foundation's NSExtensionMain the entry
+        // point. (Calling NSExtensionMain from a main.swift recurses: the extension runtime calls
+        // the binary's `main` again, until the stack overflows.)
         .executableTarget(
             name: "ATDriveFileProvider",
-            dependencies: ["ATDriveCore", "ATDriveMacSupport", "CExtensionMain"],
+            dependencies: ["ATDriveCore", "ATDriveMacSupport"],
             path: "Sources/Mac/FileProvider",
-            swiftSettings: appleSettings
+            swiftSettings: appleSettings,
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-e", "-Xlinker", "_NSExtensionMain"])]
         ),
-        // Declares Foundation's extension entry point so the extension can call it.
-        .target(name: "CExtensionMain", path: "Sources/Mac/CExtensionMain"),
     ]
 #endif
 

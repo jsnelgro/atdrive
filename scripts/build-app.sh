@@ -63,6 +63,15 @@ render Resources/FileProvider/ATDriveFileProvider.entitlements build/ATDriveFile
 [[ -n "${APP_PROFILE:-}" ]] && cp "$APP_PROFILE" "$APP/Contents/embedded.provisionprofile"
 [[ -n "${EXTENSION_PROFILE:-}" ]] && cp "$EXTENSION_PROFILE" "$EXT/Contents/embedded.provisionprofile"
 
+# The extension must start in Foundation's NSExtensionMain and must not define `main` (the
+# extension runtime would call it again, recursing until it crashes).
+if nm "$EXT/Contents/MacOS/ATDriveFileProvider" | grep -qE ' T _main$'; then
+  echo "error: the extension binary defines main; it must use NSExtensionMain as its entry point." >&2
+  exit 1
+fi
+nm -u "$EXT/Contents/MacOS/ATDriveFileProvider" | grep -q '_NSExtensionMain' \
+  || { echo "error: the extension binary doesn't use NSExtensionMain." >&2; exit 1; }
+
 # Inside out: the extension first, then the app that contains it.
 SIGN=(codesign --force --sign "$CODESIGN_IDENTITY" --options runtime --timestamp=none)
 "${SIGN[@]}" --entitlements build/ATDriveFileProvider.entitlements "$EXT"
