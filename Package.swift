@@ -35,7 +35,9 @@ var targets: [Target] = [
     let appleSettings: [SwiftSetting] = [.swiftLanguageMode(.v5)]
     products += [
         .executable(name: "ATDriveApp", targets: ["ATDriveApp"]),
-        .executable(name: "ATDriveFileProvider", targets: ["ATDriveFileProvider"]),
+        // The extension's code, as a library: scripts/build-app.sh links the .appex executable
+        // around it (see the target below).
+        .library(name: "ATDriveFileProvider", type: .dynamic, targets: ["ATDriveFileProvider"]),
     ]
     targets += [
         // Shared by the app and the extension: App Group lookup and the Finder domain.
@@ -53,15 +55,17 @@ var targets: [Target] = [
             swiftSettings: appleSettings
         ),
         // The File Provider extension: does the actual syncing for Finder.
-        // Like Xcode, it has no `main`: the linker makes Foundation's NSExtensionMain the entry
-        // point. (Calling NSExtensionMain from a main.swift recurses: the extension runtime calls
-        // the binary's `main` again, until the stack overflows.)
-        .executableTarget(
+        //
+        // It's a library, not an executable. An app extension's executable must have no `main`:
+        // its entry point is Foundation's NSExtensionMain, and the extension runtime calls `main`
+        // if one exists (a main that starts the extension recurses until it crashes). SwiftPM
+        // always gives executables a `main`, so build-app.sh links a code-free executable with
+        // `-e _NSExtensionMain` that loads this library, as Xcode does for every extension.
+        .target(
             name: "ATDriveFileProvider",
             dependencies: ["ATDriveCore", "ATDriveMacSupport"],
             path: "Sources/Mac/FileProvider",
-            swiftSettings: appleSettings,
-            linkerSettings: [.unsafeFlags(["-Xlinker", "-e", "-Xlinker", "_NSExtensionMain"])]
+            swiftSettings: appleSettings
         ),
     ]
 #endif

@@ -50,9 +50,19 @@ swift build -c "$CONFIG" --product ATDriveFileProvider
 BIN=$(swift build -c "$CONFIG" --show-bin-path)
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$EXT/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$EXT/Contents/MacOS" "$EXT/Contents/Frameworks"
 cp "$BIN/ATDriveApp" "$APP/Contents/MacOS/ATDrive"
-cp "$BIN/ATDriveFileProvider" "$EXT/Contents/MacOS/ATDriveFileProvider"
+
+# The extension: its code is libATDriveFileProvider.dylib. Its executable has no code and no
+# `main`; the entry point is Foundation's NSExtensionMain (what Xcode does for app extensions),
+# and loading the library at launch registers the principal class from Info.plist.
+cp "$BIN/libATDriveFileProvider.dylib" "$EXT/Contents/Frameworks/"
+printf '// Intentionally empty: see build-app.sh.\n' > build/extension-stub.c
+xcrun clang -arch "$(uname -m)" -mmacosx-version-min=14.0 build/extension-stub.c \
+  -o "$EXT/Contents/MacOS/ATDriveFileProvider" \
+  -Wl,-e,_NSExtensionMain -framework Foundation \
+  -Wl,-needed_library,"$EXT/Contents/Frameworks/libATDriveFileProvider.dylib" \
+  -Wl,-rpath,@executable_path/../Frameworks
 
 render() { sed -e "s/__BUNDLE_ID__/$BUNDLE_ID/g" -e "s/__APP_GROUP__/$APP_GROUP/g" "$1" > "$2"; }
 render Resources/App/Info.plist "$APP/Contents/Info.plist"
@@ -65,15 +75,18 @@ render Resources/FileProvider/ATDriveFileProvider.entitlements build/ATDriveFile
 
 # The extension must start in Foundation's NSExtensionMain and must not define `main` (the
 # extension runtime would call it again, recursing until it crashes).
-if nm "$EXT/Contents/MacOS/ATDriveFileProvider" | grep -qE ' T _main$'; then
-  echo "error: the extension binary defines main; it must use NSExtensionMain as its entry point." >&2
-  exit 1
-fi
+for binary in "$EXT/Contents/MacOS/ATDriveFileProvider" "$EXT/Contents/Frameworks/libATDriveFileProvider.dylib"; do
+  if nm -g "$binary" | grep -qE ' T _main$'; then
+    echo "error: $binary defines main; the extension must use NSExtensionMain as its entry point." >&2
+    exit 1
+  fi
+done
 nm -u "$EXT/Contents/MacOS/ATDriveFileProvider" | grep -q '_NSExtensionMain' \
   || { echo "error: the extension binary doesn't use NSExtensionMain." >&2; exit 1; }
 
-# Inside out: the extension first, then the app that contains it.
+# Inside out: the extension's library, the extension, then the app that contains them.
 SIGN=(codesign --force --sign "$CODESIGN_IDENTITY" --options runtime --timestamp=none)
+"${SIGN[@]}" "$EXT/Contents/Frameworks/libATDriveFileProvider.dylib"
 "${SIGN[@]}" --entitlements build/ATDriveFileProvider.entitlements "$EXT"
 "${SIGN[@]}" --entitlements build/ATDrive.entitlements "$APP"
 codesign --verify --deep --strict "$APP"
