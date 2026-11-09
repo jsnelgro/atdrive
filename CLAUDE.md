@@ -24,6 +24,10 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
   - `OAuth.swift`, `DPoP.swift`, `LoopbackServer.swift`: atproto OAuth sign-in (PAR + PKCE +
     DPoP, loopback client ID, browser redirect caught on 127.0.0.1). The default. App-password
     login (`Auth.login`) is kept for scripts and tests.
+  - `AppPasswords.swift`: list/create/revoke app passwords. The PDS refuses OAuth and
+    app-password sessions for these, so it needs the main password. It starts a temporary
+    session (never saved) and ends it when done. Used by `atdrive app-passwords` and the Mac
+    app's App Passwords window.
   - `Identity.swift`: handle → DID → PDS. Never hardcode a PDS or account.
   - `Spaces.swift`: **every** `com.atproto.space.*` call. The alpha API changes weekly, so keep it
     contained here.

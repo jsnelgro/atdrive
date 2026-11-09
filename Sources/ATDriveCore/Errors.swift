@@ -1,5 +1,8 @@
 public enum ATDriveError: Error, CustomStringConvertible, Equatable {
     case notLoggedIn
+    /// The server won't renew the session: it expired, or it was revoked (e.g. its app password
+    /// was deleted).
+    case sessionEnded
     case loginFailed(String)
     case identity(String)
     case notFound(String)
@@ -15,6 +18,7 @@ public enum ATDriveError: Error, CustomStringConvertible, Equatable {
     public var description: String {
         switch self {
         case .notLoggedIn: "not logged in (run `atdrive login <handle>`)"
+        case .sessionEnded: "your session has ended; sign in again (`atdrive login <handle>`)"
         case .loginFailed(let why): "login failed: \(why)"
         case .identity(let why): why
         case .notFound(let path): "\(path): no such file or folder"

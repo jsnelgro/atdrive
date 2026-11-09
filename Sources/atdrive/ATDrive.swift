@@ -13,7 +13,7 @@ struct ATDrive: AsyncParsableCommand {
             """,
         version: "0.1.0",
         subcommands: [
-            Login.self, Logout.self, WhoAmI.self,
+            Login.self, Logout.self, WhoAmI.self, AppPasswords.self,
             List.self, Tree.self, Put.self, Get.self, Cat.self,
             MakeFolder.self, Move.self, Remove.self,
         ]

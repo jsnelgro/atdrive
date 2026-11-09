@@ -61,6 +61,7 @@ atdrive rm -r /archive/taxes
 | Command | What it does |
 |---|---|
 | `login <handle>` / `logout` / `whoami` | Start, end, or show the session |
+| `app-passwords [list]`, `app-passwords create <name>`, `app-passwords delete <name>` | Manage your account's app passwords. Asks for your account password each time and doesn't save it |
 | `ls [-l] [path]`, `tree [path]` | Browse the drive |
 | `put [-r] <local>… [dest]` | Upload. Works like `cp`. Existing files are replaced in place, and unchanged ones are skipped |
 | `get [-r] <path>… [local]` | Download. Works like `cp`. Files that are already identical locally are skipped |
@@ -87,7 +88,13 @@ command. `atdrive login` prints a link to open in a browser on any device. After
 browser lands on a page that won't load, at an address starting with `http://127.0.0.1`. Paste that
 address back into the terminal and you're signed in.
 
-For scripts, `atdrive login --app-password <handle>` signs in with an app password instead.
+For scripts, `atdrive login --app-password <handle>` signs in with an app password instead. You can
+make one with `atdrive app-passwords create <name>`, or from the Mac app's menu (App Passwords…).
+Either way your account password is needed. Your PDS only lets app passwords be managed with
+it, not with a browser sign-in. It's used for that one task and never saved. App passwords
+don't expire; delete them when you're done. Deleting one stops anything signed in with it from
+renewing its session, but an access token it already holds keeps working until it expires
+(2 hours on Bluesky's PDS). The server has no way to cut that short.
 
 ## How it works
 

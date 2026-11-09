@@ -79,6 +79,7 @@ struct MenuContent: View {
             Label("@\(handle)", systemImage: "person.crop.circle").font(.headline)
             Button("Show in Finder") { Task { await model.showInFinder() } }
             Button("Check for Changes") { Task { await model.syncNow() } }
+            Button("App Passwords…") { model.showAppPasswords() }
             Button("Sign Out") { Task { await model.signOut() } }
                 .disabled(model.busy)
         }

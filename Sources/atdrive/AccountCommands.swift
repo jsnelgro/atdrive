@@ -66,18 +66,7 @@ struct Login: AsyncParsableCommand {
         if let password = ProcessInfo.processInfo.environment["ATDRIVE_APP_PASSWORD"], !password.isEmpty {
             return password
         }
-        if passwordStdin {
-            guard let line = readLine(strippingNewline: true), !line.isEmpty else {
-                throw ValidationError("no password on standard input")
-            }
-            return line
-        }
-        guard isatty(STDIN_FILENO) != 0, let typed = getpass("App password: ") else {
-            throw ValidationError("no terminal to ask for a password; use --password-stdin")
-        }
-        let password = String(cString: typed)
-        guard !password.isEmpty else { throw ValidationError("empty password") }
-        return password
+        return try readSecret(prompt: "App password: ", fromStandardInput: passwordStdin)
     }
 }
 
@@ -157,4 +146,20 @@ private var hasLocalBrowser: Bool {
 /// Unbuffered, so it shows up right away even when output isn't a terminal.
 private func write(_ text: String) {
     FileHandle.standardOutput.write(Data(text.utf8))
+}
+
+/// A password from the terminal (not echoed), or from a line of standard input.
+func readSecret(prompt: String, fromStandardInput: Bool) throws -> String {
+    if fromStandardInput {
+        guard let line = readLine(strippingNewline: true), !line.isEmpty else {
+            throw ValidationError("no password on standard input")
+        }
+        return line
+    }
+    guard isatty(STDIN_FILENO) != 0, let typed = getpass(prompt) else {
+        throw ValidationError("no terminal to ask for a password; use --password-stdin")
+    }
+    let password = String(cString: typed)
+    guard !password.isEmpty else { throw ValidationError("empty password") }
+    return password
 }
