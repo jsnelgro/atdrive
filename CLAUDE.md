@@ -53,5 +53,9 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
   No Combine.
 - Code shared with Linux must avoid Apple-only frameworks. Use `#if canImport(FoundationNetworking)`
   for networking types. Anything AppKit/FileProvider goes in separate, platform-gated targets.
+- Git: every change goes on its own branch and lands through a pull request whose description
+  says what changed and why. Merge with a merge commit (not squash or fast-forward), so each
+  feature stays one chunk in `main`'s history. Open the PR and leave merging to the repo owner
+  unless asked to merge.
 - Reference implementation for the spaces protocol: `bluesky-social/atproto`, branch
   `permissioned-data-alpha` (lexicons in `lexicons/com/atproto/space/`).
