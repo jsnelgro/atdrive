@@ -44,8 +44,8 @@ public final class Drive: Sendable {
         repeat {
             let page: XRPCClient.SpaceRecordPage<JSONValue>
             do {
-                page = try await client.listSpaceRecords(
-                    space: space, repo: owner, collection: Lexicon.node, cursor: cursor, as: JSONValue.self)
+                page = try await client.listRawSpaceRecords(
+                    space: space, repo: owner, collection: Lexicon.node, cursor: cursor)
             } catch let error as XRPCError where Self.isMissing(error) {
                 return DriveTree([])
             }
@@ -125,8 +125,8 @@ public final class Drive: Sendable {
             repeat {
                 let page: XRPCClient.SpaceRecordPage<JSONValue>
                 do {
-                    page = try await client.listSpaceRecords(
-                        space: space, repo: owner, collection: nil, cursor: cursor, as: JSONValue.self)
+                    page = try await client.listRawSpaceRecords(
+                        space: space, repo: owner, collection: nil, cursor: cursor)
                 } catch let error as XRPCError where Self.isMissing(error) {
                     return DriveSnapshot(listedAt: now)
                 }
