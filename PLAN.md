@@ -31,21 +31,79 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
     - A file `put` from the CLI appearing in Finder.
     - Apple Development signing works; no provisioning profile needed.
   - **How it works:** the sync anchor is the repo revision (`getLatestCommit`), and changes are
-    found by diffing tree snapshots held in memory. A file that changed remotely during an edit
-    gets a conflicted copy.
+    found by diffing tree snapshots held in memory. Changes made here are settled against the
+    drive with `ConflictRules` (shared with `atdrive sync`; see "Conflict rules" below), using the
+    base version macOS passes with each change. `Item`'s metadata version records the folder and
+    name for that. `DriveIndex` remembers what this Mac has seen of the drive, for deleted
+    folders, and re-reports items a delete kept so macOS puts them back.
   - **Not yet exercised:** rename, move and delete from Finder; conflicted copies; large files.
+    Of the conflict rules, on a real Mac: deletes that keep an edit (do kept items come back in
+    Finder?), the drive's move winning (does Finder move the item back?), and a name clash
+    renaming the new item.
   - **Next:**
     - Persist snapshots across extension restarts.
     - Push instead of polling.
     - Upload/download progress in Finder.
     - Show "click Enable in Finder" in the menu until the drive is enabled.
-- [ ] **Phase 3, Linux:** `atdrive mount <dir>` over FUSE (libfuse3 via a C module).
+- [x] **Phase 3, Linux: a synced folder,** `atdrive sync [~/atdrive]` (plus `--install` for a
+  systemd user service). Chosen over a FUSE mount because it works on any server (no root,
+  `/dev/fuse` or libfuse), keeps working offline, and every program sees ordinary files.
+  - **Tested** with unit tests against `FakePDS` and real folders: first-sync merges, edits,
+    moves and deletes in both directions, conflicts, interrupted passes, and the inotify watcher.
+  - **Not yet exercised:** against the live alpha PDS, and under systemd on a real server.
+  - **How it works:** see *Folder sync* below.
+  - **Later:** a FUSE mount, for drives too big to keep a full copy of (files fetched on demand).
+    Uploading only the changed chunks of an edited file. Several transfers at once.
 - [ ] **Phase 4, iOS:** the same extension code with an iOS host app.
 - [ ] **Later:**
   - Publish the lexicons and narrow the OAuth scope (see below).
   - Shared folders (`memberspace`).
   - Client-side encryption.
   - Parallel transfers.
+
+## Folder sync
+
+`FolderSync` (in `Sources/ATDriveCore/Sync/`) runs in passes: on a local change (inotify), and
+every 30 seconds to check the drive (`getLatestCommit`; the tree is listed only when the revision
+moved).
+
+- **Three-way merge, by node ID.** `.atdrive/state.json` in the folder records what the last pass
+  left in agreement: each node's parent, name, hash, and the local file's `lstat`. Each side is
+  compared with it, so "deleted here" and "new on the drive" can be told apart. Local items keep
+  their node ID by path, then by inode (renames and moves, including whole folders), then by hash
+  (copied and deleted, e.g. across disks). Files are read only when their `lstat` changed.
+- **Rules** (`SyncPlan`): the per-item decisions come from `ConflictRules`, shared with the Mac
+  app (see "Conflict rules" below). Across items, it keeps folders that something kept is in, and
+  gives each name in a folder to one item. A first sync is just this, starting from an empty
+  state.
+- **Applying** (`SyncRun`): local moves go through `.atdrive/staging` (with a journal, so a killed
+  pass is recovered), so swaps and moves into new folders work. Then the drive is updated, then
+  files are downloaded to `.atdrive/downloads` and renamed into place. Nothing local is
+  overwritten or deleted if its `lstat` changed since the folder was listed; it's left for the next
+  pass. Only items that got all the way through are saved as agreed, so an interrupted pass picks
+  up where it left off (and an interrupted conflict doesn't make two copies).
+- **Guards:** it stops if the folder or `.atdrive` disappears, refuses a folder synced with
+  another account, and takes a lock so only one sync runs per folder. Files changed in the last
+  couple of seconds wait (they may still be being written).
+
+## Conflict rules
+
+`ConflictRules` (`Sources/ATDriveCore/ConflictRules.swift`) is the one place that decides what
+happens when something changed in two places. The README's "Conflicts" section says it for users.
+
+| | `atdrive sync` (`SyncPlan`) | Mac app (File Provider extension) |
+|---|---|---|
+| Base version | `.atdrive/state.json` | The `NSFileProviderItemVersion` macOS passes with each change: content version = SHA-256; metadata version records the folder and name |
+| Edited on both sides | `contents` | `modifyItem` |
+| Moved on both sides | `location` | `modifyItem` |
+| Deleted here, edited there | `deleteStands` | `deleteItem` (the kept file is re-reported so macOS puts it back) |
+| Edited here, deleted there | `deleteStands` | `modifyItem` writes it back under its own ID |
+| Folder deleted, changed inside | Folders kept if needed by what's kept | `keptWhenDeleting`, against what this Mac has seen (`DriveIndex`) |
+| Something added to a folder deleted there | The folder is kept | `folderID` puts the folder back |
+| Name clash | Newcomer renamed; identical ones paired | `createItem` / `modifyItem` rename the newcomer, or pair identical items macOS doesn't already have |
+
+`ConflictRulesAgreeWithSyncTests` runs a deleted-folder case through `atdrive sync` and checks it
+keeps exactly what `keptWhenDeleting` keeps.
 
 ## Data model
 

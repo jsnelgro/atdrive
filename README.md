@@ -12,7 +12,8 @@ A cli and macOS app providing an iCloud-like experience using ATProto Spaces. Th
 A file drive that keeps your files in your own atproto account, privately, using
 [atproto spaces](https://atproto.com/blog/atproto-spaces-alpha). On macOS the drive shows up in
 Finder like iCloud Drive or Dropbox: files download when you open them and upload when you save.
-On macOS and Linux there's also a command-line tool.
+On Linux (a desktop, or a server you SSH into), a folder like `~/atdrive` stays in sync with it.
+On both there's also a command-line tool.
 
 > **Alpha. Don't store anything sensitive or irreplaceable.**
 > - Spaces are an alpha protocol, and Bluesky's hosted alpha PDS may be wiped without warning.
@@ -38,11 +39,54 @@ That builds `ATDrive.app`, installs it to `~/Applications`, and launches it.
    CLI) show up within about 30 seconds.
 
 Files are downloaded the first time you open them. Right-click > Remove Download frees the space
-again. If you edit a file on two devices at once, neither edit is lost: the second one to sync is
-saved as `name (conflicted copy <date>).ext`.
+again. Changes made in two places at once are settled the same way as in a synced folder (see
+[Conflicts](#conflicts)): no edit is lost.
 
 `scripts/build-app.sh` builds the app without installing it. The top of the script lists its
 signing options.
+
+## A synced folder (Linux)
+
+`atdrive sync` keeps a folder in sync with the drive in both directions, like a Dropbox folder.
+Install the command-line tool (below), then:
+
+```bash
+atdrive login alice.example.com
+```
+
+```bash
+atdrive sync --install
+```
+
+That's it: work in `~/atdrive` as usual. Edit files in place, copy files in, and move, rename or
+delete them; any program works, since they're ordinary files. Changes there reach the drive within
+seconds. Changes made elsewhere (the Mac app, another computer, other `atdrive` commands) show up
+within 30 seconds.
+
+- **In the background:** `--install` sets up a systemd user service, so syncing keeps going after
+  the terminal closes and starts again after a reboot. On a server you SSH into, also run
+  `loginctl enable-linger` once, so it keeps running while you're logged out.
+  - `journalctl --user -u atdrive-sync -f` shows what it's doing.
+  - `atdrive sync --uninstall` stops it. The folder and the drive are left as they are.
+- **In the foreground:** `atdrive sync [folder]` syncs until you press Ctrl-C (the default folder
+  is `~/atdrive`), and `atdrive sync --once` syncs once and exits.
+- **Signing in over SSH:** `atdrive login` prints a link to open in a browser on any device, then
+  you paste back the address the browser ends up on (see *Signing in on a remote machine* below).
+  Sessions last two weeks; when one expires, the service waits until you `atdrive login` again,
+  then carries on.
+- **Starting with files in the folder** is fine: the folder and the drive are merged. Matching
+  files and folders are paired up, and nothing is deleted.
+- **Conflicts** are settled the same way as on the Mac (see [Conflicts](#conflicts)): no edit is
+  lost.
+- **What isn't synced:** symlinks and other special files, and clutter: `.DS_Store`,
+  `Thumbs.db`, and the swap and lock files editors leave around (Vim, Emacs, LibreOffice, Office).
+  Files are synced once they've stopped changing for a couple of seconds.
+- **Safety:** the sync keeps its own state in `~/atdrive/.atdrive`. If the folder disappears (say,
+  a disk that's no longer mounted), syncing stops rather than deleting things from the drive.
+  Deleting `.atdrive` starts over with a merge.
+
+The folder holds a full copy of the drive. On a Mac, use the app instead: Finder downloads files
+only when you open them.
 
 ## The command line (macOS and Linux)
 
@@ -75,6 +119,7 @@ atdrive rm -r /archive/taxes
 | `get [-r] <path>… [local]` | Download. Works like `cp`. Files that are already identical locally are skipped |
 | `cat <path>` | Print a file to stdout |
 | `mkdir [-p] <path>…`, `mv <from> <to>`, `rm [-r] <path>…` | What you'd expect |
+| `sync [folder]` | Keep a folder in sync with the drive (see [above](#a-synced-folder-linux)) |
 
 Paths in the drive always start from the top (`/photos/cat.jpg`).
 
@@ -97,6 +142,24 @@ browser lands on a page that won't load, at an address starting with `http://127
 address back into the terminal and you're signed in.
 
 For scripts, `atdrive login --app-password <handle>` signs in with an app password instead.
+
+## Conflicts
+
+When something changes in two places before they sync (say, on the Mac and on a server), every
+device settles it the same way. The Mac app and `atdrive sync` share these rules
+(`ConflictRules` in the code):
+
+- **Edited in both places:** the drive's version keeps the name, and yours is saved beside it as
+  `name (conflicted copy <date>).ext`. If both edits came out identical, there's nothing to do.
+- **Moved or renamed in both places:** the drive's move wins (it's the one other devices already
+  see).
+- **Deleted in one place, edited in the other:** the edit is kept. Moving or renaming it doesn't
+  count as an edit: the delete goes ahead.
+- **A folder deleted in one place** keeps whatever was added to it, moved into it or edited in it
+  elsewhere in the meantime. Everything else in it is deleted.
+- **Two different things given the same name:** the second one to arrive is renamed
+  `name (conflicted copy <date>)`. Two identical ones (two folders, or two files with the same
+  contents) become one.
 
 ## How it works
 
@@ -153,9 +216,15 @@ See [PLAN.md](PLAN.md) for the roadmap and design notes.
 
 - **One drive per account.** The Mac app and the CLI each keep their own login.
 - **Remote changes are polled** every 30 seconds, not pushed.
-- **The CLI has no conflict detection: the last write wins.** The spaces alpha has no
-  compare-and-swap for writes. The Mac app does make conflicted copies.
-- **No trash on the drive.** Deleting in Finder deletes from the drive.
+- **`put`, `mv` and `rm` have no conflict detection: the last write wins.** The spaces alpha has
+  no compare-and-swap for writes. `atdrive sync` and the Mac app do make conflicted copies, but
+  without compare-and-swap an edit made elsewhere in the second before a sync uploads can still be
+  overwritten.
+- **`atdrive sync` sends whole files,** even when only part of one changed. While a big one
+  transfers, other changes wait.
+- **`atdrive sync` on a Mac** works, but two names that differ only in case (`Notes.txt` and
+  `notes.txt`) clash on Mac disks. The app doesn't have this problem.
+- **No trash on the drive.** Deleting in Finder or in a synced folder deletes from the drive.
 - **Symlinks and aliases aren't stored.**
 - **Transfers are sequential.**
 - **A single file is capped at about 30 GB,** because its chunk list has to fit in one 1 MiB

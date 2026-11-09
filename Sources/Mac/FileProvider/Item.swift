@@ -56,13 +56,44 @@ final class Item: NSObject, NSFileProviderItem {
         NSFileProviderItemVersion(contentVersion: Self.contentVersion(of: node), metadataVersion: metadataVersion)
     }
 
-    /// Changes exactly when the file's bytes change (folders have no content).
+    /// Changes exactly when the file's bytes change (folders have no content): its SHA-256.
     static func contentVersion(of node: Node?) -> Data {
         Data((node?.record.sha256 ?? "folder").utf8)
     }
 
-    /// Changes when anything about the record changes, or it's shown in a different folder.
-    private var metadataVersion: Data {
-        Data("\(node?.cid ?? "root")|\(parentID ?? "")".utf8)
+    /// The file's SHA-256 in a version the system hands back (what a change was based on).
+    static func sha256(in version: NSFileProviderItemVersion) -> String {
+        String(decoding: version.contentVersion, as: UTF8.self)
     }
+
+    /// Where an item is: its folder (`nil` = top level) and name.
+    struct Location: Codable, Equatable {
+        var parent: String?
+        var name: String
+    }
+
+    /// Changes when anything about the record changes, or it's shown in a different folder. It
+    /// also records the folder and name, so a change can be compared with where the item was
+    /// when the change was made (`ConflictRules.location`).
+    private var metadataVersion: Data {
+        struct Metadata: Encodable {
+            var cid: String
+            var parent: String?
+            var name: String
+        }
+        let metadata = Metadata(cid: node?.cid ?? "root", parent: parentID, name: filename)
+        return (try? Self.encoder.encode(metadata)) ?? Data()
+    }
+
+    /// The folder and name in a version the system hands back. `nil` for versions made before
+    /// they were recorded.
+    static func location(in version: NSFileProviderItemVersion) -> Location? {
+        try? JSONDecoder().decode(Location.self, from: version.metadataVersion)
+    }
+
+    private static let encoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return encoder
+    }()
 }

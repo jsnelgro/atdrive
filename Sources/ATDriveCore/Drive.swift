@@ -179,11 +179,16 @@ public final class Drive: Sendable {
         guard !node.isFolder, let size = node.record.size, let sha256 = node.record.sha256,
             (try FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.intValue == size
         else { return false }
+        return try Self.sha256(of: file) == sha256
+    }
+
+    /// A local file's hex SHA-256, as recorded in `NodeRecord.sha256`.
+    public static func sha256(of file: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
         var hasher = SHA256()
-        while let data = try handle.read(upToCount: chunkSize), !data.isEmpty { hasher.update(data: data) }
-        return hasher.finalize().hexString == sha256
+        while let data = try handle.read(upToCount: 4 * 1024 * 1024), !data.isEmpty { hasher.update(data: data) }
+        return hasher.finalize().hexString
     }
 
     /// Renames and/or moves a file or folder. Folders move with everything inside them.
@@ -194,6 +199,14 @@ public final class Drive: Sendable {
         record.parent = parent
         record.name = name
         return try await write(id: node.id, record)
+    }
+
+    /// Writes a node back under its own ID, e.g. a folder deleted elsewhere that something is
+    /// being added to here (see `ConflictRules`). Its contents, if a file, must still exist.
+    @discardableResult
+    public func restore(_ node: Node) async throws -> Node {
+        try DrivePath.validate(name: node.name)
+        return try await write(id: node.id, node.record)
     }
 
     /// Deletes files and folders. To delete a folder's contents too, include them (see
