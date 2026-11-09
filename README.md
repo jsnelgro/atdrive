@@ -66,6 +66,7 @@ atdrive rm -r /archive/taxes
 | `get [-r] <path>… [local]` | Download. Works like `cp`. Files that are already identical locally are skipped |
 | `cat <path>` | Print a file to stdout |
 | `mkdir [-p] <path>…`, `mv <from> <to>`, `rm [-r] <path>…` | What you'd expect |
+| `inspect` | The PDS's raw JSON for your drive (commit, records, blobs), plus a check that it's refused without credentials |
 
 Paths in the drive always start from the top (`/photos/cat.jpg`).
 
