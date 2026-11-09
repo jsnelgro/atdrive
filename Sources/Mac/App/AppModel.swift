@@ -24,6 +24,8 @@ final class AppModel {
 
     @ObservationIgnored private var polling: Task<Void, Never>?
     @ObservationIgnored private var signingIn: Task<Void, Never>?
+    @ObservationIgnored let appPasswords = AppPasswordsModel()
+    @ObservationIgnored private var appPasswordsWindow: AppPasswordsWindow?
     private let logger = Logger(subsystem: Log.subsystem, category: "app")
 
     /// How often to check the drive for changes made elsewhere.
@@ -76,9 +78,15 @@ final class AppModel {
         state = .signedOut
     }
 
+    func showAppPasswords() {
+        if appPasswordsWindow == nil { appPasswordsWindow = AppPasswordsWindow(model: appPasswords) }
+        appPasswordsWindow?.show()
+    }
+
     func signOut() async {
         busy = true
         defer { busy = false }
+        await appPasswords.lock()
         do {
             // Keeps a copy of any edits that hadn't finished uploading.
             if let preserved = try await NSFileProviderManager.remove(
