@@ -21,13 +21,20 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
   - Unit tests pass on Linux (Swift 6.4.2).
   - CLI smoke-tested against an in-memory fake PDS.
   - Login checked against the live alpha PDS (handle → DID → PDS → `createSession`).
+  - Builds and passes tests on macOS too (CI).
   - **Not yet run against the live alpha:** the full upload/download round trip (`LiveTests`
-    needs an app password), and the macOS build (CI is set up for it).
-- [ ] **Phase 2, macOS File Provider:** a menu-bar host app plus an
-  `NSFileProviderReplicatedExtension`, built on `ATDriveCore`. Bundles get assembled with
-  scripts in the style of swift-mac-app-template, so no .xcodeproj.
-  - Needs: a local metadata cache, a change feed (`listRepoOps(since:)`) feeding sync anchors,
-    polling `getLatestCommit`, and conflict copies.
+    needs an app password).
+- [ ] **Phase 2, macOS File Provider** (written, **not yet run on a Mac**):
+  - A menu-bar host app plus an `NSFileProviderReplicatedExtension`, assembled by
+    `scripts/build-app.sh` without an .xcodeproj.
+  - Sync anchor = repo revision (`getLatestCommit`). Changes are found by diffing tree snapshots
+    held in memory.
+  - Conflicted copies when a file changed remotely during an edit.
+  - To verify on a real Mac: domain registration and signing (whether a provisioning profile
+    is needed), placeholder downloads, uploads, rename/move/delete, remote changes appearing
+    via polling.
+  - Next: persist snapshots across extension restarts, push instead of polling, upload/download
+    progress in Finder.
 - [ ] **Phase 3, Linux:** `atdrive mount <dir>` over FUSE (libfuse3 via a C module).
 - [ ] **Phase 4, iOS:** the same extension code with an iOS host app.
 - [ ] **Later:** OAuth with `space:` scopes, shared folders (`memberspace`), client-side

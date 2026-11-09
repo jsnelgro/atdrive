@@ -1,7 +1,8 @@
 # ATDrive
 
 A Dropbox-style drive stored in atproto spaces (permissioned data, alpha). Pure Swift: one
-SwiftPM package, no .xcodeproj. Builds and runs on macOS and Linux.
+SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder integration
+(menu-bar app + File Provider extension) is macOS only.
 
 ## Commands
 
@@ -9,6 +10,9 @@ SwiftPM package, no .xcodeproj. Builds and runs on macOS and Linux.
   `ATDRIVE_LIVE_HANDLE` and `ATDRIVE_LIVE_PASSWORD` set, and hits a real PDS.
 - `scripts/build.sh`: release binary at `build/atdrive`. The Swift runtime is static on Linux.
 - `scripts/format.sh`: formatting (config in `.swift-format`).
+- `scripts/build-app.sh` / `scripts/run-app.sh` (macOS): build `build/ATDrive.app` (and install
+  and launch it). Signing needs an Apple Development certificate; `ALLOW_ADHOC=1` builds
+  without one (it can't add the drive to Finder).
 
 ## Layout
 
@@ -21,6 +25,16 @@ SwiftPM package, no .xcodeproj. Builds and runs on macOS and Linux.
   - `Records.swift`, `Lexicon.swift`: the `me.jsnelgro.atdrive.*` record model (matches `lexicons/`).
   - `DriveTree.swift`: in-memory tree and path lookup. `Drive.swift`: upload, download, move, delete.
 - `Sources/atdrive`: the CLI (swift-argument-parser). Commands are thin; logic belongs in the core.
+- `Sources/Mac` (targets added in Package.swift only `#if os(macOS)`, Swift 5 language mode):
+  - `FileProvider/`: `NSFileProviderReplicatedExtension`. `DriveIndex` caches trees by repo
+    revision, and the revision is the sync anchor; enumerators diff snapshots. `main.swift` calls
+    `NSExtensionMain` (declared in `CExtensionMain/`) because SwiftPM can't build an .appex.
+  - `App/`: SwiftUI `MenuBarExtra`. Signs in, adds the File Provider domain, polls with
+    `signalEnumerator`.
+  - `Support/`: shared by both. App Group container (the ID comes from Info.plist
+    `ATDriveAppGroup`, filled in at build time) and the domain.
+- `Resources/{App,FileProvider}`: Info.plists and entitlements templates (`__BUNDLE_ID__`,
+  `__APP_GROUP__`).
 - `Tests/ATDriveCoreTests`: Swift Testing. `FakePDS` is an in-memory transport for drive-logic
   tests.
 - `lexicons/`: schemas for our NSIDs. Update them together with `Records.swift`.

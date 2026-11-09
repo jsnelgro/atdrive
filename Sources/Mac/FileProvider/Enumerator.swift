@@ -26,7 +26,7 @@ final class Enumerator: NSObject, NSFileProviderEnumerator {
         Task {
             do {
                 let tree = try await index.refresh().tree
-                let items = try items(in: tree)
+                let items = try listing(in: tree)
                 for start in stride(from: 0, to: items.count, by: 200) {
                     observer.didEnumerate(Array(items[start..<min(start + 200, items.count)]))
                 }
@@ -40,38 +40,43 @@ final class Enumerator: NSObject, NSFileProviderEnumerator {
     func enumerateChanges(for observer: NSFileProviderChangeObserver, from anchor: NSFileProviderSyncAnchor) {
         Task {
             do {
-                let (revision, tree) = try await index.refresh()
-                if revision == anchor.revision {
-                    observer.finishEnumeratingChanges(upTo: anchor, moreComing: false)
-                    return
-                }
-                // Too old to diff against (e.g. the extension restarted): the system re-lists.
-                guard let old = await index.tree(at: anchor.revision) else {
-                    observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
-                    return
-                }
-                let changes = tree.changes(since: old)
-                let updated = changes.updated.filter { isInScope($0.id, in: tree) || isInScope($0.id, in: old) }
-                let deleted = changes.deleted.filter { isInScope($0, in: old) }
-                if !updated.isEmpty { observer.didUpdate(updated.map { Item($0, in: tree) }) }
-                if !deleted.isEmpty {
-                    observer.didDeleteItems(withIdentifiers: deleted.map(NSFileProviderItemIdentifier.init))
-                }
-                observer.finishEnumeratingChanges(upTo: NSFileProviderSyncAnchor(revision: revision), moreComing: false)
+                try await reportChanges(to: observer, since: anchor)
             } catch {
                 observer.finishEnumeratingWithError(FileProviderErrors.map(error))
             }
         }
     }
 
-    func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
+    private func reportChanges(to observer: NSFileProviderChangeObserver, since anchor: NSFileProviderSyncAnchor)
+        async throws
+    {
+        let (revision, tree) = try await index.refresh()
+        if revision == anchor.revision {
+            observer.finishEnumeratingChanges(upTo: anchor, moreComing: false)
+            return
+        }
+        // Too old to diff against (e.g. the extension restarted): the system re-lists instead.
+        guard let old = await index.tree(at: anchor.revision) else {
+            throw NSFileProviderError(.syncAnchorExpired)
+        }
+        let changes = tree.changes(since: old)
+        let updated = changes.updated.filter { isInScope($0.id, in: tree) || isInScope($0.id, in: old) }
+        let deleted = changes.deleted.filter { isInScope($0, in: old) }
+        if !updated.isEmpty { observer.didUpdate(updated.map { Item($0, in: tree) }) }
+        if !deleted.isEmpty {
+            observer.didDeleteItems(withIdentifiers: deleted.map { NSFileProviderItemIdentifier($0) })
+        }
+        observer.finishEnumeratingChanges(upTo: NSFileProviderSyncAnchor(revision: revision), moreComing: false)
+    }
+
+    func currentSyncAnchor(completionHandler: @escaping @Sendable (NSFileProviderSyncAnchor?) -> Void) {
         Task {
             let revision = try? await index.refresh().revision
             completionHandler(revision.map(NSFileProviderSyncAnchor.init(revision:)))
         }
     }
 
-    private func items(in tree: DriveTree) throws -> [Item] {
+    private func listing(in tree: DriveTree) throws -> [Item] {
         switch scope {
         case .workingSet:
             return tree.nodes.values.map { Item($0, in: tree) }

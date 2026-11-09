@@ -155,8 +155,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 }
                 let currentParent = tree.parent(of: node.id)
                 let parent =
-                    changedFields.contains(.parentItemIdentifier)
-                    ? try folderID(item.parentItemIdentifier, in: tree) : currentParent
+                    try changedFields.contains(.parentItemIdentifier)
+                    ? folderID(item.parentItemIdentifier, in: tree) : currentParent
                 let name = changedFields.contains(.filename) ? item.filename : node.name
                 let relocating = parent != currentParent || name != node.name
                 if relocating {
@@ -176,7 +176,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                         let copy = Self.conflictName(for: name, in: parent, tree: tree)
                         _ = try await drive.upload(
                             newContents, as: copy, in: parent, modified: modified, progress: Self.report(to: progress))
-                        let kept = relocating ? try await drive.move(node, to: parent, as: name) : node
+                        let kept = try await relocating ? drive.move(node, to: parent, as: name) : node
                         logger.notice("conflict on \(node.id, privacy: .public): saved local edit as a copy")
                         completionHandler(Item(node: kept, parentID: parent), [], true, nil)
                     } else {

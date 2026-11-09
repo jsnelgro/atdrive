@@ -22,7 +22,7 @@ final class AppModel {
     var password = ""
 
     @ObservationIgnored private var polling: Task<Void, Never>?
-    @ObservationIgnored private let logger = Logger(subsystem: Log.subsystem, category: "app")
+    private let logger = Logger(subsystem: Log.subsystem, category: "app")
 
     /// How often to check the drive for changes made elsewhere.
     private let pollInterval: Duration = .seconds(30)

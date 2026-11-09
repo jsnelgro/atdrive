@@ -48,8 +48,6 @@ final class Item: NSObject, NSFileProviderItem {
         ]
         if node.isFolder {
             capabilities.formUnion([.allowsAddingSubItems, .allowsContentEnumerating])
-        } else {
-            capabilities.insert(.allowsEvicting)
         }
         return capabilities
     }

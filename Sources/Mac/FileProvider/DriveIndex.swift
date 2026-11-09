@@ -50,6 +50,6 @@ actor DriveIndex {
 }
 
 extension NSFileProviderSyncAnchor {
-    init(revision: String) { self.init(Data(revision.utf8)) }
+    init(revision: String) { self.init(rawValue: Data(revision.utf8)) }
     var revision: String { String(decoding: rawValue, as: UTF8.self) }
 }
