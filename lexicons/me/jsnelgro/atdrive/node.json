@@ -1,0 +1,51 @@
+{
+  "lexicon": 1,
+  "id": "me.jsnelgro.atdrive.node",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "tid",
+      "description": "A file or folder in a drive. The record key is its permanent ID: renames and moves update the record, never the key.",
+      "record": {
+        "type": "object",
+        "required": ["name", "kind", "createdAt"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 255,
+            "description": "File or folder name. Not empty, not '.' or '..', no '/'."
+          },
+          "parent": {
+            "type": "string",
+            "format": "record-key",
+            "description": "Record key of the folder this is in. Absent for the top level."
+          },
+          "kind": {
+            "type": "string",
+            "knownValues": ["file", "folder"]
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Files only: size in bytes."
+          },
+          "sha256": {
+            "type": "string",
+            "description": "Files only: hex SHA-256 of the whole file."
+          },
+          "chunks": {
+            "type": "array",
+            "items": { "type": "blob" },
+            "description": "Files only: the contents, split into blobs. Concatenated in order, they are the file."
+          },
+          "createdAt": { "type": "string", "format": "datetime" },
+          "modifiedAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "Files only: the file's own modification time."
+          }
+        }
+      }
+    }
+  }
+}
