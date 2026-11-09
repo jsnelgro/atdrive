@@ -53,13 +53,12 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
   - **Not yet exercised:** against the live alpha PDS, and under systemd on a real server.
   - **How it works:** see *Folder sync* below.
   - **Later:** a FUSE mount, for drives too big to keep a full copy of (files fetched on demand).
-    Uploading only the changed chunks of an edited file. Several transfers at once.
 - [ ] **Phase 4, iOS:** the same extension code with an iOS host app.
+- [ ] **Storage v2** (see *Storage v2* below): incremental sync, transferring only changed chunks,
+  versions and trash, client-side encryption.
 - [ ] **Later:**
   - Publish the lexicons and narrow the OAuth scope (see below).
   - Shared folders (`memberspace`).
-  - Client-side encryption.
-  - Parallel transfers.
 
 ## Folder sync
 
@@ -120,6 +119,192 @@ keeps exactly what `keptWhenDeleting` keeps.
 - **Damaged trees:** a node whose parent was deleted, and a cycle created by concurrent moves,
   are both shown at the top level, so nothing is ever hidden.
 
+## Storage v2 (planned)
+
+Goals: fetch only what changed, upload only what changed, keep old versions and deleted files for
+a while, and keep file contents and names unreadable to whoever runs the PDS. Four steps, each
+useful on its own, in this order.
+
+### What shapes the design
+
+Checked against the reference branch at `704b9e2` (2026-11-05):
+
+- **A blob lives only while a record references it.** The PDS can't see links inside blobs, so
+  blobs that point to other blobs (how IPFS stores big files) would be garbage-collected. Every
+  link to a blob has to be in a record, and records are capped at 1 MiB.
+- **No compare-and-swap,** so there can't be one "root of the drive" that every device updates
+  (as in Dolt or git): two devices would overwrite each other. One record per file stays.
+  - There is create-if-absent: `createRecord` and `applyWrites#create` fail with
+    `RecordAlreadyExists`.
+  - Updates and deletes of a missing record fail with `RecordNotFound`.
+  - `applyWrites` is one transaction of up to 200 writes.
+- **There's a change feed:** `com.atproto.space.listRepoOps(since:)` returns every write after a
+  revision, with the record values. It isn't history: the server may compact it.
+- **A space's commit is a set hash** (LtHash over the repo's records), not a Merkle tree. There's
+  no tree to walk to find what changed; the change feed does that.
+- **Blobs are content-addressed** (CID = SHA-256 of the bytes), so identical chunks are stored once.
+- **Self-hosted PDSes default to a 5 MB blob limit,** so chunks stay at most 4 MiB.
+
+**Not doing:**
+- **A DHT:** handle → DID → PDS already says where everything is.
+- **Erasure coding:** one PDS is one point of failure, and shards on it protect nothing.
+- **A Dolt-style versioned tree with one root:** it needs compare-and-swap.
+- **Per-device logs (Hypercore):** the change feed plus `ConflictRules` already cover it.
+
+### Step 1: incremental sync
+
+- **First, records we can't read must not look like deletions.**
+  - Today `Drive.tree()` drops them and `SyncPlan` treats them as deleted on the drive. A client
+    older than a format change would then delete its local copies.
+  - `tree()` should return them as unknown. Sync and the Mac extension should leave those IDs alone
+    and say an update is needed.
+  - This must ship, and be installed everywhere, before any format change (steps 3 and 4).
+- **Applying changes:**
+  - `Spaces.swift` gets `listRepoOps`. `Drive.changes(since:)` turns ops into node upserts and
+    deletes, and `DriveTree` applies them.
+  - `FolderSync` and `DriveIndex` keep the tree and its revision, and apply changes instead of
+    listing everything. A poll becomes one request, which returns nothing when nothing changed. It
+    replaces `getLatestCommit`.
+- **Gaps:**
+  - Each op's `prev` must equal the CID we hold for that record (none for a create). A mismatch, an
+    error, or no saved revision means a full listing, as today.
+  - Checking our records against the commit's LtHash would catch everything. It needs BLAKE3,
+    which swift-crypto lacks: later, if at all.
+- Persisting the tree also covers the Mac's "persist snapshots across extension restarts".
+
+### Step 2: transfer only changed chunks
+
+There's no format change: a file is still an ordered list of blobs, so older clients read it.
+
+- **Content-defined chunking (FastCDC):**
+  - Boundaries follow the content, so an insert near the start changes one or two chunks instead of
+    every chunk after it.
+  - Min 256 KiB, average 1 MiB, max 4 MiB.
+- **Skip chunks the drive already has.** The tree lists every chunk's CID, and a chunk whose CID is
+  already there isn't uploaded. Copying a file within the drive uploads nothing.
+- **Download only missing chunks.**
+  - Re-chunk the local copy of the previous version (the synced file, or what the Mac has on disk),
+    and reuse chunks whose CIDs match. Fetch the rest.
+  - The local file is the cache.
+- **Parallel transfers:** a few chunks at a time.
+  - Chunks never change, and writing the node record is what makes the new contents current. An
+    interrupted upload leaves the old version in place.
+- **Bigger files:** smaller chunks mean more of them per record (about 9 GB per record at a
+  1 MiB average). Past that, the chunk list continues in `me.jsnelgro.atdrive.chunks` records,
+  written in the same `applyWrites`.
+
+### Step 3: versions and trash
+
+- **A version is an old chunk list.**
+  - Replacing a file writes two records in one `applyWrites`: the updated node, and a
+    `me.jsnelgro.atdrive.version` record with the old contents.
+  - The version record holds node ID, name and parent at the time, size, sha256, chunks,
+    `modifiedAt` and device.
+  - The version record keeps the old chunks alive. With step 2, a version costs only the chunks
+    that changed.
+- **Trash:**
+  - Deleting moves the record to `me.jsnelgro.atdrive.trash` with the same rkey, plus `trashedAt`
+    (a delete and a create in one `applyWrites`).
+  - Folders move with everything inside them, deepest first in batches of 200, like deletes today.
+  - Older clients list only `node`, so to them it's an ordinary delete.
+  - Restoring is the reverse move. It also brings back the folders the item was in, if they're in
+    the trash, and otherwise puts it at the top level.
+- **Pruning:**
+  - Keep versions and trash for 30 days, and always each file's latest few versions.
+  - Any device may prune during a sync pass. If another device already deleted a record, the batch
+    fails with `RecordNotFound`; retry without that record.
+  - Deleting a version record lets the PDS delete chunks nothing else uses.
+- `ConflictRules` doesn't change. Versions are a second safety net.
+- Add the new collections to `lexicons/`, to `drive.json`'s `collections`, and to the narrow OAuth
+  scope.
+
+### Step 4: encryption
+
+- **On or off per drive:**
+  - A drive is encrypted if `me.jsnelgro.atdrive.keyring` (rkey `self`) exists.
+  - `atdrive encrypt` converts a drive: it re-uploads every file, rewrites every record, and drops
+    old plaintext versions and trash (otherwise they'd keep exposing the plaintext).
+  - Spaces' access control still applies. Encryption protects against the PDS operator.
+- **Records** (`node`, `version`, `trash`):
+  - Only what the PDS needs stays readable: `chunks` (so blobs are kept) and a key ID.
+  - Everything else, `parent` included, is `sealed`: AES-GCM under a key derived from the drive
+    key. The collection and rkey are associated data, so the PDS can't swap records between files.
+  - The plaintext `sha256` must go: it would let the server confirm you hold a known file.
+- **Chunks: keyed convergent encryption,** as in Tahoe-LAFS and borg:
+  - A chunk's ID is HMAC(drive key, plaintext), and its key is derived from that ID. Each key
+    encrypts exactly one plaintext, so AES-GCM can use a fixed nonce.
+  - Identical chunks encrypt to identical bytes, so step 2's skipping still works. Without the
+    drive key, the server can't test for known files.
+  - The chunker is seeded from the drive key, so chunk sizes don't fingerprint files.
+  - Chunk IDs go in the sealed metadata. Sharing a folder later can hand over those, not the
+    drive key.
+- **The rest of the code doesn't change.** `NodeRecord` stays the in-memory type, and sealing is a
+  layer between `Drive` and `Spaces`. `SyncPlan`, `ConflictRules` and the extension compare
+  hashes after decryption.
+- **What the server still sees:**
+  - How many records there are.
+  - Chunk counts and sizes (so roughly file sizes).
+  - Creation times (TIDs), and when writes happen.
+  - Which chunks are shared between files.
+  - A malicious PDS can drop or roll back records, but can't read or forge them.
+- **Keys:**
+  - **The drive key** is 32 random bytes.
+  - **Each device has its own key pair** (Curve25519), stored where its session is.
+  - **The keyring** holds the drive key wrapped for each device's public key, and once more for a
+    recovery key.
+  - **The recovery key** is 256 random bits, shown once as words to write down. It's high-entropy,
+    so it needs no password KDF (swift-crypto has no Argon2).
+  - **Adding a device:** `atdrive login`, then one of:
+    - `atdrive unlock` with the recovery key.
+    - Approve it from a device that has the key. The new device posts its public key and shows a
+      short code, and approving checks the same code, so the PDS can't slip in a key of its own.
+  - **Removing a device:**
+    - Remove its entry, and start a new drive key for new writes.
+    - The keyring keeps the old keys, wrapped by the new one, for reading.
+    - What the removed device already had stays readable to it.
+  - Losing every device and the recovery key loses the data. The app and the CLI say so when
+    encryption is turned on.
+
+### CLI
+
+| Command | What it does |
+|---|---|
+| `versions <path>` | A file's versions: when, size, which device |
+| `get` / `cat <path>@<when>` | A file as it was: `@-1` (the previous version), `@2026-11-08`, `@<version ID>` |
+| `restore <path>@<when>` | Make an old version current. It becomes a new version, so it can be undone |
+| `trash` | What's in the trash |
+| `trash restore <path>…` | Bring things back |
+| `trash empty [--older-than 7d]` | Delete them for good |
+| `rm --permanent` | Delete without the trash (plain `rm` moves things to the trash) |
+| `du` | Space used: current files, versions, trash, and what they share |
+| `prune [--keep 30d]` | Apply the retention policy now |
+| `encrypt` | Convert the drive to encrypted |
+| `devices` | The devices that hold the drive key |
+| `devices approve <code>` / `devices remove <name>` | Add or remove one |
+| `unlock` / `recovery-key` | Set up this device with the recovery key / make a new recovery key |
+
+On the Mac, trash and versions start in a menu-bar window. Whether Finder can show server-side
+versions is an open question.
+
+### Tests
+
+- **`FakePDS` gains:**
+  - `listRepoOps`, with compaction, to test gaps.
+  - Create-if-absent, and `RecordNotFound` in `applyWrites`.
+  - Blob garbage collection: a blob disappears once nothing references it, so a version that
+    doesn't keep its chunks fails a test.
+- **Chunking** gets fixed test vectors, so every platform cuts the same boundaries.
+- **The format guard** gets a test: a record from a newer format must not delete a local file.
+
+### Open questions
+
+- **What versions record:** only content changes (as above), or renames and moves too? Moves would
+  let the whole drive be viewed as of a date (`atdrive ls /@2026-11-01`), but need a record per
+  write.
+- **Retention:** the defaults, and whether every device prunes or only one.
+- **Encryption:** encrypted-only drives, or plaintext stays an option?
+- **Create-if-absent:** is it reliable under concurrent writes on the live PDS?
+
 ## Protocol notes (alpha, as of 2026-11-05)
 
 - **Reference implementation:** `bluesky-social/atproto`, branch `permissioned-data-alpha`.
@@ -142,3 +327,5 @@ keeps exactly what `keptWhenDeleting` keeps.
     that.
   - Spaces are **not** end-to-end encrypted.
 - **No compare-and-swap** on space writes, so conflict detection has to happen on the client.
+  Creates do fail if the record exists (`RecordAlreadyExists`).
+- **Change feed:** `listRepoOps(since:)` lists writes after a revision. See *Storage v2*.
