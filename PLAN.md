@@ -64,7 +64,16 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
   - `applyWrites`: at most 200 writes.
   - Blobs: the hosted alpha advertises a 300 MB limit, while the PDS default is 5 MB.
 - **Auth and privacy:**
-  - App-password (Bearer) sessions work on every space endpoint.
-  - OAuth needs `space:` scopes, which no Swift library supports yet.
+  - **OAuth is how you sign in.** It's implemented here: PAR + PKCE + DPoP, a loopback client
+    ID, and a redirect to 127.0.0.1. App-password sessions still work, for scripts.
+  - **Naming a space type in a scope** (`space:me.jsnelgro.atdrive.drive?…`) makes the PDS
+    resolve that type's lexicon for the consent screen. If the lexicon can't be resolved, the
+    sign-in fails with `invalid_scope: Unable to retrieve space declarations`.
+  - **So ATDrive asks for `space:*`** (reads of your own spaces) until its lexicons are published:
+    1. Add a DNS TXT record `_lexicon.atdrive.jsnelgro.me` → `did=<publishing account DID>`.
+    2. Publish `com.atproto.lexicon.schema` records for `me.jsnelgro.atdrive.drive` and `.node`.
+    3. Switch `OAuthLogin.scope` to `narrowScope`.
+  - **Public OAuth clients get two-week sessions** on Bluesky's PDS, so you sign in again after
+    that.
   - Spaces are **not** end-to-end encrypted.
 - **No compare-and-swap** on space writes, so conflict detection has to happen on the client.

@@ -12,6 +12,8 @@ import os
 final class AppModel {
     enum State: Equatable {
         case signedOut
+        /// Waiting for the user to approve access in the browser.
+        case signingIn
         case signedIn(handle: String)
     }
 
@@ -19,9 +21,9 @@ final class AppModel {
     private(set) var busy = false
     private(set) var message: String?
     var handle = ""
-    var password = ""
 
     @ObservationIgnored private var polling: Task<Void, Never>?
+    @ObservationIgnored private var signingIn: Task<Void, Never>?
     private let logger = Logger(subsystem: Log.subsystem, category: "app")
 
     /// How often to check the drive for changes made elsewhere.
@@ -44,20 +46,34 @@ final class AppModel {
         }
     }
 
-    func signIn() async {
-        guard let store = AppGroup.sessionStore(), !busy else { return }
-        busy = true
+    /// Opens the account's own sign-in page in the browser (OAuth), and finishes when the user
+    /// approves there. ATDrive never sees the password.
+    func signIn() {
+        guard let store = AppGroup.sessionStore(), state == .signedOut else { return }
         message = nil
-        defer { busy = false }
-        do {
-            let session = try await Auth.login(identifier: handle, password: password, resolver: IdentityResolver())
-            try store.save(session)
-            password = ""
-            state = .signedIn(handle: session.handle)
-            await addToFinder(handle: session.handle)
-        } catch {
-            message = String(describing: error)
+        state = .signingIn
+        let handle = handle
+        signingIn = Task {
+            do {
+                let session = try await OAuthLogin.signIn(identifier: handle) { url in
+                    await MainActor.run { _ = NSWorkspace.shared.open(url) }
+                }
+                try store.save(session)
+                state = .signedIn(handle: session.handle)
+                await addToFinder(handle: session.handle)
+            } catch is CancellationError {
+                state = .signedOut
+            } catch {
+                message = String(describing: error)
+                state = .signedOut
+            }
         }
+    }
+
+    func cancelSignIn() {
+        signingIn?.cancel()
+        signingIn = nil
+        state = .signedOut
     }
 
     func signOut() async {

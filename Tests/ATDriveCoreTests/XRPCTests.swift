@@ -23,7 +23,7 @@ import Testing
             (200, #"{"value":42}"#, [:]),
         ])
         let saved = Saved()
-        let manager = SessionManager(session) { saved.sessions.append($0) }
+        let manager = SessionManager(session, transport: transport) { saved.sessions.append($0) }
         let client = XRPCClient(service: session.service, session: manager, transport: transport)
 
         struct Output: Decodable { var value: Int }

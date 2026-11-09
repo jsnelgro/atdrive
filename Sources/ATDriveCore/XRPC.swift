@@ -96,6 +96,7 @@ public final class XRPCClient: Sendable {
         if !items.isEmpty { components.queryItems = items.sorted { $0.name < $1.name } }
         let isQuery = body == nil
         var refreshed = false
+        var retriedNonce = false
         var attempt = 0
 
         while true {
@@ -108,11 +109,17 @@ public final class XRPCClient: Sendable {
             }
             var token: String?
             switch auth {
-            case .session: token = await session?.session.accessJwt
-            case .bearer(let value): token = value
+            case .session:
+                if let session {
+                    let authorization = try await session.authorization(
+                        method: request.httpMethod ?? "GET", url: request.url!)
+                    for (name, value) in authorization.headers { request.setValue(value, forHTTPHeaderField: name) }
+                    token = authorization.token
+                }
+            case .bearer(let value):
+                request.setValue("Bearer \(value)", forHTTPHeaderField: "Authorization")
             case .none: break
             }
-            if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
 
             let data: Data
             let response: HTTPURLResponse
@@ -124,13 +131,29 @@ public final class XRPCClient: Sendable {
                 try await Task.sleep(nanoseconds: Self.backoff(attempt))
                 continue
             }
+            let newNonce = await session?.observe(response, for: request.url!) ?? false
             if (200..<300).contains(response.statusCode) { return data }
 
             let error = XRPCError(method: method, status: response.statusCode, body: data)
-            if error.error == "ExpiredToken", case .session = auth, let session, let token, !refreshed {
-                try await session.refresh(expiredAccessToken: token, client: self)
-                refreshed = true
-                continue
+            let challenge = response.header("WWW-Authenticate") ?? ""
+            if case .session = auth, let session, let token {
+                // OAuth: the PDS wants the proof signed with a fresh nonce it just sent.
+                if response.statusCode == 401, challenge.contains("use_dpop_nonce") || error.error == "use_dpop_nonce",
+                    newNonce, !retriedNonce
+                {
+                    retriedNonce = true
+                    continue
+                }
+                let expired =
+                    error.error == "ExpiredToken"
+                    || (response.statusCode == 401
+                        && (["invalid_token", "InvalidToken"].contains(error.error ?? "")
+                            || challenge.contains("invalid_token")))
+                if expired, !refreshed {
+                    try await session.refresh(expiredAccessToken: token)
+                    refreshed = true
+                    continue
+                }
             }
             if response.statusCode == 429, attempt < 6 {
                 try await Task.sleep(nanoseconds: Self.rateLimitDelay(response, attempt: attempt))

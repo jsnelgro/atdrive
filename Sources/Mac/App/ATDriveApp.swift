@@ -28,6 +28,7 @@ struct MenuContent: View {
         VStack(alignment: .leading, spacing: 10) {
             switch model.state {
             case .signedOut: signInForm
+            case .signingIn: waitingForBrowser
             case .signedIn(let handle): signedIn(as: handle)
             }
             if let message = model.message {
@@ -46,19 +47,30 @@ struct MenuContent: View {
     private var signInForm: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Sign in to ATDrive").font(.headline)
-            Text("Your atproto handle and an app password. The password isn't stored.")
+            Text("Enter your handle. You'll approve access on your account's own sign-in page.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             TextField("alice.example.com", text: $model.handle)
                 .textContentType(.username)
-            SecureField("App password", text: $model.password)
-                .onSubmit { Task { await model.signIn() } }
-            Button(model.busy ? "Signing in…" : "Sign In") {
-                Task { await model.signIn() }
+                .onSubmit { model.signIn() }
+            Button("Sign In with Browser") { model.signIn() }
+                .keyboardShortcut(.defaultAction)
+                .disabled(model.handle.isEmpty)
+        }
+    }
+
+    private var waitingForBrowser: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Finish signing in in your browser").font(.headline)
+            Text("Approve ATDrive there, then come back here.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                ProgressView().controlSize(.small)
+                Spacer()
+                Button("Cancel") { model.cancelSignIn() }
             }
-            .keyboardShortcut(.defaultAction)
-            .disabled(model.busy || model.handle.isEmpty || model.password.isEmpty)
         }
     }
 

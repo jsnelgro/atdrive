@@ -3,6 +3,10 @@ import Testing
 
 @testable import ATDriveCore
 
+#if canImport(FoundationNetworking)
+    import FoundationNetworking
+#endif
+
 /// End-to-end against a real spaces-enabled PDS. Skipped unless both are set:
 ///
 ///     ATDRIVE_LIVE_HANDLE=you.example.com ATDRIVE_LIVE_PASSWORD=xxxx-xxxx-xxxx-xxxx \
@@ -64,4 +68,34 @@ private func liveCredentials() -> (handle: String, password: String)? {
         !handle.isEmpty, !password.isEmpty
     else { return nil }
     return (handle, password)
+}
+
+/// Starts a real OAuth sign-in against the account's PDS, up to the point where a person would
+/// approve it in the browser. Needs only a handle, no password:
+///
+///     ATDRIVE_LIVE_HANDLE=you.example.com scripts/test.sh --filter OAuthLiveTests
+@Suite(.enabled(if: liveHandle() != nil, "set ATDRIVE_LIVE_HANDLE"))
+struct OAuthLiveTests {
+    @Test func serverAcceptsOurAuthorizationRequest() async throws {
+        let handle = try #require(liveHandle())
+        let pending = try await OAuthLogin.prepare(identifier: handle, redirectURI: "http://127.0.0.1:43210/")
+        // The PDS accepted the client ID, scopes, redirect URI and DPoP proof (else PAR throws).
+        let url = pending.authorizationURL.absoluteString
+        #expect(url.contains("request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3A"))
+        // And the sign-in page it points to loads. (Problems with the request, like a scope the
+        // server can't show on its consent screen, come back as a redirect with an error instead.)
+        var page = URLRequest(url: pending.authorizationURL)
+        let browser = [
+            "Accept": "text/html", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Site": "cross-site", "Sec-Fetch-User": "?1",
+        ]
+        for (name, value) in browser { page.setValue(value, forHTTPHeaderField: name) }
+        let (_, response) = try await URLSessionTransport().send(page)
+        #expect(response.statusCode == 200)
+
+    }
+}
+
+private func liveHandle() -> String? {
+    ProcessInfo.processInfo.environment["ATDRIVE_LIVE_HANDLE"].flatMap { $0.isEmpty ? nil : $0 }
 }

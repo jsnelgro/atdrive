@@ -22,7 +22,8 @@ scripts/run-app.sh
 
 That builds `ATDrive.app`, installs it to `~/Applications`, and launches it.
 
-1. Click the drive icon in the menu bar and sign in with your handle and an app password.
+1. Click the drive icon in the menu bar, enter your handle, and approve ATDrive on your account's
+   sign-in page in the browser.
 2. **ATDrive** appears in Finder's sidebar under Locations.
 3. Drag files in, open them, rename them, delete them. Changes made elsewhere (another Mac, the
    CLI) show up within about 30 seconds.
@@ -48,7 +49,7 @@ cp build/atdrive ~/.local/bin/
 ```
 
 ```bash
-atdrive login alice.example.com     # prompts for an app password
+atdrive login alice.example.com     # opens your browser to sign in
 atdrive put -r ~/Documents/taxes /  # upload a folder
 atdrive ls -l /taxes
 atdrive tree
@@ -68,10 +69,21 @@ atdrive rm -r /archive/taxes
 
 Paths in the drive always start from the top (`/photos/cat.jpg`).
 
-**Passwords.** Log in with an *app password* if your account has one, since it can be revoked
-without changing your real password. Your main password works too. The password is used once
-and never stored. ATDrive keeps only the session tokens, in `~/.config/atdrive/session.json`
-(mode 600).
+**Signing in.** ATDrive uses atproto OAuth: you sign in on your own PDS's page in the browser,
+and ATDrive never sees your password.
+- **What it gets:** tokens that are tied to a key only it holds, saved in
+  `~/.config/atdrive/session.json` (mode 600) for the CLI, or in the app's container on the Mac.
+- **What it asks for:**
+  - writes only to ATDrive's own records;
+  - creating its space;
+  - uploading file contents;
+  - read access to the private spaces you own. This is broader than ATDrive needs, until
+    its schema is published (see PLAN.md).
+- **Sessions last two weeks.** That's the limit Bluesky's servers set for apps without a
+  backend. After that, sign in again.
+
+On machines without a browser, `atdrive login --app-password <handle>` signs in with an
+app password from your account settings instead.
 
 ## How it works
 
@@ -101,11 +113,20 @@ scripts/test.sh                       # unit tests (no network)
 scripts/format.sh
 ```
 
-The end-to-end test runs against a real spaces PDS and cleans up after itself:
+Live tests against a real spaces PDS:
+
+```bash
+ATDRIVE_LIVE_HANDLE=you.spaces-alpha.bsky.network scripts/test.sh --filter OAuthLiveTests
+```
 
 ```bash
 ATDRIVE_LIVE_HANDLE=you.spaces-alpha.bsky.network ATDRIVE_LIVE_PASSWORD=xxxx-xxxx-xxxx-xxxx scripts/test.sh --filter LiveTests
 ```
+
+- `OAuthLiveTests` needs no password. It starts a real OAuth sign-in and checks the server accepts
+  it, up to the point where a person would approve it.
+- `LiveTests` runs a full upload/download round trip using an app password, and cleans up after
+  itself.
 
 Mac app logs (app and extension):
 

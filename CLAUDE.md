@@ -6,8 +6,9 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
 
 ## Commands
 
-- `scripts/test.sh`: unit tests (`--filter Name` to run some). `LiveTests` runs only with
-  `ATDRIVE_LIVE_HANDLE` and `ATDRIVE_LIVE_PASSWORD` set, and hits a real PDS.
+- `scripts/test.sh`: unit tests (`--filter Name` to run some). They hit a real PDS only when
+  enabled: `OAuthLiveTests` with `ATDRIVE_LIVE_HANDLE`, and `LiveTests` with that plus
+  `ATDRIVE_LIVE_PASSWORD`.
 - `scripts/build.sh`: release binary at `build/atdrive`. The Swift runtime is static on Linux.
 - `scripts/format.sh`: formatting (config in `.swift-format`).
 - `scripts/build-app.sh` / `scripts/run-app.sh` (macOS): build `build/ATDrive.app` (and install
@@ -18,7 +19,11 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
 
 - `Sources/ATDriveCore`: everything except the CLI, so the macOS/iOS File Provider extension and
   the Linux FUSE mount can reuse it later.
-  - `XRPC.swift`, `Session.swift`: HTTP API client, token refresh, login.
+  - `XRPC.swift`, `Session.swift`: HTTP API client; `SessionManager` signs requests (Bearer, or
+    DPoP for OAuth), tracks DPoP nonces and refreshes tokens.
+  - `OAuth.swift`, `DPoP.swift`, `LoopbackServer.swift`: atproto OAuth sign-in (PAR + PKCE +
+    DPoP, loopback client ID, browser redirect caught on 127.0.0.1). The default. App-password
+    login (`Auth.login`) is kept for scripts and tests.
   - `Identity.swift`: handle → DID → PDS. Never hardcode a PDS or account.
   - `Spaces.swift`: **every** `com.atproto.space.*` call. The alpha API changes weekly, so keep it
     contained here.

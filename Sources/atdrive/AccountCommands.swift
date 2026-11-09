@@ -4,24 +4,40 @@ import Foundation
 
 struct Login: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Log in with your handle and an app password.",
+        abstract: "Sign in through your account's sign-in page in the browser.",
         discussion: """
-            The password is used once to start a session and is never saved. Use an app
-            password rather than your main one. Set ATDRIVE_APP_PASSWORD or pass
-            --password-stdin to log in without a prompt.
+            Opens your PDS's own sign-in page; ATDrive never sees your password. After you
+            approve access, the browser hands control back to this command.
+
+            On a machine without a browser, use --app-password with an app password from your
+            account settings (or set ATDRIVE_APP_PASSWORD).
             """
     )
 
     @Argument(help: "Your handle (e.g. alice.example.com) or DID.")
     var handle: String
 
-    @Flag(help: "Read the password from standard input.")
+    @Flag(help: "Log in with an app password instead of the browser (for servers and scripts).")
+    var appPassword = false
+
+    @Flag(help: "With --app-password: read the password from standard input.")
     var passwordStdin = false
 
     func run() async throws {
-        let password = try readPassword()
-        let session = try await Auth.login(
-            identifier: handle, password: password, resolver: IdentityResolver())
+        let session: Session
+        if appPassword || passwordStdin || ProcessInfo.processInfo.environment["ATDRIVE_APP_PASSWORD"] != nil {
+            session = try await Auth.login(
+                identifier: handle, password: try readPassword(), resolver: IdentityResolver())
+        } else {
+            session = try await OAuthLogin.signIn(identifier: handle) { url in
+                // Written unbuffered, so it shows up even when output isn't a terminal.
+                FileHandle.standardOutput.write(
+                    Data(
+                        "Opening your browser to sign in. If it doesn't open, go to:\n\n  \(url.absoluteString)\n\n"
+                            .utf8))
+                openInBrowser(url)
+            }
+        }
         try SessionStore().save(session)
         print("Logged in as @\(session.handle) (\(session.did)) on \(session.service.host ?? "\(session.service)")")
     }
@@ -72,4 +88,19 @@ struct WhoAmI: AsyncParsableCommand {
         print("pds:    \(session.service.absoluteString)")
         print("drive:  \(context.drive.space)")
     }
+}
+
+/// Opens a URL in the default browser (best effort: the URL is printed too).
+private func openInBrowser(_ url: URL) {
+    let process = Process()
+    #if os(macOS)
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = [url.absoluteString]
+    #else
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["xdg-open", url.absoluteString]
+    #endif
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try? process.run()
 }
