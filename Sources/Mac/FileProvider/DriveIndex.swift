@@ -7,9 +7,12 @@ import Foundation
 /// enumerators can report "what changed since revision X" by comparing two snapshots.
 ///
 /// The repo revision (a TID that moves on every write) doubles as the File Provider sync anchor.
-/// Checking it is one small request, so a full listing only happens when something changed.
+/// The drive is kept current with its change feed (`Drive.update`): one small request when
+/// nothing changed, and only what changed otherwise.
 actor DriveIndex {
     private var cachedDrive: Drive?
+    /// The drive as last fetched, every record included.
+    private var snapshot: DriveSnapshot?
     private var current: (revision: String, tree: DriveTree)?
     private var history: [(revision: String, tree: DriveTree)] = []
     private let historyLimit = 16
@@ -29,13 +32,19 @@ actor DriveIndex {
         return drive
     }
 
-    /// The drive as it is now: re-listed only if its revision moved since last time.
+    /// The drive as it is now, with the changes since last time applied.
     func refresh() async throws -> (revision: String, tree: DriveTree) {
         let drive = try drive()
-        let revision = try await drive.latestRevision() ?? Self.emptyRevision
+        let updated = try await drive.update(snapshot)
+        if updated.revision == nil, let current, current.revision != Self.emptyRevision {
+            // Gone since we last saw it (say the server was wiped). Showing it as empty would
+            // delete everything here, which may be the only copy left.
+            throw NSFileProviderError(.serverUnreachable)
+        }
+        snapshot = updated
+        let revision = updated.revision ?? Self.emptyRevision
         if let current, current.revision == revision { return current }
-        let tree = try await drive.tree()
-        let latest = (revision: revision, tree: tree)
+        let latest = (revision: revision, tree: updated.tree)
         current = latest
         history.removeAll { $0.revision == revision }
         history.append(latest)

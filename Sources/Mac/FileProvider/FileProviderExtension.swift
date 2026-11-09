@@ -164,6 +164,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 let editedSHA = try edited.map(Drive.sha256(of:))
                 let baseSHA = Item.sha256(in: version)
 
+                // On the drive, but this Mac can't read it now: never written over. The change
+                // is tried again later, and settled once it can be read.
+                if tree.unreadable[item.itemIdentifier.rawValue] != nil {
+                    throw NSFileProviderError(.serverUnreachable)
+                }
                 guard let node = tree.nodes[item.itemIdentifier.rawValue] else {
                     // Deleted on the drive. Kept if it was edited here; otherwise the delete stands.
                     guard let edited, let editedSHA, !ConflictRules.deleteStands(base: baseSHA, other: editedSHA)
@@ -319,6 +324,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 guard folder.isFolder else { throw NSFileProviderError(.noSuchItem) }
                 return folder.id
             }
+            // Still there, but unreadable here now: used as it is, never put back over.
+            if tree.unreadable[identifier.rawValue] != nil { return identifier.rawValue }
             guard let gone = await index.seenNode(identifier.rawValue), gone.isFolder else {
                 throw NSFileProviderError(.noSuchItem)
             }
