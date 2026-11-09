@@ -1,5 +1,14 @@
 # ATDrive
 
+## Human-written
+
+A cli and macOS app providing an iCloud-like experience using ATProto Spaces. The macOS app includes Apple File Provider support, so it plays nicely with Finder (and potentially the iOS files app if I ever decide to dig into that). In Finder, you can drag and drop files, move them, open in a terminal, etc. On linux, you can use the `atdrive sync` command to sync a folder and use it in the same way (WIP, claude's currently churning on that).
+
+<img width="742" height="494" alt="macOS Finder Screenshot" src="https://github.com/user-attachments/assets/69353fcd-bd79-4906-ad38-7f70d043dc39" />
+
+
+# Claude Slop
+
 A file drive that keeps your files in your own atproto account, privately, using
 [atproto spaces](https://atproto.com/blog/atproto-spaces-alpha). On macOS the drive shows up in
 Finder like iCloud Drive or Dropbox: files download when you open them and upload when you save.
