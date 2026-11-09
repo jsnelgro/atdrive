@@ -145,7 +145,9 @@ struct AppPasswordsView: View {
         ) { password in
             Button("Delete", role: .destructive) { Task { await model.delete(password.name) } }
         } message: { _ in
-            Text("Anything signed in with it stops working.")
+            Text(
+                "Anything signed in with it is signed out within about 2 hours, when its current access token expires. The server can't cut that short."
+            )
         }
     }
 

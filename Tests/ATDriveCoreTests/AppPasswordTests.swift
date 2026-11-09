@@ -33,6 +33,19 @@ import Testing
         #expect(pds.authorizations.dropFirst().allSatisfy { $0.hasPrefix("Bearer full-") })
     }
 
+    @Test func aRevokedSessionSaysSoInsteadOfARawError() async throws {
+        // What a client signed in with a deleted app password sees once its access token expires.
+        let transport = ScriptedTransport([
+            (400, #"{"error":"ExpiredToken","message":"Token has expired"}"#, [:]),
+            (400, #"{"error":"ExpiredToken","message":"Token has been revoked"}"#, [:]),
+        ])
+        let client = XRPCClient(
+            service: account.service, session: SessionManager(account, transport: transport), transport: transport)
+        await #expect(throws: ATDriveError.sessionEnded) {
+            let _: XRPCClient.Empty = try await client.query("com.example.anything")
+        }
+    }
+
     @Test func wrongPassword() async throws {
         let pds = FakeAccountPDS(password: "hunter2", scope: "com.atproto.access")
         await #expect(throws: ATDriveError.loginFailed("wrong password")) {

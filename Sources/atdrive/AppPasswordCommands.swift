@@ -80,7 +80,13 @@ struct CreateAppPassword: AsyncParsableCommand {
 
 struct DeleteAppPassword: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "delete", abstract: "Delete an app password. Anything signed in with it stops working.")
+        commandName: "delete",
+        abstract: "Delete an app password. Anything signed in with it is signed out within about 2 hours.",
+        discussion: """
+            Deleting it stops anything signed in with it from renewing its session. An access token
+            it already holds keeps working until it expires (2 hours on Bluesky's PDS); the
+            server offers no way to cut that short.
+            """)
 
     @Argument(help: "Its name, as shown by `atdrive app-passwords`.")
     var name: String
@@ -94,6 +100,6 @@ struct DeleteAppPassword: AsyncParsableCommand {
             }
             try await manager.revoke(name: name)
         }
-        print("Deleted app password \"\(name)\".")
+        print("Deleted app password \"\(name)\". Anything signed in with it is signed out within about 2 hours.")
     }
 }

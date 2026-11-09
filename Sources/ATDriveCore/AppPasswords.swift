@@ -81,7 +81,8 @@ public struct AppPasswordManager: Sendable {
         return try await client.procedure("com.atproto.server.createAppPassword", Input(name: name))
     }
 
-    /// Anything signed in with it stops working.
+    /// Anything signed in with it can't renew its session. Access tokens it already holds stay
+    /// valid until they expire (2 hours on the reference PDS): the server has no way to revoke them.
     public func revoke(name: String) async throws {
         struct Input: Encodable { var name: String }
         let _: XRPCClient.Empty = try await client.procedure("com.atproto.server.revokeAppPassword", Input(name: name))

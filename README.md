@@ -92,7 +92,9 @@ For scripts, `atdrive login --app-password <handle>` signs in with an app passwo
 make one with `atdrive app-passwords create <name>`, or from the Mac app's menu (App Passwords…).
 Either way your account password is needed. Your PDS only lets app passwords be managed with
 it, not with a browser sign-in. It's used for that one task and never saved. App passwords
-don't expire; delete them when you're done.
+don't expire; delete them when you're done. Deleting one stops anything signed in with it from
+renewing its session, but an access token it already holds keeps working until it expires
+(2 hours on Bluesky's PDS). The server has no way to cut that short.
 
 ## How it works
 
