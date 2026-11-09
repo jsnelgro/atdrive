@@ -77,7 +77,7 @@ struct MenuContent: View {
     private func signedIn(as handle: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Label("@\(handle)", systemImage: "person.crop.circle").font(.headline)
-            Button("Open in Finder") { Task { await model.openInFinder() } }
+            Button("Show in Finder") { Task { await model.showInFinder() } }
             Button("Check for Changes") { Task { await model.syncNow() } }
             Button("Sign Out") { Task { await model.signOut() } }
                 .disabled(model.busy)

@@ -97,12 +97,16 @@ final class AppModel {
         message = nil
     }
 
-    func openInFinder() async {
+    /// Shows the drive in Finder. A sandboxed app can't *open* a folder outside its container
+    /// (`NSWorkspace.open` fails with "doesn't have permission"), but it can ask Finder to
+    /// reveal one, which is allowed.
+    func showInFinder() async {
         guard let manager = DriveDomain.manager else { return }
         do {
-            NSWorkspace.shared.open(try await manager.getUserVisibleURL(for: .rootContainer))
+            let url = try await manager.getUserVisibleURL(for: .rootContainer)
+            NSWorkspace.shared.activateFileViewerSelecting([url])
         } catch {
-            message = "Couldn't open the drive: \(error.localizedDescription)"
+            message = "Couldn't show the drive: \(error.localizedDescription)"
         }
     }
 
@@ -118,7 +122,8 @@ final class AppModel {
 
     private func addToFinder(handle: String) async {
         do {
-            try await NSFileProviderManager.add(DriveDomain.make(displayName: "@\(handle)"))
+            // macOS names the folder "ATDrive-<display name>" and shows the name in the sidebar.
+            try await NSFileProviderManager.add(DriveDomain.make(displayName: handle))
         } catch {
             message = "Couldn't add ATDrive to Finder: \(error.localizedDescription)"
             logger.error("adding domain failed: \(String(describing: error), privacy: .public)")
