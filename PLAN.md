@@ -39,13 +39,48 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
     - Push instead of polling.
     - Upload/download progress in Finder.
     - Show "click Enable in Finder" in the menu until the drive is enabled.
-- [ ] **Phase 3, Linux:** `atdrive mount <dir>` over FUSE (libfuse3 via a C module).
+- [x] **Phase 3, Linux: a synced folder,** `atdrive sync [~/atdrive]` (plus `--install` for a
+  systemd user service). Chosen over a FUSE mount because it works on any server (no root,
+  `/dev/fuse` or libfuse), keeps working offline, and every program sees ordinary files.
+  - **Tested** with unit tests against `FakePDS` and real folders: first-sync merges, edits,
+    moves and deletes in both directions, conflicts, interrupted passes, and the inotify watcher.
+  - **Not yet exercised:** against the live alpha PDS, and under systemd on a real server.
+  - **How it works:** see *Folder sync* below.
+  - **Later:** a FUSE mount, for drives too big to keep a full copy of (files fetched on demand).
+    Uploading only the changed chunks of an edited file. Several transfers at once.
 - [ ] **Phase 4, iOS:** the same extension code with an iOS host app.
 - [ ] **Later:**
   - Publish the lexicons and narrow the OAuth scope (see below).
   - Shared folders (`memberspace`).
   - Client-side encryption.
   - Parallel transfers.
+
+## Folder sync
+
+`FolderSync` (in `Sources/ATDriveCore/Sync/`) runs in passes: on a local change (inotify), and
+every 30 seconds to check the drive (`getLatestCommit`; the tree is listed only when the revision
+moved).
+
+- **Three-way merge, by node ID.** `.atdrive/state.json` in the folder records what the last pass
+  left in agreement: each node's parent, name, hash, and the local file's `lstat`. Each side is
+  compared with it, so "deleted here" and "new on the drive" can be told apart. Local items keep
+  their node ID by path, then by inode (renames and moves, including whole folders), then by hash
+  (copied and deleted, e.g. across disks). Files are read only when their `lstat` changed.
+- **Rules** (`SyncPlan`): a change on one side is applied to the other. A file edited on both sides
+  keeps the drive's version, and the local one becomes a conflicted copy. Moved on both sides: the
+  drive's move wins. Deleted on one side but edited on the other: kept. A folder is kept if
+  anything kept is inside it. Two things with one name: one is renamed, unless they're the same
+  (a folder, or a file with the same hash), in which case they're paired up. A first sync is
+  just this, starting from an empty state.
+- **Applying** (`SyncRun`): local moves go through `.atdrive/staging` (with a journal, so a killed
+  pass is recovered), so swaps and moves into new folders work. Then the drive is updated, then
+  files are downloaded to `.atdrive/downloads` and renamed into place. Nothing local is
+  overwritten or deleted if its `lstat` changed since the folder was listed; it's left for the next
+  pass. Only items that got all the way through are saved as agreed, so an interrupted pass picks
+  up where it left off (and an interrupted conflict doesn't make two copies).
+- **Guards:** it stops if the folder or `.atdrive` disappears, refuses a folder synced with
+  another account, and takes a lock so only one sync runs per folder. Files changed in the last
+  couple of seconds wait (they may still be being written).
 
 ## Data model
 

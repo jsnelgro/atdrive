@@ -18,7 +18,7 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
 ## Layout
 
 - `Sources/ATDriveCore`: everything except the CLI, so the macOS/iOS File Provider extension and
-  the Linux FUSE mount can reuse it later.
+  the Linux synced folder can reuse it.
   - `XRPC.swift`, `Session.swift`: HTTP API client; `SessionManager` signs requests (Bearer, or
     DPoP for OAuth), tracks DPoP nonces and refreshes tokens.
   - `OAuth.swift`, `DPoP.swift`, `LoopbackServer.swift`: atproto OAuth sign-in (PAR + PKCE +
@@ -29,6 +29,9 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
     contained here.
   - `Records.swift`, `Lexicon.swift`: the `me.jsnelgro.atdrive.*` record model (matches `lexicons/`).
   - `DriveTree.swift`: in-memory tree and path lookup. `Drive.swift`: upload, download, move, delete.
+  - `Sync/`: two-way folder sync (`atdrive sync`, the Linux "drive folder"). `SyncPlan` is the pure
+    three-way merge (last agreed state vs. folder vs. drive, keyed by node ID); `FolderSync` /
+    `SyncRun` apply it with POSIX calls; `FolderWatcher` is inotify. See PLAN.md, "Folder sync".
 - `Sources/atdrive`: the CLI (swift-argument-parser). Commands are thin; logic belongs in the core.
 - `Sources/Mac` (targets added in Package.swift only `#if os(macOS)`, Swift 5 language mode):
   - `FileProvider/`: `NSFileProviderReplicatedExtension`. `DriveIndex` caches trees by repo

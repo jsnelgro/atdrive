@@ -10,7 +10,8 @@ var products: [Product] = [
 
 var targets: [Target] = [
     // Everything that isn't UI: protocol client, identity, auth, the drive model.
-    // Shared by the CLI, the macOS app and File Provider extension, and (later) Linux FUSE.
+    // Shared by the CLI (including `atdrive sync`, the Linux synced folder), the macOS app and
+    // File Provider extension.
     .target(
         name: "ATDriveCore",
         dependencies: [.product(name: "Crypto", package: "swift-crypto")]

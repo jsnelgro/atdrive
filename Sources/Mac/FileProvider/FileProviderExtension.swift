@@ -248,18 +248,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
     /// `report.pdf` → `report (conflicted copy 2026-11-09 1432).pdf`, unused in the folder.
     static func conflictName(for name: String, in parent: String?, tree: DriveTree) -> String {
-        let stem = (name as NSString).deletingPathExtension
-        let ext = (name as NSString).pathExtension
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HHmm"
-        let base = "\(stem) (conflicted copy \(formatter.string(from: Date())))"
-        var candidate = ext.isEmpty ? base : "\(base).\(ext)"
-        var counter = 2
-        while tree.child(named: candidate, in: parent) != nil {
-            candidate = ext.isEmpty ? "\(base) \(counter)" : "\(base) \(counter).\(ext)"
-            counter += 1
-        }
-        return candidate
+        ConflictName.make(for: name) { tree.child(named: $0, in: parent) != nil }
     }
 
     private static func report(to progress: Progress) -> Drive.Progress {

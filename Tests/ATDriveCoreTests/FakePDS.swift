@@ -21,17 +21,27 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
     var corruptDownloads = false
     /// Records per listRecords page, to exercise paging.
     var pageSize = 2
+    /// Fail the next calls to these methods (e.g. `com.atproto.space.getBlob`) with a 500.
+    var failing: [String: Int] = [:]
 
     var recordCount: Int { lock.withLock { records.count } }
 
+    /// Called with each method name before it's handled (e.g. to change something mid-sync).
+    var onRequest: (@Sendable (String) -> Void)?
+
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        lock.withLock { handle(request) }
+        onRequest?(request.url!.lastPathComponent)
+        return lock.withLock { handle(request) }
     }
 
     private func handle(_ request: URLRequest) -> (Data, HTTPURLResponse) {
         let url = request.url!
         let method = url.lastPathComponent
         calls.append(method)
+        if let remaining = failing[method], remaining > 0 {
+            failing[method] = remaining - 1
+            return error(500, "InternalServerError")
+        }
         let query = Dictionary(
             (URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []).map {
                 ($0.name, $0.value ?? "")
@@ -88,7 +98,12 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
             for write in body["writes"] as! [[String: Any]] {
                 records[write["rkey"] as! String] = nil
             }
+            recordVersion += 1
             return json([:])
+
+        case "com.atproto.space.getLatestCommit":
+            guard spaceExists else { return error(400, "RepoNotFound") }
+            return json(["commit": ["cid": "bafycommit\(recordVersion)", "rev": "rev\(recordVersion)"]])
 
         default:
             return error(501, "MethodNotImplemented")
