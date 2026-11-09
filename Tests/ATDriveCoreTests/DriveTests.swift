@@ -97,7 +97,7 @@ import Testing
         #expect(tree.nodes.isEmpty)
     }
 
-    @Test func oddRecordsAreSkippedNotFatal() async throws {
+    @Test func oddRecordsAreUnreadableNotFatalOrDropped() async throws {
         pds.insertRawRecord(
             rkey: "3aaaaaaaaaaa2",
             ["$type": Lexicon.node, "name": "future", "kind": "symlink", "createdAt": "2026-01-01T00:00:00Z"])
@@ -107,7 +107,10 @@ import Testing
         pds.insertRawRecord(
             rkey: "3aaaaaaaaaaa4",
             ["$type": Lexicon.node, "name": "..", "kind": "file", "createdAt": "2026-01-01T00:00:00Z"])
-        #expect(try await drive.tree().children(of: nil).map(\.name) == ["ok"])
+        let tree = try await drive.tree()
+        #expect(tree.children(of: nil).map(\.name) == ["ok"])
+        #expect(tree.unreadable.mapValues(\.reason) == ["3aaaaaaaaaaa2": .newerFormat, "3aaaaaaaaaaa4": .invalidName])
+        #expect(tree.unreadable["3aaaaaaaaaaa2"]?.cid == pds.cid(of: "3aaaaaaaaaaa2"))
     }
 
     @Test func rejectsInvalidNames() async throws {

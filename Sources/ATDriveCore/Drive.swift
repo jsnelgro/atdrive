@@ -37,31 +37,123 @@ public final class Drive: Sendable {
     // MARK: Reading
 
     /// Every file and folder in the drive. An empty drive (or one never written to) is empty.
+    /// Records this device can't read are in the tree's `unreadable`.
     public func tree() async throws -> DriveTree {
-        var nodes: [Node] = []
+        var entries: [NodeEntry] = []
         var cursor: String?
         repeat {
-            let page: XRPCClient.SpaceRecordPage<NodeRecord>
+            let page: XRPCClient.SpaceRecordPage<JSONValue>
             do {
                 page = try await client.listSpaceRecords(
-                    space: space, repo: owner, collection: Lexicon.node, cursor: cursor,
-                    as: NodeRecord.self)
-            } catch let error as XRPCError
-                where error.error == "SpaceNotFound" || error.error == "RepoNotFound"
-            {
+                    space: space, repo: owner, collection: Lexicon.node, cursor: cursor, as: JSONValue.self)
+            } catch let error as XRPCError where Self.isMissing(error) {
                 return DriveTree([])
             }
-            nodes += page.records.compactMap { record in
-                // Skip records we can't read, or whose names could escape a local folder
-                // (e.g. "..") when downloaded. Our own writes never produce these.
-                guard let value = record.value, (try? DrivePath.validate(name: value.name)) != nil else {
-                    return nil
-                }
-                return Node(id: record.rkey, cid: record.cid, record: value)
-            }
+            entries += page.records.map { readNode(id: $0.rkey, cid: $0.cid, value: $0.value) }
             cursor = page.records.isEmpty ? nil : page.cursor
         } while cursor != nil
-        return DriveTree(nodes)
+        return DriveTree(entries)
+    }
+
+    /// The one place a stored node record becomes a `Node`, for listings and the change feed
+    /// alike. A record that doesn't decode (a newer format) is unreadable rather than dropped,
+    /// so it can't look deleted; so is one whose name could escape a local folder (e.g. `..`)
+    /// when downloaded. Our own writes never produce either.
+    public func readNode(id: String, cid: String, value: JSONValue?) -> NodeEntry {
+        guard let value, let record = try? value.decode(as: NodeRecord.self) else {
+            return .unreadable(UnreadableNode(id: id, cid: cid, reason: .newerFormat, value: value))
+        }
+        guard (try? DrivePath.validate(name: record.name)) != nil else {
+            return .unreadable(UnreadableNode(id: id, cid: cid, reason: .invalidName, value: value))
+        }
+        return .readable(Node(id: id, cid: cid, record: record))
+    }
+
+    // MARK: Following changes
+
+    /// Every write since `revision`, in every collection, in order (pages followed to the end),
+    /// and the commit the drive is now at: `nil` if the drive has no repo (gone, or never
+    /// written to). The feed may have been compacted: `DriveSnapshot` checks that it connects.
+    public func changes(since revision: String) async throws -> DriveChanges {
+        var ops: [RepoOp] = []
+        var cursor: String?
+        while true {
+            let page: RepoOpsPage
+            do {
+                page = try await client.listRepoOps(space: space, repo: owner, since: revision, cursor: cursor)
+            } catch let error as XRPCError where Self.isMissing(error) {
+                return DriveChanges(ops: [], commit: nil)
+            }
+            ops += page.ops
+            guard page.commit == nil, let next = page.cursor, !page.ops.isEmpty else {
+                return DriveChanges(ops: ops, commit: page.commit)
+            }
+            cursor = next
+        }
+    }
+
+    /// Brings a snapshot of the drive up to date: applies the changes since its revision, which
+    /// is one request when nothing changed. Lists the whole drive instead when there's no
+    /// snapshot (or revision), when the change feed doesn't connect to it or the server refuses
+    /// it, and, while snapshots can't be checked exactly, once per process and every hour (a
+    /// compacted feed can hide writes; see `DriveSnapshot.needsFullListing`).
+    ///
+    /// A drive that's gone comes back as a snapshot with no revision: callers that have synced
+    /// before must not take that for an empty drive.
+    public func update(_ snapshot: DriveSnapshot?, now: Date = Date()) async throws -> DriveSnapshot {
+        guard var snapshot, let revision = snapshot.revision, !snapshot.needsFullListing(at: now) else {
+            return try await listEverything(now: now)
+        }
+        do {
+            try snapshot.apply(try await changes(since: revision), strict: true, read: readNode)
+            return snapshot
+        } catch let error where error is ChangeFeedGap || Self.isRefusal(error) {
+            return try await listEverything(now: now)
+        }
+    }
+
+    /// The whole drive, every collection, listed from scratch. Writes made while listing are
+    /// caught up on with the change feed, so the snapshot is exactly at a revision.
+    public func listEverything(now: Date = Date()) async throws -> DriveSnapshot {
+        var problem = ChangeFeedGap(description: "the drive kept changing while it was listed")
+        for _ in 0..<3 {
+            guard let commit = try await client.latestSpaceCommit(space: space, repo: owner) else {
+                return DriveSnapshot(listedAt: now)
+            }
+            var listing: [(collection: String, rkey: String, cid: String, value: JSONValue?)] = []
+            var cursor: String?
+            repeat {
+                let page: XRPCClient.SpaceRecordPage<JSONValue>
+                do {
+                    page = try await client.listSpaceRecords(
+                        space: space, repo: owner, collection: nil, cursor: cursor, as: JSONValue.self)
+                } catch let error as XRPCError where Self.isMissing(error) {
+                    return DriveSnapshot(listedAt: now)
+                }
+                listing += page.records.map { ($0.collection ?? Lexicon.node, $0.rkey, $0.cid, $0.value) }
+                cursor = page.records.isEmpty ? nil : page.cursor
+            } while cursor != nil
+            var snapshot = DriveSnapshot(listing: listing, commit: commit, listedAt: now, read: readNode)
+            do {
+                try snapshot.apply(try await changes(since: commit.rev), strict: false, read: readNode)
+                return snapshot
+            } catch let gap as ChangeFeedGap {
+                problem = gap
+            }
+        }
+        throw problem
+    }
+
+    private static func isMissing(_ error: XRPCError) -> Bool {
+        error.error == "SpaceNotFound" || error.error == "RepoNotFound"
+    }
+
+    /// The server answered, but not with changes we could use (e.g. a revision it no longer
+    /// knows). Network trouble isn't one of these: a full listing would fail the same way.
+    private static func isRefusal(_ error: Error) -> Bool {
+        if error is XRPCError { return true }
+        if case .unexpectedResponse? = error as? ATDriveError { return true }
+        return false
     }
 
     /// Streams a file's contents in order, verifying every chunk and the whole file.
@@ -116,7 +208,7 @@ public final class Drive: Sendable {
     }
 
     /// The revision (TID) of the latest change to the drive, or `nil` if nothing has ever been
-    /// written. Cheap: use it to check for changes before listing everything with `tree()`.
+    /// written. To follow changes, use `update` (or `changes(since:)`) instead.
     public func latestRevision() async throws -> String? {
         try await client.latestSpaceRevision(space: space, repo: owner)
     }
@@ -230,4 +322,20 @@ public final class Drive: Sendable {
             return Node(id: id, cid: try await put(), record: record)
         }
     }
+}
+
+/// What the change feed says happened since a revision (`Drive.changes(since:)`).
+public struct DriveChanges: Sendable {
+    /// Every write, in every collection, in order. An op's value is there only while its
+    /// version is the record's current one, so ops that later ones replaced have none.
+    public var ops: [RepoOp]
+    /// The commit the drive is now at; `nil` if it has no repo (gone, or never written to).
+    public var commit: RepoCommit?
+
+    public init(ops: [RepoOp], commit: RepoCommit?) {
+        self.ops = ops
+        self.commit = commit
+    }
+
+    public var revision: String? { commit?.rev }
 }

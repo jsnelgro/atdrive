@@ -118,7 +118,8 @@ import Testing
         let calls = pds.calls.count
         #expect(try await sync.sync().changes == 0, sourceLocation: sourceLocation)
         let writes = pds.calls[calls...].filter {
-            !["com.atproto.space.getLatestCommit", "com.atproto.space.listRecords"].contains($0)
+            !["com.atproto.space.getLatestCommit", "com.atproto.space.listRecords", "com.atproto.space.listRepoOps"]
+                .contains($0)
         }
         #expect(writes.isEmpty, "\(writes)", sourceLocation: sourceLocation)
         #expect(try localFiles() == files, sourceLocation: sourceLocation)
@@ -483,6 +484,167 @@ import Testing
         try FileManager.default.removeItem(at: folder)
         await #expect(throws: SyncError.folderMissing(sync.root)) { try await sync.sync() }
         #expect(try await driveFiles() == ["a.txt"])
+    }
+
+    // MARK: Can't see it isn't deleted
+
+    /// A record as a newer version of ATDrive might write it: one this version can't decode.
+    func newerFormat(_ name: String) -> [String: Any] {
+        ["$type": Lexicon.node, "name": name, "kind": "package", "createdAt": "2026-11-09T00:00:00Z"]
+    }
+
+    @Test func anUnreadableFileIsLeftAloneOnBothSides() async throws {
+        try write("a.txt", "mine")
+        try write("b.txt", "bee")
+        let log = Log()
+        let sync = try FolderSync(folder: folder, drive: drive, settle: 0) { log.add($0) }
+        try await sync.sync()
+        let id = try await node("/a.txt").id
+
+        pds.insertRawRecord(rkey: id, newerFormat("a.txt"))
+        let cid = pds.cid(of: id)
+        try await sync.sync()
+        #expect(read("a.txt") == "mine")  // not taken for deleted on the drive
+
+        try write("a.txt", "mine, edited")
+        try await sync.sync()
+        #expect(pds.cid(of: id) == cid)  // not written over
+        try remove("a.txt")
+        try await sync.sync()
+        #expect(pds.cid(of: id) == cid)  // not deleted either
+
+        // Said once, and everything else still syncs.
+        #expect(log.events.filter { $0.kind == .unreadable }.map(\.path) == ["/a.txt"])
+        try await put("/b.txt", "bee, edited elsewhere")
+        try await sync.sync()
+        #expect(read("b.txt") == "bee, edited elsewhere")
+        #expect(try localFiles() == ["b.txt"])
+    }
+
+    @Test func whatChangedHereWhileUnreadableSyncsOnceItCanBeRead() async throws {
+        try write("a.txt", "v1")
+        let sync = try open()
+        try await sync.sync()
+        let original = try await node("/a.txt")
+
+        pds.insertRawRecord(rkey: original.id, newerFormat("a.txt"))
+        try write("a.txt", "v2 from here")
+        try await sync.sync()
+        #expect(read("a.txt") == "v2 from here")
+
+        // Readable again, as it was: the edit here goes up, since its saved state was kept.
+        try await other.restore(original)
+        try await sync.sync()
+        #expect(try await driveContents("/a.txt") == "v2 from here")
+        #expect(try await node("/a.txt").id == original.id)
+        try await expectSettled(sync)
+    }
+
+    @Test func whatsInAnUnreadableFolderStillSyncs() async throws {
+        try write("docs/a.txt", "a")
+        let sync = try open()
+        try await sync.sync()
+        let docs = try await node("/docs")
+        let a = try await node("/docs/a.txt")
+
+        pds.insertRawRecord(rkey: docs.id, newerFormat("docs"))
+        let docsCID = pds.cid(of: docs.id)
+        let scratch = try temporaryDirectory()
+        try Data("a, edited elsewhere".utf8).write(to: scratch.appendingPathComponent("a"))
+        try Data("new".utf8).write(to: scratch.appendingPathComponent("b"))
+        try await other.upload(scratch.appendingPathComponent("a"), as: "a.txt", in: docs.id, replacing: a)
+        try await other.upload(scratch.appendingPathComponent("b"), as: "b.txt", in: docs.id)
+        try write("docs/c.txt", "from here")
+        try await sync.sync()
+
+        #expect(try localFiles() == ["docs/", "docs/a.txt", "docs/b.txt", "docs/c.txt"])
+        #expect(read("docs/a.txt") == "a, edited elsewhere")
+        #expect(read("docs/b.txt") == "new")
+        let uploaded = try #require(try await other.tree().nodes.values.first { $0.name == "c.txt" })
+        #expect(uploaded.record.parent == docs.id)
+        #expect(pds.cid(of: docs.id) == docsCID)
+        #expect(try await sync.sync().changes == 0)
+    }
+
+    @Test func aDriveThatsGoneStopsSync() async throws {
+        try write("a.txt", "the only copy")
+        let sync = try open()
+        try await sync.sync()
+
+        pds.wipe()
+        await #expect(throws: SyncError.driveMissing(sync.root)) { try await sync.sync() }
+        try write("b.txt", "new")
+        await #expect(throws: SyncError.driveMissing(sync.root)) { try await sync.sync() }
+        #expect(read("a.txt") == "the only copy")
+        #expect(!pds.spaceExists)  // and not made again with only b.txt in it
+
+        // A folder that never synced still creates the drive.
+        try FileManager.default.removeItem(at: folder.appendingPathComponent(".atdrive"))
+        let fresh = try open()
+        try await fresh.sync()
+        #expect(try await driveFiles() == ["a.txt", "b.txt"])
+    }
+
+    // MARK: Following the drive
+
+    @Test func anIdlePassIsOneRequest() async throws {
+        try write("a.txt", "a")
+        let sync = try open()
+        try await sync.sync()
+        try await sync.sync()
+        let calls = pds.calls.count
+        try await sync.sync()
+        #expect(Array(pds.calls[calls...]) == ["com.atproto.space.listRepoOps"])
+    }
+
+    @Test func changesFromElsewhereArriveWithoutListingEverything() async throws {
+        try await put("/a.txt", "one")
+        try await put("/docs/b.txt", "bee")
+        let sync = try open()
+        try await sync.sync()
+
+        try await put("/a.txt", "one, edited")
+        try await other.delete([try await node("/docs/b.txt")])
+        try await put("/c.txt", "sea")
+        let calls = pds.calls.count
+        try await sync.sync()
+        #expect(!pds.calls[calls...].contains("com.atproto.space.listRecords"))
+        #expect(try localFiles() == ["a.txt", "c.txt", "docs/"])
+        #expect(read("a.txt") == "one, edited")
+        try await expectSettled(sync)
+    }
+
+    @Test func aGapInTheFeedFallsBackToAFullListing() async throws {
+        try await put("/a.txt", "v1")
+        let sync = try open()
+        try await sync.sync()
+
+        try await put("/a.txt", "v2")
+        let compacted = try #require(pds.revision)
+        try await put("/a.txt", "v3")
+        pds.compactOps(through: compacted)
+        let calls = pds.calls.count
+        try await sync.sync()
+        #expect(pds.calls[calls...].contains("com.atproto.space.listRecords"))
+        #expect(read("a.txt") == "v3")
+        try await expectSettled(sync)
+    }
+
+    @Test func theDriveIsSavedForTheNextRun() async throws {
+        try write("a.txt", "a")
+        var sync: FolderSync? = try open()
+        try await sync!.sync()
+        try await sync!.sync()
+        let saved = folder.appendingPathComponent(".atdrive/drive.json").path
+        #expect(FileManager.default.fileExists(atPath: saved))
+        sync = nil
+
+        // Until it can be checked exactly against the drive, it's listed again on start.
+        let reopened = try open()
+        let calls = pds.calls.count
+        #expect(try await reopened.sync().changes == 0)
+        #expect(pds.calls[calls...].contains("com.atproto.space.listRecords"))
+        try await expectSettled(reopened)
     }
 
     @Test func filesStillBeingWrittenWait() async throws {

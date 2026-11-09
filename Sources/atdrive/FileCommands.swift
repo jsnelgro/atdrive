@@ -67,6 +67,11 @@ struct Tree: AsyncParsableCommand {
         print(
             "\n\(folders) folder\(folders == 1 ? "" : "s"), \(files) file\(files == 1 ? "" : "s"), \(Output.size(bytes))"
         )
+        // They exist, but where (and what's in them) can't be shown.
+        if !tree.unreadable.isEmpty {
+            let count = tree.unreadable.count
+            print("(\(count) item\(count == 1 ? "" : "s") in the drive can't be read by this version of atdrive)")
+        }
     }
 }
 
