@@ -84,6 +84,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     }
 
     // MARK: Writing
+    //
+    // Changes from this Mac are settled against the drive with `ConflictRules`, the same rules
+    // `atdrive sync` follows, using the version of each item that the system based its change on.
 
     func createItem(
         basedOn itemTemplate: NSFileProviderItem, fields: NSFileProviderItemFields, contents url: URL?,
@@ -95,8 +98,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             do {
                 let drive = try await index.drive()
                 let tree = try await index.refresh().tree
-                let parent = try folderID(itemTemplate.parentItemIdentifier, in: tree)
-                let name = itemTemplate.filename
+                let parent = try await folderID(itemTemplate.parentItemIdentifier, in: tree, drive: drive)
+                var name = itemTemplate.filename
                 let type = (itemTemplate.contentType ?? nil) ?? .data
                 if type.conforms(to: .symbolicLink) || type.conforms(to: .aliasFile) {
                     throw CocoaError(.featureUnsupported)  // not stored in the drive (yet)
@@ -104,7 +107,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 let isFolder = type.conforms(to: .directory)
 
                 if let existing = tree.child(named: name, in: parent) {
-                    // When re-importing, the system may hand back things the drive already has.
                     let identical: Bool
                     if existing.isFolder != isFolder {
                         identical = false
@@ -115,10 +117,16 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                     } else {
                         identical = existing.record.size == 0
                     }
-                    if options.contains(.mayAlreadyExist), identical {
+                    // The same thing: pair them up, unless this Mac already has the drive's one
+                    // under another name (e.g. renamed on the drive, not caught up yet).
+                    let seenHere = await index.seenNode(existing.id) != nil
+                    if identical, options.contains(.mayAlreadyExist) || !seenHere {
+                        await index.noteSeen(existing, parent: parent)
                         return completionHandler(Item(existing, in: tree), [], false, nil)
                     }
-                    throw NSFileProviderError(.filenameCollision)
+                    // Different things with one name: the newcomer is renamed.
+                    name = Self.conflictName(for: name, in: parent, tree: tree)
+                    logger.notice("name clash in \(parent ?? "/", privacy: .public): new item renamed")
                 }
 
                 let node: Node
@@ -130,6 +138,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                         try url ?? emptyFile(), as: name, in: parent, modified: modified,
                         progress: Self.report(to: progress))
                 }
+                await index.noteSeen(node, parent: parent)
                 completionHandler(Item(node: node, parentID: parent), [], false, nil)
                 signalChanges()
             } catch {
@@ -150,46 +159,93 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             do {
                 let drive = try await index.drive()
                 let tree = try await index.refresh().tree
+                let modified = (item.contentModificationDate ?? nil)
+                let edited = changedFields.contains(.contents) ? newContents : nil
+                let editedSHA = try edited.map(Drive.sha256(of:))
+                let baseSHA = Item.sha256(in: version)
+
                 guard let node = tree.nodes[item.itemIdentifier.rawValue] else {
-                    throw NSFileProviderError(.noSuchItem)
-                }
-                let currentParent = tree.parent(of: node.id)
-                let parent =
-                    try changedFields.contains(.parentItemIdentifier)
-                    ? folderID(item.parentItemIdentifier, in: tree) : currentParent
-                let name = changedFields.contains(.filename) ? item.filename : node.name
-                let relocating = parent != currentParent || name != node.name
-                if relocating {
-                    if let clash = tree.child(named: name, in: parent), clash.id != node.id {
-                        throw NSFileProviderError(.filenameCollision)
+                    // Deleted on the drive. Kept if it was edited here; otherwise the delete stands.
+                    guard let edited, let editedSHA, !ConflictRules.deleteStands(base: baseSHA, other: editedSHA)
+                    else { throw NSFileProviderError(.noSuchItem) }
+                    let parent = (try? await folderID(item.parentItemIdentifier, in: tree, drive: drive)) ?? nil
+                    var name = item.filename
+                    if tree.child(named: name, in: parent) != nil {
+                        name = Self.conflictName(for: name, in: parent, tree: tree)
                     }
-                    if node.isFolder, let parent, tree.isInside(parent, folder: node.id) {
-                        throw CocoaError(.fileWriteNoPermission)  // a folder can't go inside itself
-                    }
+                    // Back under its own ID, so this Mac's item and the drive's stay one thing.
+                    let gone = Node(
+                        id: item.itemIdentifier.rawValue, cid: "",
+                        record: NodeRecord(name: name, parent: parent, kind: .file))
+                    let restored = try await drive.upload(
+                        edited, as: name, in: parent, replacing: gone, modified: modified,
+                        progress: Self.report(to: progress))
+                    logger.notice("\(gone.id, privacy: .public) was deleted on the drive but edited here: kept")
+                    await index.noteSeen(restored, parent: parent)
+                    completionHandler(Item(node: restored, parentID: parent), [], false, nil)
+                    signalChanges()
+                    return
                 }
 
-                if changedFields.contains(.contents), let newContents, !node.isFolder {
-                    let modified = (item.contentModificationDate ?? nil)
-                    if version.contentVersion != Item.contentVersion(of: node) {
-                        // The file changed on the drive since this edit was based on it. Keep both:
-                        // the edit becomes a conflicted copy, and this item gets the drive's version.
-                        let copy = Self.conflictName(for: name, in: parent, tree: tree)
-                        _ = try await drive.upload(
-                            newContents, as: copy, in: parent, modified: modified, progress: Self.report(to: progress))
-                        let kept = try await relocating ? drive.move(node, to: parent, as: name) : node
-                        logger.notice("conflict on \(node.id, privacy: .public): saved local edit as a copy")
-                        completionHandler(Item(node: kept, parentID: parent), [], true, nil)
-                    } else {
+                // Where it goes: a move on one side wins; moved on both sides, the drive's wins.
+                let there = Item.Location(parent: tree.parent(of: node.id), name: node.name)
+                let before = Item.location(in: version) ?? there  // versions from before it was recorded
+                var here = before
+                if changedFields.contains(.parentItemIdentifier) {
+                    here.parent = try await folderID(item.parentItemIdentifier, in: tree, drive: drive)
+                }
+                if changedFields.contains(.filename) { here.name = item.filename }
+                var target = ConflictRules.location(base: before, local: here, remote: there)
+                if target != here {
+                    logger.notice("\(node.id, privacy: .public) moved on both sides: kept the drive's move")
+                }
+                if node.isFolder, let parent = target.parent, tree.isInside(parent, folder: node.id) {
+                    target = there  // a folder can't go inside itself: leave it where the drive has it
+                }
+                if target != there, let clash = tree.child(named: target.name, in: target.parent),
+                    clash.id != node.id
+                {
+                    target.name = Self.conflictName(for: target.name, in: target.parent, tree: tree)
+                }
+                let relocating = target != there
+                func placed() async throws -> Node {
+                    guard relocating else { return node }
+                    return try await drive.move(node, to: target.parent, as: target.name)
+                }
+
+                if let edited, let editedSHA, !node.isFolder {
+                    switch ConflictRules.contents(base: baseSHA, local: editedSHA, remote: node.record.sha256) {
+                    case .local:
                         let updated = try await drive.upload(
-                            newContents, as: name, in: parent, replacing: node, modified: modified,
+                            edited, as: target.name, in: target.parent, replacing: node, modified: modified,
                             progress: Self.report(to: progress))
-                        completionHandler(Item(node: updated, parentID: parent), [], false, nil)
+                        await index.noteSeen(updated, parent: target.parent)
+                        completionHandler(Item(node: updated, parentID: target.parent), [], false, nil)
+                    case .remote:
+                        // Nothing new to upload: the drive has these contents, or this "edit"
+                        // didn't change them. Fetch the drive's version if it differs.
+                        let kept = try await placed()
+                        await index.noteSeen(kept, parent: target.parent)
+                        completionHandler(
+                            Item(node: kept, parentID: target.parent), [], editedSHA != node.record.sha256, nil)
+                    case .conflict:
+                        // Edited on both sides: the drive's version keeps the name, and this
+                        // edit is saved beside it as a conflicted copy.
+                        let copy = Self.conflictName(for: target.name, in: target.parent, tree: tree)
+                        _ = try await drive.upload(
+                            edited, as: copy, in: target.parent, modified: modified,
+                            progress: Self.report(to: progress))
+                        let kept = try await placed()
+                        logger.notice("conflict on \(node.id, privacy: .public): saved local edit as a copy")
+                        await index.noteSeen(kept, parent: target.parent)
+                        completionHandler(Item(node: kept, parentID: target.parent), [], true, nil)
                     }
                 } else if relocating {
-                    let moved = try await drive.move(node, to: parent, as: name)
-                    completionHandler(Item(node: moved, parentID: parent), [], false, nil)
+                    let moved = try await placed()
+                    await index.noteSeen(moved, parent: target.parent)
+                    completionHandler(Item(node: moved, parentID: target.parent), [], false, nil)
                 } else {
-                    // Only metadata the drive doesn't store (tags, xattrs, dates): nothing to upload.
+                    // Nothing the drive stores changed (tags, xattrs, dates), or the drive's move won.
                     completionHandler(Item(node, in: tree), [], false, nil)
                 }
                 signalChanges()
@@ -213,15 +269,31 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 let tree = try await index.refresh().tree
                 // Already gone is fine: the system just removes its local copy.
                 guard let node = tree.nodes[identifier.rawValue] else { return completionHandler(nil) }
+                // Edited on the drive since this Mac saw it: the edit is kept, not deleted. A
+                // folder keeps whatever in it changed on the drive since (and the rest goes).
+                // What's kept is reported as changed, so the system puts it back here.
+                let kept: Set<String>
                 var doomed = [node]
                 if node.isFolder {
                     let inside = tree.descendants(of: node.id)
                     if !inside.isEmpty, !options.contains(.recursive) {
                         throw NSFileProviderError(.directoryNotEmpty)
                     }
-                    doomed = inside + [node]
+                    // Until the system has been given the whole drive, nothing inside counts as seen.
+                    let seen = await index.seenTree() ?? DriveTree([])
+                    kept = ConflictRules.keptWhenDeleting(folder: node.id, now: tree, seen: seen)
+                    doomed = (inside + [node]).filter { !kept.contains($0.id) }
+                } else if !ConflictRules.deleteStands(base: Item.sha256(in: version), other: node.record.sha256) {
+                    kept = [node.id]
+                    doomed = []
+                } else {
+                    kept = []
                 }
-                try await drive.delete(doomed)
+                if !doomed.isEmpty { try await drive.delete(doomed) }
+                if !kept.isEmpty {
+                    logger.notice("delete of \(node.id, privacy: .public): kept \(kept.count) changed on the drive")
+                    await index.resendNextTime(kept)
+                }
                 completionHandler(nil)
                 signalChanges()
             } catch {
@@ -233,16 +305,29 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
     // MARK: Helpers
 
-    /// The drive folder ID for a File Provider parent identifier (`nil` = top level).
-    private func folderID(_ identifier: NSFileProviderItemIdentifier, in tree: DriveTree) throws -> String? {
+    /// The drive folder ID for a File Provider parent identifier (`nil` = top level). A folder
+    /// deleted on the drive that something is going into here is put back, since a folder is
+    /// kept if anything kept is inside it (`ConflictRules`).
+    private func folderID(_ identifier: NSFileProviderItemIdentifier, in tree: DriveTree, drive: Drive)
+        async throws -> String?
+    {
         switch identifier {
         case .rootContainer: return nil
         case .trashContainer: throw CocoaError(.featureUnsupported)
         default:
-            guard let folder = tree.nodes[identifier.rawValue], folder.isFolder else {
+            if let folder = tree.nodes[identifier.rawValue] {
+                guard folder.isFolder else { throw NSFileProviderError(.noSuchItem) }
+                return folder.id
+            }
+            guard let gone = await index.seenNode(identifier.rawValue), gone.isFolder else {
                 throw NSFileProviderError(.noSuchItem)
             }
-            return folder.id
+            var record = gone.record
+            let parent = gone.record.parent.map { NSFileProviderItemIdentifier($0) } ?? .rootContainer
+            record.parent = (try? await folderID(parent, in: tree, drive: drive)) ?? nil
+            try await drive.restore(Node(id: gone.id, cid: gone.cid, record: record))
+            logger.notice("\(gone.id, privacy: .public) was deleted on the drive but used here: put back")
+            return gone.id
         }
     }
 

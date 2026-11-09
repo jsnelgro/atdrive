@@ -31,9 +31,15 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
     - A file `put` from the CLI appearing in Finder.
     - Apple Development signing works; no provisioning profile needed.
   - **How it works:** the sync anchor is the repo revision (`getLatestCommit`), and changes are
-    found by diffing tree snapshots held in memory. A file that changed remotely during an edit
-    gets a conflicted copy.
+    found by diffing tree snapshots held in memory. Changes made here are settled against the
+    drive with `ConflictRules` (shared with `atdrive sync`; see "Conflict rules" below), using the
+    base version macOS passes with each change. `Item`'s metadata version records the folder and
+    name for that. `DriveIndex` remembers what this Mac has seen of the drive, for deleted
+    folders, and re-reports items a delete kept so macOS puts them back.
   - **Not yet exercised:** rename, move and delete from Finder; conflicted copies; large files.
+    Of the conflict rules, on a real Mac: deletes that keep an edit (do kept items come back in
+    Finder?), the drive's move winning (does Finder move the item back?), and a name clash
+    renaming the new item.
   - **Next:**
     - Persist snapshots across extension restarts.
     - Push instead of polling.
@@ -66,12 +72,10 @@ moved).
   compared with it, so "deleted here" and "new on the drive" can be told apart. Local items keep
   their node ID by path, then by inode (renames and moves, including whole folders), then by hash
   (copied and deleted, e.g. across disks). Files are read only when their `lstat` changed.
-- **Rules** (`SyncPlan`): a change on one side is applied to the other. A file edited on both sides
-  keeps the drive's version, and the local one becomes a conflicted copy. Moved on both sides: the
-  drive's move wins. Deleted on one side but edited on the other: kept. A folder is kept if
-  anything kept is inside it. Two things with one name: one is renamed, unless they're the same
-  (a folder, or a file with the same hash), in which case they're paired up. A first sync is
-  just this, starting from an empty state.
+- **Rules** (`SyncPlan`): the per-item decisions come from `ConflictRules`, shared with the Mac
+  app (see "Conflict rules" below). Across items, it keeps folders that something kept is in, and
+  gives each name in a folder to one item. A first sync is just this, starting from an empty
+  state.
 - **Applying** (`SyncRun`): local moves go through `.atdrive/staging` (with a journal, so a killed
   pass is recovered), so swaps and moves into new folders work. Then the drive is updated, then
   files are downloaded to `.atdrive/downloads` and renamed into place. Nothing local is
@@ -81,6 +85,25 @@ moved).
 - **Guards:** it stops if the folder or `.atdrive` disappears, refuses a folder synced with
   another account, and takes a lock so only one sync runs per folder. Files changed in the last
   couple of seconds wait (they may still be being written).
+
+## Conflict rules
+
+`ConflictRules` (`Sources/ATDriveCore/ConflictRules.swift`) is the one place that decides what
+happens when something changed in two places. The README's "Conflicts" section says it for users.
+
+| | `atdrive sync` (`SyncPlan`) | Mac app (File Provider extension) |
+|---|---|---|
+| Base version | `.atdrive/state.json` | The `NSFileProviderItemVersion` macOS passes with each change: content version = SHA-256; metadata version records the folder and name |
+| Edited on both sides | `contents` | `modifyItem` |
+| Moved on both sides | `location` | `modifyItem` |
+| Deleted here, edited there | `deleteStands` | `deleteItem` (the kept file is re-reported so macOS puts it back) |
+| Edited here, deleted there | `deleteStands` | `modifyItem` writes it back under its own ID |
+| Folder deleted, changed inside | Folders kept if needed by what's kept | `keptWhenDeleting`, against what this Mac has seen (`DriveIndex`) |
+| Something added to a folder deleted there | The folder is kept | `folderID` puts the folder back |
+| Name clash | Newcomer renamed; identical ones paired | `createItem` / `modifyItem` rename the newcomer, or pair identical items macOS doesn't already have |
+
+`ConflictRulesAgreeWithSyncTests` runs a deleted-folder case through `atdrive sync` and checks it
+keeps exactly what `keptWhenDeleting` keeps.
 
 ## Data model
 

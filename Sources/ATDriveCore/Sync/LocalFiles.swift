@@ -1,4 +1,3 @@
-import Crypto
 import Foundation
 
 /// What `lstat` says about a file: enough to tell, without reading it, whether it may have
@@ -107,15 +106,7 @@ enum LocalFS {
         chmod(destination, info.st_mode & 0o7777)
     }
 
-    static func sha256(_ path: String) throws -> String {
-        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
-        defer { try? handle.close() }
-        var hasher = SHA256()
-        while let data = try handle.read(upToCount: 4 * 1024 * 1024), !data.isEmpty {
-            hasher.update(data: data)
-        }
-        return hasher.finalize().hexString
-    }
+    static func sha256(_ path: String) throws -> String { try Drive.sha256(of: URL(fileURLWithPath: path)) }
 
     static func errorDescription(_ code: Int32 = errno) -> String { String(cString: strerror(code)) }
 }

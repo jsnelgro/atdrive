@@ -39,8 +39,8 @@ That builds `ATDrive.app`, installs it to `~/Applications`, and launches it.
    CLI) show up within about 30 seconds.
 
 Files are downloaded the first time you open them. Right-click > Remove Download frees the space
-again. If you edit a file on two devices at once, neither edit is lost: the second one to sync is
-saved as `name (conflicted copy <date>).ext`.
+again. Changes made in two places at once are settled the same way as in a synced folder (see
+[Conflicts](#conflicts)): no edit is lost.
 
 `scripts/build-app.sh` builds the app without installing it. The top of the script lists its
 signing options.
@@ -76,9 +76,8 @@ within 30 seconds.
   then carries on.
 - **Starting with files in the folder** is fine: the folder and the drive are merged. Matching
   files and folders are paired up, and nothing is deleted.
-- **Conflicts:** if a file is edited in both places before they sync, the drive's version keeps
-  the name, and yours is saved beside it as `name (conflicted copy <date>).ext`. A file deleted in
-  one place but edited in the other is kept.
+- **Conflicts** are settled the same way as on the Mac (see [Conflicts](#conflicts)): no edit is
+  lost.
 - **What isn't synced:** symlinks and other special files, and clutter: `.DS_Store`,
   `Thumbs.db`, and the swap and lock files editors leave around (Vim, Emacs, LibreOffice, Office).
   Files are synced once they've stopped changing for a couple of seconds.
@@ -143,6 +142,24 @@ browser lands on a page that won't load, at an address starting with `http://127
 address back into the terminal and you're signed in.
 
 For scripts, `atdrive login --app-password <handle>` signs in with an app password instead.
+
+## Conflicts
+
+When something changes in two places before they sync (say, on the Mac and on a server), every
+device settles it the same way. The Mac app and `atdrive sync` share these rules
+(`ConflictRules` in the code):
+
+- **Edited in both places:** the drive's version keeps the name, and yours is saved beside it as
+  `name (conflicted copy <date>).ext`. If both edits came out identical, there's nothing to do.
+- **Moved or renamed in both places:** the drive's move wins (it's the one other devices already
+  see).
+- **Deleted in one place, edited in the other:** the edit is kept. Moving or renaming it doesn't
+  count as an edit: the delete goes ahead.
+- **A folder deleted in one place** keeps whatever was added to it, moved into it or edited in it
+  elsewhere in the meantime. Everything else in it is deleted.
+- **Two different things given the same name:** the second one to arrive is renamed
+  `name (conflicted copy <date>)`. Two identical ones (two folders, or two files with the same
+  contents) become one.
 
 ## How it works
 

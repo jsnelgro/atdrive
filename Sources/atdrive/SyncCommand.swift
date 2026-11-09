@@ -94,9 +94,9 @@ struct Sync: AsyncParsableCommand {
                 await watcher.wait(since: mark, timeout: max(timeout, .milliseconds(100)))
             } catch let error as SyncError {
                 throw Self.fatal(error)
-            } catch ATDriveError.notLoggedIn {
+            } catch let error as ATDriveError where error == .sessionEnded || error == .notLoggedIn {
                 let expired = await context.session.session
-                SyncLog.write("Signed out of the drive. Run `atdrive login <handle>` to resume syncing.")
+                SyncLog.write("Your session has ended. Run `atdrive login <handle>` to resume syncing.")
                 context = try await Self.waitForSignIn(after: expired)
                 do { try sync.use(context.drive) } catch let error as SyncError { throw Self.fatal(error) }
                 SyncLog.write("Signed in again; resuming.")

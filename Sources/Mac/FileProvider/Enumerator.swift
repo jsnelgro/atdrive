@@ -31,6 +31,7 @@ final class Enumerator: NSObject, NSFileProviderEnumerator {
                     observer.didEnumerate(Array(items[start..<min(start + 200, items.count)]))
                 }
                 observer.finishEnumerating(upTo: nil)
+                if case .workingSet = scope { await index.markSeen(tree) }
             } catch {
                 observer.finishEnumeratingWithError(FileProviderErrors.map(error))
             }
@@ -51,22 +52,33 @@ final class Enumerator: NSObject, NSFileProviderEnumerator {
         async throws
     {
         let (revision, tree) = try await index.refresh()
-        if revision == anchor.revision {
-            observer.finishEnumeratingChanges(upTo: anchor, moreComing: false)
-            return
+        var isWorkingSet = false
+        // Things a delete here left on the drive (see deleteItem): reported so they come back.
+        var resend: Set<String> = []
+        if case .workingSet = scope {
+            isWorkingSet = true
+            resend = await index.takeResend()
         }
-        // Too old to diff against (e.g. the extension restarted): the system re-lists instead.
-        guard let old = await index.tree(at: anchor.revision) else {
-            throw NSFileProviderError(.syncAnchorExpired)
+        var updated: [Node] = []
+        var deleted: [String] = []
+        if revision != anchor.revision {
+            // Too old to diff against (e.g. the extension restarted): the system re-lists instead.
+            guard let old = await index.tree(at: anchor.revision) else {
+                throw NSFileProviderError(.syncAnchorExpired)
+            }
+            let changes = tree.changes(since: old)
+            updated = changes.updated.filter { isInScope($0.id, in: tree) || isInScope($0.id, in: old) }
+            deleted = changes.deleted.filter { isInScope($0, in: old) }
         }
-        let changes = tree.changes(since: old)
-        let updated = changes.updated.filter { isInScope($0.id, in: tree) || isInScope($0.id, in: old) }
-        let deleted = changes.deleted.filter { isInScope($0, in: old) }
+        let alreadyUpdated = Set(updated.map(\.id))
+        updated += resend.subtracting(alreadyUpdated).compactMap { tree.nodes[$0] }
+            .sorted { tree.path(of: $0).components.count < tree.path(of: $1).components.count }
         if !updated.isEmpty { observer.didUpdate(updated.map { Item($0, in: tree) }) }
         if !deleted.isEmpty {
             observer.didDeleteItems(withIdentifiers: deleted.map { NSFileProviderItemIdentifier($0) })
         }
         observer.finishEnumeratingChanges(upTo: NSFileProviderSyncAnchor(revision: revision), moreComing: false)
+        if isWorkingSet { await index.markSeen(tree) }
     }
 
     func currentSyncAnchor(completionHandler: @escaping @Sendable (NSFileProviderSyncAnchor?) -> Void) {

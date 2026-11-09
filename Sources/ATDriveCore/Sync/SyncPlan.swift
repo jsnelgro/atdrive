@@ -205,16 +205,10 @@ struct RemoteView {
 }
 
 /// What the folder and the drive should both look like after this sync, worked out from the
-/// last sync's view and each side's changes since:
-///
-/// - A change on one side is copied to the other.
-/// - A file edited on both sides keeps the drive's version under its name; the folder's version
-///   becomes a conflicted copy beside it.
-/// - Moved on both sides: the drive's move wins.
-/// - Deleted on one side but edited on the other: kept. A folder is kept if anything kept is
-///   inside it.
-/// - Two different things with the same name: one is renamed (a conflicted copy). Identical
-///   ones (the same folder, or files with the same contents) are matched up instead.
+/// last sync's view and each side's changes since, by `ConflictRules` (the same rules the Mac
+/// app follows). Per item, it asks those rules about contents, location and deletions; across
+/// items, it keeps folders that something kept is in, and gives each name in a folder to one
+/// item (the one already on the drive; identical ones are paired up).
 struct SyncPlan {
     /// By node ID, or a temporary ID for things the drive doesn't have yet.
     var merged: [String: SyncEntry] = [:]
@@ -244,28 +238,28 @@ struct SyncPlan {
             case (let before?, let here?, nil):  // deleted from the drive
                 if here.isFolder {
                     candidates[id] = (here, true)
-                } else if here.sha256 != before.sha256 {  // but edited here
-                    add(renewed(id), here, from: id)
+                } else if !ConflictRules.deleteStands(base: before.sha256, other: here.sha256) {
+                    add(renewed(id), here, from: id)  // edited here: kept
                 }
             case (let before?, nil, let there?):  // deleted here
                 if there.isFolder {
                     candidates[id] = (there, false)
-                } else if there.sha256 != before.sha256 {  // but edited on the drive
-                    add(id, there)
+                } else if !ConflictRules.deleteStands(base: before.sha256, other: there.sha256) {
+                    add(id, there)  // edited on the drive: kept
                 }
             case (let before?, let here?, let there?):
-                let location =
-                    here.location == before.location || there.location != before.location
-                    ? there.location : here.location
-                let editedHere = here.sha256 != before.sha256
-                let editedThere = there.sha256 != before.sha256
-                if !here.isFolder, editedHere, editedThere, here.sha256 != there.sha256 {
+                let location = ConflictRules.location(
+                    base: before.location, local: here.location, remote: there.location)
+                switch ConflictRules.contents(base: before.sha256, local: here.sha256, remote: there.sha256) {
+                case .local:
+                    add(id, here.at(location), from: id)
+                case .remote:
+                    add(id, here.at(location).with(sha256: there.sha256), from: id)
+                case .conflict:
                     add(id, there.at(location))
                     let copy = renewed(id)
                     add(copy, here.at(location), from: id)  // renamed below: it clashes with `id`
                     splitFrom[copy] = id
-                } else {
-                    add(id, here.at(location).with(sha256: editedHere ? here.sha256 : there.sha256), from: id)
                 }
             }
         }

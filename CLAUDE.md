@@ -29,6 +29,9 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
     contained here.
   - `Records.swift`, `Lexicon.swift`: the `me.jsnelgro.atdrive.*` record model (matches `lexicons/`).
   - `DriveTree.swift`: in-memory tree and path lookup. `Drive.swift`: upload, download, move, delete.
+  - `ConflictRules.swift`: what happens when something changed in two places (edits, moves,
+    deletes, deleted folders). **Both** `SyncPlan` and the Mac extension decide with it, so the
+    platforms agree; change the rules there, not in either caller. `ConflictName.swift`: copy names.
   - `Sync/`: two-way folder sync (`atdrive sync`, the Linux "drive folder"). `SyncPlan` is the pure
     three-way merge (last agreed state vs. folder vs. drive, keyed by node ID); `FolderSync` /
     `SyncRun` apply it with POSIX calls; `FolderWatcher` is inotify. See PLAN.md, "Folder sync".
