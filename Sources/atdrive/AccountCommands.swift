@@ -9,8 +9,11 @@ struct Login: AsyncParsableCommand {
             Opens your PDS's own sign-in page; ATDrive never sees your password. After you
             approve access, the browser hands control back to this command.
 
-            On a machine without a browser, use --app-password with an app password from your
-            account settings (or set ATDRIVE_APP_PASSWORD).
+            Signing in on a remote machine (over SSH, or without a desktop): open the printed
+            link in a browser on any device, approve, then paste the address the browser ends
+            up on (it starts with http://127.0.0.1 and won't load) back here.
+
+            For scripts, --app-password signs in with an app password instead.
             """
     )
 
@@ -29,14 +32,31 @@ struct Login: AsyncParsableCommand {
             session = try await Auth.login(
                 identifier: handle, password: try readPassword(), resolver: IdentityResolver())
         } else {
-            session = try await OAuthLogin.signIn(identifier: handle) { url in
-                // Written unbuffered, so it shows up even when output isn't a terminal.
-                FileHandle.standardOutput.write(
-                    Data(
-                        "Opening your browser to sign in. If it doesn't open, go to:\n\n  \(url.absoluteString)\n\n"
-                            .utf8))
-                openInBrowser(url)
-            }
+            let local = hasLocalBrowser
+            let interactive = isatty(STDIN_FILENO) != 0
+            session = try await OAuthLogin.signIn(
+                identifier: handle,
+                open: { url in
+                    if local {
+                        write(
+                            "Opening your browser to sign in. If it doesn't open, go to:\n\n  \(url.absoluteString)\n\n"
+                        )
+                        openInBrowser(url)
+                    } else {
+                        write(
+                            """
+                            Open this link in a browser on any device to sign in:
+
+                              \(url.absoluteString)
+
+                            After you approve, the browser goes to a page that won't load (its address
+                            starts with http://127.0.0.1). Copy that address and paste it here:
+
+                            """)
+                    }
+                },
+                // Also accepted on a desktop, in case the browser turns out to be elsewhere.
+                pastedRedirect: interactive ? readPastedAddress : nil)
         }
         try SessionStore().save(session)
         print("Logged in as @\(session.handle) (\(session.did)) on \(session.service.host ?? "\(session.service)")")
@@ -103,4 +123,38 @@ private func openInBrowser(_ url: URL) {
     process.standardOutput = FileHandle.nullDevice
     process.standardError = FileHandle.nullDevice
     try? process.run()
+}
+
+/// Whether a browser opened here can reach this machine's 127.0.0.1: not over SSH, and on
+/// Linux only with a desktop session.
+private var hasLocalBrowser: Bool {
+    let environment = ProcessInfo.processInfo.environment
+    if environment["SSH_CONNECTION"] != nil || environment["SSH_TTY"] != nil { return false }
+    #if os(macOS)
+        return true
+    #else
+        return environment["DISPLAY"] != nil || environment["WAYLAND_DISPLAY"] != nil
+    #endif
+}
+
+/// Reads lines until one is the sign-in address from the browser.
+@Sendable private func readPastedAddress() async throws -> String {
+    try await withCheckedThrowingContinuation { continuation in
+        DispatchQueue.global().async {
+            while let line = readLine() {
+                if (try? OAuthLogin.redirectParameters(fromPasted: line)) != nil {
+                    return continuation.resume(returning: line)
+                }
+                if !line.trimmingCharacters(in: .whitespaces).isEmpty {
+                    write("That's not it: paste the whole address, starting with http://127.0.0.1\n")
+                }
+            }
+            continuation.resume(throwing: CancellationError())  // stdin closed
+        }
+    }
+}
+
+/// Unbuffered, so it shows up right away even when output isn't a terminal.
+private func write(_ text: String) {
+    FileHandle.standardOutput.write(Data(text.utf8))
 }

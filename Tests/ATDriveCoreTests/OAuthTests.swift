@@ -60,6 +60,36 @@ import Testing
         #expect(try await params == ["state": "s1", "code": "c1", "iss": "https://pds.test"])
     }
 
+    @Test func readsAPastedRedirectAddress() throws {
+        let expected = ["iss": "https://pds.test", "state": "s1", "code": "c1"]
+        let pasted = "http://127.0.0.1:53251/?iss=https%3A%2F%2Fpds.test&state=s1&code=c1"
+        #expect(try OAuthLogin.redirectParameters(fromPasted: pasted) == expected)
+        #expect(
+            try OAuthLogin.redirectParameters(
+                fromPasted: "  127.0.0.1:53251/?iss=https%3A%2F%2Fpds.test&state=s1&code=c1\n") == expected)
+        #expect(
+            try OAuthLogin.redirectParameters(fromPasted: "http://127.0.0.1:1/?state=s&error=access_denied")["error"]
+                == "access_denied")
+        for junk in ["", "hello", "https://example.com/", "http://127.0.0.1:1/?code=c1", "http://127.0.0.1:1/?state=s"]
+        {
+            #expect(throws: ATDriveError.self) { try OAuthLogin.redirectParameters(fromPasted: junk) }
+        }
+    }
+
+    @Test func signInWithAPastedAddress() async throws {
+        let server = FakeAuthorizationServer()
+        let resolver = IdentityResolver(environment: ["ATDRIVE_PLC_URL": "https://plc.test"], transport: server)
+        // As on a remote machine: the browser never reaches our listener; the user pastes instead.
+        let session = try await OAuthLogin.signIn(
+            identifier: "did:plc:alice", resolver: resolver, environment: [:], transport: server, timeout: 30,
+            open: { _ in },
+            pastedRedirect: {
+                "http://127.0.0.1:9/?iss=https%3A%2F%2Fpds.test&state=\(server.lastPAR["state"]!)&code=the-code"
+            })
+        #expect(session.did == "did:plc:alice")
+        #expect(session.accessJwt == "access-1")
+    }
+
     @Test func fullSignInAgainstAFakeServer() async throws {
         let server = FakeAuthorizationServer()
         let resolver = IdentityResolver(environment: ["ATDRIVE_PLC_URL": "https://plc.test"], transport: server)

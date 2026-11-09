@@ -43,19 +43,48 @@ public enum OAuthLogin {
 
     /// The whole sign-in: `open` should show the URL in a browser. Returns once the user has
     /// approved access there (or throws if they declined, it timed out, or the task was cancelled).
+    ///
+    /// When the browser is on another device (signing in on a remote server over SSH), its
+    /// redirect to 127.0.0.1 can't reach this machine; the page fails to load, but its address
+    /// holds the result. Pass `pastedRedirect` to accept that address from the user as well:
+    /// whichever arrives first wins. (The code in it is useless without this process's PKCE
+    /// verifier and DPoP key, so pasting it is safe.)
     public static func signIn(
         identifier: String, resolver: IdentityResolver = IdentityResolver(),
         environment: [String: String] = ProcessInfo.processInfo.environment,
         transport: any HTTPTransport = URLSessionTransport(), timeout: TimeInterval = 600,
-        open: @Sendable (URL) async throws -> Void
+        open: @Sendable (URL) async throws -> Void,
+        pastedRedirect: (@Sendable () async throws -> String)? = nil
     ) async throws -> Session {
         let listener = try LoopbackServer()
         let pending = try await prepare(
             identifier: identifier, redirectURI: "http://127.0.0.1:\(listener.port)/", resolver: resolver,
             environment: environment, transport: transport)
         try await open(pending.authorizationURL)
-        let params = try await listener.waitForRedirect(timeout: timeout)
+        let params: [String: String]
+        if let pastedRedirect {
+            params = try await Race<[String: String]>().first(
+                { try await listener.waitForRedirect(timeout: timeout) },
+                orUnlessItFails: { try redirectParameters(fromPasted: try await pastedRedirect()) })
+        } else {
+            params = try await listener.waitForRedirect(timeout: timeout)
+        }
         return try await pending.complete(with: params, transport: transport)
+    }
+
+    /// The sign-in result from an address the user copied out of their browser
+    /// (`http://127.0.0.1:53251/?iss=…&state=…&code=…`, with or without the `http://`).
+    public static func redirectParameters(fromPasted text: String) throws -> [String: String] {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let question = trimmed.firstIndex(of: "?"),
+            let url = URLComponents(string: "http://127.0.0.1/" + trimmed[question...]),
+            let items = url.queryItems
+        else { throw ATDriveError.loginFailed("that isn't the address from the browser") }
+        let params = Dictionary(items.map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { first, _ in first })
+        guard params["state"] != nil, params["code"] != nil || params["error"] != nil else {
+            throw ATDriveError.loginFailed("that isn't the address from the browser")
+        }
+        return params
     }
 
     /// Steps 1–2: resolve the account, find its authorization server, and push the request.
@@ -283,5 +312,59 @@ enum FormEncoding {
 
     static func encode(_ fields: [(String, String)]) -> String {
         fields.map { "\(escape($0.0))=\(escape($0.1))" }.joined(separator: "&")
+    }
+}
+
+/// Waits on two ways of getting the same result and takes the first. The first operation's
+/// failure (e.g. a timeout) ends the wait; the second's is ignored (e.g. stdin closed).
+private final class Race<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Value, Error>?
+    private var tasks: [Task<Void, Never>] = []
+    private var finished = false
+
+    func first(
+        _ primary: @escaping @Sendable () async throws -> Value,
+        orUnlessItFails secondary: @escaping @Sendable () async throws -> Value
+    ) async throws -> Value {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                // Cancelled before we got here: nothing else will resume this.
+                let cancelledAlready = lock.withLock { () -> Bool in
+                    if finished { return true }
+                    self.continuation = continuation
+                    return false
+                }
+                if cancelledAlready { return continuation.resume(throwing: CancellationError()) }
+                let tasks = [
+                    Task { self.finish(await Result { try await primary() }) },
+                    Task { if let value = try? await secondary() { self.finish(.success(value)) } },
+                ]
+                let alreadyFinished = lock.withLock {
+                    self.tasks = tasks
+                    return finished
+                }
+                if alreadyFinished { tasks.forEach { $0.cancel() } }
+            }
+        } onCancel: {
+            finish(.failure(CancellationError()))
+        }
+    }
+
+    private func finish(_ result: Result<Value, Error>) {
+        let (continuation, tasks): (CheckedContinuation<Value, Error>?, [Task<Void, Never>]) = lock.withLock {
+            guard !finished else { return (nil, []) }
+            finished = true
+            defer { self.continuation = nil }
+            return (self.continuation, self.tasks)
+        }
+        tasks.forEach { $0.cancel() }
+        continuation?.resume(with: result)
+    }
+}
+
+extension Result where Failure == Error {
+    fileprivate init(catching body: () async throws -> Success) async {
+        do { self = .success(try await body()) } catch { self = .failure(error) }
     }
 }

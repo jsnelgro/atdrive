@@ -15,7 +15,7 @@ struct ATDrive: AsyncParsableCommand {
         subcommands: [
             Login.self, Logout.self, WhoAmI.self,
             List.self, Tree.self, Put.self, Get.self, Cat.self,
-            MakeFolder.self, Move.self, Remove.self, Inspect.self,
+            MakeFolder.self, Move.self, Remove.self,
         ]
     )
 }

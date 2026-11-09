@@ -97,11 +97,6 @@ extension XRPCClient {
         try await queryBytes("com.atproto.space.getBlob", ["space": space, "repo": repo, "cid": cid])
     }
 
-    /// A `com.atproto.space.<method>` query's raw response body, for `atdrive inspect`.
-    public func rawSpaceQuery(_ method: String, _ params: [String: String?] = [:]) async throws -> Data {
-        try await queryBytes("com.atproto.space.\(method)", params)
-    }
-
     /// The repo's current revision in the space, or `nil` if it holds no repo there yet.
     public func latestSpaceRevision(space: String, repo: String) async throws -> String? {
         struct Output: Decodable {

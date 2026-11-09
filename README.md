@@ -66,7 +66,6 @@ atdrive rm -r /archive/taxes
 | `get [-r] <path>… [local]` | Download. Works like `cp`. Files that are already identical locally are skipped |
 | `cat <path>` | Print a file to stdout |
 | `mkdir [-p] <path>…`, `mv <from> <to>`, `rm [-r] <path>…` | What you'd expect |
-| `inspect` | The PDS's raw JSON for your drive (commit, records, blobs), plus a check that it's refused without credentials |
 
 Paths in the drive always start from the top (`/photos/cat.jpg`).
 
@@ -83,8 +82,12 @@ and ATDrive never sees your password.
 - **Sessions last two weeks.** That's the limit Bluesky's servers set for apps without a
   backend. After that, sign in again.
 
-On machines without a browser, `atdrive login --app-password <handle>` signs in with an
-app password from your account settings instead.
+**Signing in on a remote machine** (over SSH, or a server without a desktop) uses the same
+command. `atdrive login` prints a link to open in a browser on any device. After you approve, the
+browser lands on a page that won't load, at an address starting with `http://127.0.0.1`. Paste that
+address back into the terminal and you're signed in.
+
+For scripts, `atdrive login --app-password <handle>` signs in with an app password instead.
 
 ## How it works
 
