@@ -37,6 +37,19 @@ import Testing
         #expect(await manager.session.accessJwt == "new-access")
     }
 
+    @Test func saysSoWhenTheSessionCantBeRenewed() async throws {
+        // E.g. its app password was deleted: the access token expires and refreshing is refused.
+        let transport = ScriptedTransport([
+            (400, #"{"error":"ExpiredToken","message":"Token has expired"}"#, [:]),
+            (400, #"{"error":"ExpiredToken","message":"Token has been revoked"}"#, [:]),
+        ])
+        let client = XRPCClient(
+            service: session.service, session: SessionManager(session, transport: transport), transport: transport)
+        await #expect(throws: ATDriveError.sessionEnded) {
+            let _: XRPCClient.Empty = try await client.query("com.example.anything")
+        }
+    }
+
     @Test func surfacesServerErrors() async throws {
         let transport = ScriptedTransport([(400, #"{"error":"SpaceNotFound","message":"Space not found"}"#, [:])])
         let client = XRPCClient(service: session.service, session: SessionManager(session), transport: transport)

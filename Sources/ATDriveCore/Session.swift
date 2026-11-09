@@ -120,7 +120,7 @@ public actor SessionManager {
                 key: try DPoPKey(rawRepresentation: oauth.dpopKey), nonce: nonce, transport: transport)
         } catch let error as OAuthError where error.error == "invalid_grant" {
             // Sessions for apps like this one end after two weeks; time to sign in again.
-            throw ATDriveError.notLoggedIn
+            throw ATDriveError.sessionEnded
         }
         let tokens = try JSONDecoder().decode(TokenResponse.self, from: data)
         var updated = session
@@ -131,9 +131,17 @@ public actor SessionManager {
     }
 
     private static func refreshedPassword(_ session: Session, transport: any HTTPTransport) async throws -> Session {
-        let data = try await XRPCClient(service: session.service, transport: transport).send(
-            "com.atproto.server.refreshSession", body: (Data(), "application/json"),
-            auth: .bearer(session.refreshJwt))
+        let data: Data
+        do {
+            data = try await XRPCClient(service: session.service, transport: transport).send(
+                "com.atproto.server.refreshSession", body: (Data(), "application/json"),
+                auth: .bearer(session.refreshJwt))
+        } catch let error as XRPCError
+            where ["ExpiredToken", "InvalidToken", "AuthenticationRequired"].contains(error.error ?? "")
+        {
+            // Revoked (its app password was deleted, or it was logged out) or past its 90 days.
+            throw ATDriveError.sessionEnded
+        }
         let tokens = try JSONDecoder().decode(SessionTokens.self, from: data)
         var updated = session
         updated.accessJwt = tokens.accessJwt
