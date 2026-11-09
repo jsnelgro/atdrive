@@ -2,7 +2,6 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
 
 jobs:
@@ -24,3 +23,5 @@ jobs:
         run: scripts/test.sh
       - name: Build
         run: scripts/build.sh
+      - name: Build app bundle (unsigned; checks it assembles)
+        run: ALLOW_ADHOC=1 CONFIG=debug scripts/build-app.sh

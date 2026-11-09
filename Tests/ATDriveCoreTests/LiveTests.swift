@@ -21,7 +21,10 @@ struct LiveTests {
             chunkSize: 64 * 1024)
 
         let folderName = "atdrive-live-test-\(TID.next())"
+        let revisionBefore = try await drive.latestRevision()
         let folder = try await drive.createFolder(named: folderName, in: nil)
+        let revisionAfter = try await drive.latestRevision()
+        #expect(revisionAfter != nil && revisionAfter != revisionBefore)
         var created = [folder]
         do {
             let directory = try temporaryDirectory()

@@ -7,6 +7,11 @@ import Foundation
 public struct SessionStore: Sendable {
     public let directory: URL
 
+    /// Stores the session in a specific folder (e.g. the macOS app's shared App Group container).
+    public init(directory: URL) {
+        self.directory = directory
+    }
+
     public init(environment: [String: String] = ProcessInfo.processInfo.environment) {
         if let dir = environment["ATDRIVE_CONFIG_DIR"], !dir.isEmpty {
             directory = URL(fileURLWithPath: dir, isDirectory: true)

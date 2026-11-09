@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- __PLACEHOLDERS__ are filled in by scripts/build-app.sh. -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>__BUNDLE_ID__.fileprovider</string>
+	<key>CFBundleExecutable</key>
+	<string>ATDriveFileProvider</string>
+	<key>CFBundleName</key>
+	<string>ATDrive File Provider</string>
+	<key>CFBundleDisplayName</key>
+	<string>ATDrive</string>
+	<key>CFBundlePackageType</key>
+	<string>XPC!</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.2.0</string>
+	<key>CFBundleVersion</key>
+	<string>2</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.fileprovider-nonui</string>
+		<key>NSExtensionPrincipalClass</key>
+		<string>ATDriveFileProviderExtension</string>
+		<key>NSExtensionFileProviderDocumentGroup</key>
+		<string>__APP_GROUP__</string>
+		<key>NSExtensionFileProviderSupportsEnumeration</key>
+		<true/>
+	</dict>
+	<key>ATDriveAppGroup</key>
+	<string>__APP_GROUP__</string>
+</dict>
+</plist>

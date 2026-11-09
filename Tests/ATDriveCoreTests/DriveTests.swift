@@ -50,6 +50,12 @@ import Testing
         #expect(try !drive.isUnchanged(try localFile("other.txt", "hello, atproto?"), comparedTo: stored))
     }
 
+    @Test func explicitModificationTimeWins() async throws {
+        let date = Date(timeIntervalSince1970: 1_234_567_890)
+        let node = try await drive.upload(try localFile("m.txt", "x"), as: "m.txt", in: nil, modified: date)
+        #expect(node.record.modifiedDate == date)
+    }
+
     @Test func emptyFiles() async throws {
         let node = try await drive.upload(try localFile("empty", ""), as: "empty", in: nil)
         #expect(node.record.chunks == [])

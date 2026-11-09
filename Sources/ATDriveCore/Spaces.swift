@@ -97,6 +97,21 @@ extension XRPCClient {
         try await queryBytes("com.atproto.space.getBlob", ["space": space, "repo": repo, "cid": cid])
     }
 
+    /// The repo's current revision in the space, or `nil` if it holds no repo there yet.
+    public func latestSpaceRevision(space: String, repo: String) async throws -> String? {
+        struct Output: Decodable {
+            struct Commit: Decodable { var rev: String }
+            var commit: Commit
+        }
+        do {
+            return try await query(
+                "com.atproto.space.getLatestCommit", ["space": space, "repo": repo], as: Output.self
+            ).commit.rev
+        } catch let error as XRPCError where error.error == "RepoNotFound" || error.error == "SpaceNotFound" {
+            return nil
+        }
+    }
+
     /// Uploads bytes to the account's PDS. They stay private until a space record references
     /// them, and are garbage-collected if nothing ever does.
     public func uploadBlob(_ data: Data, mimeType: String) async throws -> BlobRef {

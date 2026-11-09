@@ -136,6 +136,23 @@ public struct DriveTree: Sendable {
         }
     }
 
+    /// The folder a node is shown in (`nil` for the top level). Usually `record.parent`, except
+    /// for nodes lifted to the top because their folder is gone (see the type's doc comment).
+    public func parent(of id: String) -> String? {
+        parents[id] ?? nil
+    }
+
+    /// What changed between `old` and this tree: nodes that are new, edited, or shown in a
+    /// different folder, and the IDs of nodes that no longer exist.
+    public func changes(since old: DriveTree) -> (updated: [Node], deleted: [String]) {
+        let updated = nodes.values.filter { node in
+            guard let before = old.nodes[node.id] else { return true }
+            return before.cid != node.cid || old.parent(of: node.id) != parent(of: node.id)
+        }
+        let deleted = old.nodes.keys.filter { nodes[$0] == nil }
+        return (updated.sorted { $0.id < $1.id }, deleted.sorted())
+    }
+
     public func path(of node: Node) -> DrivePath {
         var components = [node.name]
         var parent = parents[node.id] ?? nil

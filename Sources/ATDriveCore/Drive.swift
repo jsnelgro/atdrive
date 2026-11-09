@@ -115,6 +115,12 @@ public final class Drive: Sendable {
         finished = true
     }
 
+    /// The revision (TID) of the latest change to the drive, or `nil` if nothing has ever been
+    /// written. Cheap: use it to check for changes before listing everything with `tree()`.
+    public func latestRevision() async throws -> String? {
+        try await client.latestSpaceRevision(space: space, repo: owner)
+    }
+
     // MARK: Writing
 
     /// Creates the drive's space. Writes do this automatically the first time.
@@ -132,10 +138,11 @@ public final class Drive: Sendable {
 
     /// Uploads a local file as `name` inside `parent`. Pass `replacing` to overwrite an existing
     /// file in place (it keeps its ID, so other devices see an edit rather than a new file).
+    /// The recorded modification time is `modified`, or else the local file's.
     @discardableResult
     public func upload(
         _ file: URL, as name: String, in parent: String?, replacing existing: Node? = nil,
-        progress: Progress? = nil
+        modified: Date? = nil, progress: Progress? = nil
     ) async throws -> Node {
         try DrivePath.validate(name: name)
         if let existing, existing.isFolder { throw ATDriveError.isAFolder(existing.name) }
@@ -162,7 +169,7 @@ public final class Drive: Sendable {
         var record = NodeRecord(
             name: name, parent: parent, kind: .file, size: done,
             sha256: hasher.finalize().hexString, chunks: chunks,
-            modifiedAt: attributes[.modificationDate] as? Date)
+            modifiedAt: modified ?? attributes[.modificationDate] as? Date)
         if let existing { record.createdAt = existing.record.createdAt }
         return try await write(id: existing?.id ?? TID.next(), record)
     }

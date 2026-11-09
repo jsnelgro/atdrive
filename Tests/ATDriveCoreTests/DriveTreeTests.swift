@@ -59,3 +59,39 @@ import Testing
         for node in tree.nodes.values { _ = tree.path(of: node) }  // terminates
     }
 }
+
+@Suite struct DriveTreeChangeTests {
+    func node(_ id: String, _ name: String, parent: String? = nil, folder: Bool = false, cid: String? = nil) -> Node {
+        Node(
+            id: id, cid: cid ?? "cid-\(id)",
+            record: NodeRecord(name: name, parent: parent, kind: folder ? .folder : .file, size: 1))
+    }
+
+    @Test func reportsNewEditedMovedAndDeleted() {
+        let before = DriveTree([
+            node("d1", "docs", folder: true),
+            node("f1", "a.txt", parent: "d1"),
+            node("f2", "b.txt"),
+            node("f3", "c.txt"),
+        ])
+        let after = DriveTree([
+            node("d1", "docs", folder: true),
+            node("f1", "a.txt", parent: "d1", cid: "edited"),  // edited
+            node("f2", "b.txt", parent: "d1", cid: "moved"),  // moved into docs
+            node("f4", "new.txt"),  // new
+        ])  // f3 deleted
+        let changes = after.changes(since: before)
+        #expect(changes.updated.map(\.id) == ["f1", "f2", "f4"])
+        #expect(changes.deleted == ["f3"])
+        #expect(after.changes(since: after).updated.isEmpty)
+    }
+
+    @Test func reportsChildrenLiftedToTheTopWhenTheirFolderGoes() {
+        let before = DriveTree([node("d1", "docs", folder: true), node("f1", "a.txt", parent: "d1")])
+        let after = DriveTree([node("f1", "a.txt", parent: "d1")])  // record unchanged, folder gone
+        #expect(after.parent(of: "f1") == nil)
+        let changes = after.changes(since: before)
+        #expect(changes.updated.map(\.id) == ["f1"])
+        #expect(changes.deleted == ["d1"])
+    }
+}
