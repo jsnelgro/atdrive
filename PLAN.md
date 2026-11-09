@@ -188,8 +188,11 @@ Checked against the reference branch at `704b9e2` (2026-11-05):
 - **Gaps:**
   - Each op's `prev` must equal the CID we hold for that record (none for a create). A mismatch, an
     error, or no saved revision means a full listing, as today.
-  - Checking our records against the commit's LtHash would catch everything. It needs BLAKE3,
-    which swift-crypto lacks: later, if at all.
+  - After the last page, check our copy against the commit. Its `data` is an LtHash over every
+    record in the repo (`RepoSetHash` in `LtHash.swift`, on `BLAKE3.swift`). A mismatch means a
+    full listing.
+  - The check covers every collection, including ones this client doesn't understand. Those are
+    tracked by CID without being decoded, so they can't make the check fail forever.
 - Persisting the tree also covers the Mac's "persist snapshots across extension restarts".
 
 ### Step 2: history
@@ -262,6 +265,9 @@ PDS operator.
 - **Chunks: keyed convergent encryption,** as in Tahoe-LAFS and borg:
   - A chunk's ID is HMAC(drive key, plaintext), and its key is derived from that ID. Each key
     encrypts exactly one plaintext, so AES-GCM can use a fixed nonce.
+  - Chunk IDs, and step 4's chunker seed, always come from the drive's **first** key, even after
+    rotations. Otherwise every file's chunks would get new IDs and boundaries after a device is
+    removed, and nothing would be reused.
   - Identical chunks encrypt to identical bytes, so they're stored once and step 4 can skip them.
     Without the drive key, the server can't test for known files.
   - Chunk IDs go in the sealed metadata. Sharing a folder later can hand over those, not the
@@ -276,22 +282,37 @@ PDS operator.
   - Which chunks are shared between files and versions.
   - A malicious PDS can drop or roll back records, but can't read or forge them.
 - **Keys:**
-  - **The drive key** is 32 random bytes, made when the drive is created.
+  - **The drive key** is 32 random bytes, made when the drive is created. The keyring is every
+    drive key so far, oldest first; the newest seals new records.
   - **Each device has its own key pair** (Curve25519), stored where its session is.
-  - **One record per device** (`me.jsnelgro.atdrive.device`) holds the drive key wrapped for that
+  - **One record per device** (`me.jsnelgro.atdrive.device`) holds the keyring wrapped for that
     device's public key. One more (rkey `recovery`) wraps it for the recovery key. They're separate
     records because two devices editing one shared keyring record would overwrite each other.
-  - **The recovery key** is 256 random bits, shown once as words to write down when the drive is
-    created. It's high-entropy, so it needs no password KDF (swift-crypto has no Argon2).
+  - **Wrapping uses HPKE in auth mode,** so a device can tell which device wrapped its keyring.
+    Anyone can wrap a keyring for a public key, the PDS included. A device accepts one only from
+    itself or from a device it has confirmed, so the PDS can't get it to seal new records under a
+    key the PDS knows.
+  - **The recovery key** is 256 random bits, shown once when the drive is created as 14 groups of 4
+    letters and digits (Crockford base32, with a checksum that catches typos). It's high-entropy,
+    so it needs no password KDF (swift-crypto has no Argon2).
   - **Adding a device:** `atdrive login`, then one of:
     - `atdrive unlock` with the recovery key.
-    - Approve it from a device that has the key. The new device posts its public key and shows a
-      short code, and approving checks the same code, so the PDS can't slip in a key of its own.
+    - Approve it from a device that has the key:
+      - The new device posts its public key. The approving device posts its own.
+      - Both show a 16-digit code computed from the two keys, and the user confirms on both that
+        they match.
+      - Only then does the approver wrap the keyring for the new device. The new device accepts it
+        only from the approver it confirmed.
+      - 16 digits, because the PDS sees the keys first. Against a shorter code, it could try keys
+        of its own until one matched.
   - **Removing a device:**
-    - Delete its record, and start a new drive key for new writes, wrapped for the remaining
-      devices.
-    - Old keys are kept, wrapped by the new one, to read older records and versions.
+    - Delete its record, and add a new drive key for new records. Wrap the keyring again for the
+      remaining devices and the recovery key.
     - What the removed device already had stays readable to it.
+    - It also keeps the first key, so it can still test whether the drive holds a chunk it already
+      knows. That's the price of keeping chunk IDs stable.
+    - It still holds a session for the account, so it can still write records. Remaining devices
+      ignore keyrings it wraps.
   - Losing every device and the recovery key loses the data. Creating the drive says so, next to
     the recovery key.
 
@@ -300,8 +321,10 @@ PDS operator.
 - **Content-defined chunking (FastCDC):**
   - Boundaries follow the content, so an insert near the start changes one or two chunks instead of
     every chunk after it. A new version then costs only those chunks.
-  - Min 256 KiB, average 1 MiB, max 4 MiB.
-  - The chunker is seeded from the drive key, so chunk sizes don't fingerprint files.
+  - Min 256 KiB, average 1 MiB, max 4 MiB. The mean comes out at about 1.1 MiB, since nothing is
+    cut before 256 KiB.
+  - The chunker is seeded from the drive's first key, so chunk sizes don't fingerprint files and
+    boundaries don't move when keys rotate.
 - **Skip chunks the drive already has.** The tree lists every chunk's CID, and an encrypted chunk
   whose CID is already there isn't uploaded. Copying a file within the drive uploads nothing.
 - **Download only missing chunks.**
