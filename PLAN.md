@@ -337,6 +337,32 @@ PDS operator.
   - **Creating a drive is interactive,** because it has to show the recovery key: `atdrive login`
     does it (and unlocks, or asks for approval, on a drive that exists), and so does the Mac app's
     first sign-in. The background `atdrive sync` service never creates a drive.
+- **As built:**
+  - **Only `create()` makes a drive,** from `atdrive login` or the Mac app's first sign-in. Writes
+    never do, and `atdrive sync` and `put` on an account with no drive say to run `atdrive login`.
+  - **The roster** (the approved devices' public keys) is sealed in the settings record. When keys
+    rotate, the keyring is wrapped only for keys in the roster, never for keys read from device
+    records, which the PDS can change.
+  - **A device takes a keyring only if** it holds every key the device accepted before (devices
+    keep fingerprints of past keys, so made-up or replayed keyrings are refused), and it was
+    wrapped by the device itself, by its confirmed approver (its first keyring only), or by a
+    device in the roster.
+  - **The pairing code** is SHA-256 over both devices' public keys, sorted, shown as 16 digits.
+  - **Device records aren't sealed,** since a waiting device has no key yet. The PDS sees device
+    names.
+  - **Removing a device asks for the recovery key,** since only it can wrap the new keyring for
+    recovery. Pressing Enter instead makes a new recovery key and shows it.
+  - **Each device's key** is in `device.json` (mode 600) beside `session.json`, or in the App Group
+    container on the Mac. The keyring itself is never stored; it's unwrapped from the device's
+    record, and again whenever that record changes.
+  - **Approving and removing devices** is CLI-only for now. The Mac app can create a drive, show
+    the recovery key, unlock with it, and be approved.
+  - **Open problems:**
+    - The roster is one record, so two approvals or removals at once can overwrite each other.
+    - A removed device keeps an account session, and records it writes with old keys are still
+      read.
+    - `.atdrive/drive.json` holds decrypted metadata next to the synced files.
+
 
 ### Step 4: transfer only changed chunks
 
