@@ -45,6 +45,9 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
     var opsPageSize = 3
     /// Fail the next calls to these methods (e.g. `com.atproto.space.getBlob`) with a 500.
     var failing: [String: Int] = [:]
+    /// Serve this many more commits (`Int.max`: every one) with a `data` that matches no
+    /// records, as a server that hashes differently would.
+    var lyingCommits = 0
 
     var recordCount: Int { lock.withLock { records.count } }
     /// The repo's current revision.
@@ -219,13 +222,31 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
     }
 
     private func commitJSON(_ rev: String) -> [String: Any] {
-        // No LtHash here yet: 32 zero bytes, unpadded base64 as atproto writes it.
-        let data = Data(count: 32).base64EncodedString().replacingOccurrences(of: "=", with: "")
+        var data = commitData
+        if lyingCommits > 0 {
+            lyingCommits -= 1
+            data[0] ^= 0xFF
+        }
         return [
             "ver": 1, "repo": "did:plc:test", "space": "at://did:plc:test/space/\(Lexicon.driveSpace)/default",
-            "rev": rev, "data": ["$bytes": data],
+            // Unpadded base64, as atproto writes it.
+            "rev": rev, "data": ["$bytes": data.base64EncodedString().replacingOccurrences(of: "=", with: "")],
         ]
     }
+
+    /// The LtHash over every current record, as the reference's commit holds. Computed from
+    /// scratch each time, whatever wrote the records; the repos here are small.
+    private var commitData: Data {
+        var hash = RepoSetHash()
+        for (key, stored) in records {
+            let (collection, rkey) = split(key)
+            hash.add(collection: collection, rkey: rkey, cid: stored.cid)
+        }
+        return hash.setHash.digest
+    }
+
+    /// The `data` an honest commit would have now.
+    var currentCommitData: Data { lock.withLock { commitData } }
 
     private func split(_ key: String) -> (collection: String, rkey: String) {
         let slash = key.lastIndex(of: "/")!

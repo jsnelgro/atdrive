@@ -7,26 +7,49 @@ public struct RepoState: Sendable, Equatable {
     public internal(set) var revision: String?
     /// The commit's `data` at `revision` (see `RepoCommit`).
     public internal(set) var data: Data?
-    public internal(set) var records: [String: [String: String]] = [:]
+    /// Changed only through `set`, which keeps `hash` in step.
+    public private(set) var records: [String: [String: String]] = [:]
+    /// The LtHash over `records`, kept current one record at a time, so a check costs the same
+    /// however big the drive is.
+    public private(set) var hash: RepoSetHash
 
     public init(revision: String? = nil, data: Data? = nil, records: [String: [String: String]] = [:]) {
+        self.init(revision: revision, data: data, records: records, hash: nil)
+    }
+
+    /// `hash` must be the one over `records` (e.g. saved with them); `nil` computes it.
+    init(revision: String?, data: Data?, records: [String: [String: String]], hash: RepoSetHash?) {
         self.revision = revision
         self.data = data
         self.records = records
+        self.hash = hash ?? Self.hash(of: records)
+    }
+
+    /// The hash from scratch: one BLAKE3 expansion per record.
+    static func hash(of records: [String: [String: String]]) -> RepoSetHash {
+        var hash = RepoSetHash()
+        for (collection, cids) in records {
+            for (rkey, cid) in cids { hash.add(collection: collection, rkey: rkey, cid: cid) }
+        }
+        return hash
     }
 
     public func cid(_ collection: String, _ rkey: String) -> String? { records[collection]?[rkey] }
 
     mutating func set(_ collection: String, _ rkey: String, cid: String?) {
+        let held = records[collection]?[rkey]
+        guard cid != held else { return }
+        // The CID we hold, not the op's `prev`: the hash follows `records`, even when catching up
+        // on a listing that already has some of the ops.
+        hash.applyOp(collection: collection, rkey: rkey, prev: held, cid: cid)
         records[collection, default: [:]][rkey] = cid
         if records[collection]?.isEmpty == true { records[collection] = nil }
     }
 
     /// Whether these are exactly the records the commit covers: an LtHash over
-    /// `collection/rkey/cid` for every record, compared with `commit.data`. That catches
-    /// anything a compacted change feed hid. `nil` while it can't be checked (there's no LtHash
-    /// here yet); `Drive.update` then lists the whole drive at start and every hour instead.
-    public func check(_ commit: RepoCommit) -> Bool? { nil }
+    /// `collection/rkey/cid` for every record, in every collection, compared with `commit.data`.
+    /// That catches anything a compacted change feed hid.
+    public func check(_ commit: RepoCommit) -> Bool { hash.matches(commitData: commit.data) }
 }
 
 /// The change feed doesn't connect to what we hold: an op's `prev` isn't the CID we have, a
@@ -50,8 +73,13 @@ public struct DriveSnapshot: Sendable {
     /// Whether the records were checked against the latest commit and matched. Then every
     /// update is checked too (a mismatch is a gap), so no periodic listing is needed.
     public private(set) var verified = false
+    /// Why the records aren't `verified`, when a check failed in this process: a full listing
+    /// didn't match its commit (say the server hashes differently). Listing again straight away
+    /// wouldn't help, so the listing is kept, and the drive is listed at start and every hour
+    /// until a check passes.
+    public private(set) var mismatch: ChangeFeedGap?
 
-    /// How often the whole drive is listed while snapshots can't be checked exactly.
+    /// How often the whole drive is listed while the records don't match the commit.
     public static let fullListingInterval: TimeInterval = 60 * 60
 
     /// The revision it's at; `nil` if the drive has no repo (gone, or never written to).
@@ -89,11 +117,15 @@ public struct DriveSnapshot: Sendable {
         return !listedThisRun || now.timeIntervalSince(listedAt) >= Self.fullListingInterval
     }
 
-    /// Applies the change feed since `revision`. Nothing changes if it throws.
+    /// Applies the change feed since `revision`, then checks the records against the commit.
+    /// Nothing changes if it throws.
     ///
     /// `strict` checks that each op's `prev` is the CID we hold: off only when catching up on a
     /// listing, which may already include some of the ops. Either way, an op whose value is
     /// missing though nothing later replaced it, or a revision that moved without ops, is a gap.
+    /// So is a failed check, once the records have matched: before that (a fresh listing, or
+    /// one that didn't match), a failed check is noted in `mismatch` instead, so a server whose
+    /// hash we can't match isn't listed again on every update.
     mutating func apply(_ changes: DriveChanges, strict: Bool, read: (String, String, JSONValue?) -> NodeEntry)
         throws
     {
@@ -143,16 +175,15 @@ public struct DriveSnapshot: Sendable {
         }
         repo.revision = commit.rev
         repo.data = commit.data
-        var verified = false
-        if let matches = repo.check(commit) {
-            guard matches else { throw ChangeFeedGap(description: "the records don't match the drive's commit") }
-            verified = true
-        }
+        let matches = repo.check(commit)
+        let mismatch = ChangeFeedGap(description: "the records don't match the drive's commit at \(commit.rev)")
+        if !matches, verified { throw mismatch }
         if ops.contains(where: { $0.collection == Lexicon.node }) {
             tree = DriveTree(Array(nodes.values), unreadable: Array(unreadable.values))
         }
         self.repo = repo
-        self.verified = verified
+        verified = matches
+        self.mismatch = matches ? nil : mismatch
     }
 
     /// Reads the unreadable records again (with `Drive.readNode`), e.g. once a key arrives.
@@ -192,6 +223,9 @@ public struct DriveSnapshot: Sendable {
         var listedAt: Date
         var verified: Bool
         var records: [String: [String: String]]
+        /// `RepoState.hash`'s 2048-byte state, so loading doesn't hash every record again. When
+        /// it's missing (or the wrong size), it's computed from `records`.
+        var setHash: Data?
         var nodes: [SavedNode]
         var unreadable: [SavedUnreadable]
     }
@@ -201,7 +235,7 @@ public struct DriveSnapshot: Sendable {
         guard let revision else { return nil }
         let saved = Saved(
             version: Self.savedVersion, revision: revision, data: repo.data, listedAt: listedAt,
-            verified: verified, records: repo.records,
+            verified: verified, records: repo.records, setHash: repo.hash.setHash.state,
             nodes: tree.nodes.values.sorted { $0.id < $1.id }.map { .init(id: $0.id, cid: $0.cid, record: $0.record) },
             unreadable: tree.unreadable.values.sorted { $0.id < $1.id }.map {
                 .init(id: $0.id, cid: $0.cid, reason: $0.reason, value: $0.value)
@@ -213,12 +247,15 @@ public struct DriveSnapshot: Sendable {
 
     /// A snapshot saved by `saved()`. Its unreadable records are read again with `drive` (which
     /// may be newer than the one that saved it). It isn't trusted until it has been listed
-    /// again or checked (`needsFullListing`).
+    /// again or checked (`needsFullListing`): a verified one is checked against the commit on its
+    /// first update, and listed again only if that fails.
     public init?(saved data: Data, drive: Drive) {
         guard let saved = try? JSONDecoder().decode(Saved.self, from: data), saved.version == Self.savedVersion,
             saved.nodes.count == saved.records[Lexicon.node, default: [:]].count - saved.unreadable.count
         else { return nil }
-        repo = RepoState(revision: saved.revision, data: saved.data, records: saved.records)
+        repo = RepoState(
+            revision: saved.revision, data: saved.data, records: saved.records,
+            hash: saved.setHash.flatMap(LtHash.init(state:)).map { RepoSetHash(setHash: $0) })
         tree = DriveTree(
             saved.nodes.map { Node(id: $0.id, cid: $0.cid, record: $0.record) },
             unreadable: saved.unreadable.map { .init(id: $0.id, cid: $0.cid, reason: $0.reason, value: $0.value) })

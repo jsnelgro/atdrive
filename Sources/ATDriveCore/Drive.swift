@@ -95,8 +95,9 @@ public final class Drive: Sendable {
     /// Brings a snapshot of the drive up to date: applies the changes since its revision, which
     /// is one request when nothing changed. Lists the whole drive instead when there's no
     /// snapshot (or revision), when the change feed doesn't connect to it or the server refuses
-    /// it, and, while snapshots can't be checked exactly, once per process and every hour (a
-    /// compacted feed can hide writes; see `DriveSnapshot.needsFullListing`).
+    /// it, and when the records stop matching the commit (a compacted feed can hide writes).
+    /// While a listing itself doesn't match (say the server hashes differently), it also lists
+    /// once per process and every hour (see `DriveSnapshot.needsFullListing`).
     ///
     /// A drive that's gone comes back as a snapshot with no revision: callers that have synced
     /// before must not take that for an empty drive.
@@ -113,7 +114,8 @@ public final class Drive: Sendable {
     }
 
     /// The whole drive, every collection, listed from scratch. Writes made while listing are
-    /// caught up on with the change feed, so the snapshot is exactly at a revision.
+    /// caught up on with the change feed, so the snapshot is exactly at a revision. It's kept
+    /// even if it doesn't match the commit, as `mismatch`: listing again wouldn't help.
     public func listEverything(now: Date = Date()) async throws -> DriveSnapshot {
         var problem = ChangeFeedGap(description: "the drive kept changing while it was listed")
         for _ in 0..<3 {
