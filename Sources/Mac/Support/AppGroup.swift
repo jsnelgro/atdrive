@@ -22,6 +22,12 @@ public enum AppGroup {
             SessionStore(directory: $0.appendingPathComponent("Library/Application Support/ATDrive", isDirectory: true))
         }
     }
+
+    /// Where this Mac's device identity lives (its key pair, which the drive's keyring is wrapped
+    /// for), beside the session. The app makes it; the extension uses it to unlock the drive.
+    public static func deviceStore() -> DeviceStore? {
+        sessionStore()?.devices
+    }
 }
 
 /// The Finder location ATDrive shows up as. One domain, for the logged-in account.

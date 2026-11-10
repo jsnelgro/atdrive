@@ -13,17 +13,15 @@ import Testing
     let phone: Drive
     let directory: URL
 
-    init() throws {
-        let transport = pds
+    init() async throws {
+        let pds = pds
         let clock = clock
-        func device(_ name: String, _ clockID: UInt64) -> Drive {
-            Drive(
-                client: XRPCClient(service: URL(string: "https://pds.test")!, transport: transport),
-                owner: "did:plc:test", chunkSize: 4, device: name, tids: TIDSource(clockID: clockID) { clock.now },
-                createsDrive: true)
+        func device(_ name: String, _ clockID: UInt64, keyring: Keyring? = nil) -> Drive {
+            pds.device(name, tids: TIDSource(clockID: clockID) { clock.now }, keyring: keyring)
         }
         laptop = device("laptop", 1)
-        phone = device("phone", 2)
+        _ = try await laptop.create()
+        phone = device("phone", 2, keyring: laptop.keyring)
         directory = try temporaryDirectory()
     }
 

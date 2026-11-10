@@ -17,7 +17,8 @@ import Foundation
 /// Two things are never taken for deletions on the drive: records this device can't read (left
 /// alone on both sides, and reported), and a drive that's gone (syncing stops, as it does when
 /// the folder disappears). A drive wiped and created again counts as gone: it has another ID
-/// (`DriveSettings.driveID`). Only a folder's first sync creates a drive.
+/// (`DriveSettings.driveID`). Sync never creates a drive: that shows a recovery key, so only
+/// `atdrive login` does it.
 ///
 /// Each pass that fetches changes also settles races between devices (`Drive.settleRaces`), and
 /// once a day it prunes history (`Drive.prune`).
@@ -25,7 +26,7 @@ import Foundation
 /// Not thread-safe: use it from one task.
 public final class FolderSync {
     public let root: String
-    /// Never creates the drive by itself: `sync()` decides that.
+    /// Unlocked: it has the drive's keys.
     public private(set) var drive: Drive
     /// Files changed more recently than this are left for the next pass (still being written).
     public let settle: TimeInterval
@@ -73,7 +74,7 @@ public final class FolderSync {
         }
         root = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
         guard LocalFS.isFolder(root) else { throw SyncError.notAFolder(path) }
-        self.drive = drive.with(createsDrive: false)
+        self.drive = drive
         self.settle = settle
         self.log = log
         folder = StateFolder(root: root)
@@ -106,7 +107,7 @@ public final class FolderSync {
         guard drive.owner == state.owner, drive.space == state.space else {
             throw SyncError.otherAccount(folder: root, owner: state.owner)
         }
-        self.drive = drive.with(createsDrive: false)
+        self.drive = drive
     }
 
     /// One pass. `checkRemote: false` skips checking the drive unless something changed here
@@ -140,10 +141,9 @@ public final class FolderSync {
             await pruneIfDue()
         }
         if remote!.revision == nil, !local.entries.isEmpty {
-            // A first sync, with something to put in a drive the account doesn't have yet.
-            state.driveID = try await drive.create().driveID
-            try folder.save(state)
-            remoteIsStale = true
+            // A first sync, with something to put in a drive the account doesn't have yet. Only
+            // `atdrive login` creates one: it has a recovery key to show.
+            throw DriveAccessError.noDrive
         }
         let snapshot = remote!
         let view = RemoteView(snapshot.tree, base: base)

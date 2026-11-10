@@ -15,8 +15,7 @@ struct LiveChangeFeedTests {
         let (handle, password) = try #require(liveChangeFeedCredentials())
         let session = try await Auth.login(identifier: handle, password: password, resolver: IdentityResolver())
         let manager = SessionManager(session)
-        let drive = Drive(
-            client: XRPCClient(service: session.service, session: manager), owner: session.did, createsDrive: true)
+        let drive = try await openLiveDrive(session: session, manager: manager)
 
         // A full listing: every collection, and the commit it's at.
         var snapshot = try await drive.update(nil)

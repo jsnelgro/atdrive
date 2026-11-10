@@ -20,24 +20,34 @@ actor DriveIndex {
     /// Anchor for a drive nothing has been written to yet.
     static let emptyRevision = "empty"
 
-    /// The logged-in account's drive. Read lazily, so logging in after the extension starts works.
-    func drive() throws -> Drive {
+    /// The logged-in account's drive, unlocked with this Mac's keys. Read lazily, so signing in
+    /// (and getting the keys) after the extension starts works. Until the app has set this Mac
+    /// up with the drive's keys, it's "not signed in". The extension never creates a drive: the
+    /// app does, as it shows the recovery key.
+    func drive() async throws -> Drive {
         if let cachedDrive { return cachedDrive }
-        guard let store = AppGroup.sessionStore(), let session = try store.load() else {
+        guard let store = AppGroup.sessionStore(), let session = try store.load(),
+            let devices = AppGroup.deviceStore(), let identity = try devices.load()
+        else {
             throw NSFileProviderError(.notAuthenticated)
         }
         let manager = SessionManager(session) { updated in try? store.save(updated) }
-        // `refresh` refuses a drive that's gone after this extension has seen it, so writes
-        // only create one that's new.
         let drive = Drive(
-            client: XRPCClient(service: session.service, session: manager), owner: session.did, createsDrive: true)
+            client: XRPCClient(service: session.service, session: manager), owner: session.did,
+            device: identity.name, identity: identity
+        ) { updated in try? devices.save(updated) }
+        do {
+            try await drive.unlock()
+        } catch is DriveAccessError {
+            throw NSFileProviderError(.notAuthenticated)
+        }
         cachedDrive = drive
         return drive
     }
 
     /// The drive as it is now, with the changes since last time applied.
     func refresh() async throws -> (revision: String, tree: DriveTree) {
-        let drive = try drive()
+        let drive = try await drive()
         var updated = try await drive.update(snapshot)
         if updated.revision == nil, let current, current.revision != Self.emptyRevision {
             // Gone since we last saw it (say the server was wiped). Showing it as empty would

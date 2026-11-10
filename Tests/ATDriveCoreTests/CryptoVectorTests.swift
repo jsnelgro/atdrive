@@ -78,10 +78,16 @@ import Testing
         #expect(keyring.current == secondKey)
     }
 
-    @Test func pairingCode() {
+    @Test func pairingCode() throws {
         #expect(
             device.publicKey.rawRepresentation.hexString
                 == "79a631eede1bf9c98f12032cdeadd0e7a079398fc786b88cc846ec89af85a51a")
-        #expect(PairingCode.make(for: device.publicKey) == "7999 4500 7626 4087")
+        let other = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: Self.bytes(128..<160))
+        #expect(PairingCode.make(for: device.publicKey, and: other.publicKey) == "0191 3766 7973 5398")
+        #expect(PairingCode.make(for: other.publicKey, and: device.publicKey) == "0191 3766 7973 5398")
+    }
+
+    @Test func keyFingerprint() {
+        #expect(key.fingerprint == "3beb7a57a809dfa1ff6b8b2cc00976738e7d3fc69c3ea0b737bbec79477f1e46")
     }
 }

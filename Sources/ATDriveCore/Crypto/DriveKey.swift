@@ -40,6 +40,8 @@ public struct DriveKey: Sendable, Equatable, CustomStringConvertible {
         case chunkID = "atdrive chunk id v1"
         /// Seeds content-defined chunking, so chunk boundaries don't fingerprint files.
         case chunkerSeed = "atdrive chunker seed v1"
+        /// Lets a device recognize a key it accepted before without storing the key (`fingerprint`).
+        case fingerprint = "atdrive key fingerprint v1"
     }
 
     static let byteCount = 32
@@ -80,6 +82,14 @@ public struct DriveKey: Sendable, Equatable, CustomStringConvertible {
     /// The chunker's seed, as bytes: the chunker isn't a cipher, so it takes no `SymmetricKey`.
     public var chunkerSeed: Data {
         subkey(.chunkerSeed).withUnsafeBytes { Data($0) }
+    }
+
+    /// 32 bytes derived from the key, as hex. A device keeps the fingerprints of the keys it has
+    /// accepted (never the keys), so it can tell that a keyring it's handed later still holds
+    /// them: one the PDS made up, or an old one played back, doesn't. The key ID would do the same
+    /// with 64 bits, which is in reach of a determined forger; this is 256.
+    public var fingerprint: String {
+        subkey(.fingerprint).withUnsafeBytes { $0.hexString }
     }
 
     /// Never the key itself, so logging one by mistake is harmless.

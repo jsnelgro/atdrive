@@ -114,12 +114,23 @@ struct Sync: AsyncParsableCommand {
         return ExitCode(fatalStatus)
     }
 
-    /// Waits until a session other than `expired` is saved (by `atdrive login`), then loads it.
+    /// Waits until a session other than `expired` is saved (by `atdrive login`), and this device
+    /// has the drive's keys, then loads it. Never creates a drive: that's `atdrive login`'s, as it
+    /// shows the recovery key.
     private static func waitForSignIn(after expired: Session? = nil) async throws -> Context {
         var said = expired != nil
+        var saidLocked: String?
         while true {
-            if let saved = try? SessionStore().load(), saved != expired { return try await Context.load() }
-            if !said {
+            if let saved = try? SessionStore().load(), saved != expired {
+                do {
+                    return try await Context.load()
+                } catch let error as DriveAccessError {
+                    if saidLocked != error.description {
+                        SyncLog.write("Waiting: \(error). Syncing starts once it has.")
+                        saidLocked = error.description
+                    }
+                }
+            } else if !said {
                 SyncLog.write("Not signed in. Run `atdrive login <handle>`; syncing starts once you have.")
                 said = true
             }

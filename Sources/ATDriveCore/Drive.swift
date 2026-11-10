@@ -6,39 +6,49 @@ import Foundation
 ///
 /// Every write also records a version of what it changed, in the same transaction: that's the
 /// drive's history (`DriveHistory`; restoring, purging and pruning are in `History.swift`).
+///
+/// Drives are encrypted, and only encrypted. Records are sealed and file contents encrypted with
+/// the drive's keyring (`SealedRecords.swift`), which a device unwraps from its own device record
+/// when it opens the drive (`unlock`, in `DriveKeys.swift`). Until then everything in it reads as
+/// unreadable, and writes fail.
 public final class Drive: Sendable {
     public let client: XRPCClient
     /// DID of the account that owns the drive (and, for now, the only one writing to it).
     public let owner: String
     /// The space's URI.
     public let space: String
-    /// Files are split into blobs of this size.
+    /// Files are split into chunks of this size, each encrypted and stored as a blob.
     public let chunkSize: Int
     /// Recorded on every change this makes (`VersionRecord.device`).
     public let device: String
     /// Where new IDs (and so the times of changes) come from.
     public let tids: TIDSource
-    /// Whether a write to a drive that doesn't exist creates it. Only for a drive that's new:
-    /// one this device has synced before and is now gone was wiped (say the server was reset),
-    /// and creating it again would leave only what's written next.
-    public let createsDrive: Bool
+    /// The drive's keys on this device, and this device. Both can change while the drive is open:
+    /// unlocking it, or another device rotating the keyring (`refreshKeys`).
+    let keys: Locked<DriveKeys>
+    /// Saves this device's identity when what it trusts changes (`DeviceTrust`).
+    let saveIdentity: (@Sendable (DeviceIdentity) -> Void)?
 
     public typealias Progress = @Sendable (_ bytesDone: Int, _ bytesTotal: Int) -> Void
 
+    /// `identity` is this device, to unlock the drive with (`unlock`) and to save when what it
+    /// trusts changes (`saveIdentity`). `keyring`, if given, unlocks it straight away.
     public convenience init(
         client: XRPCClient, owner: String, key: String = Lexicon.defaultDriveKey,
         chunkSize: Int = 4 * 1024 * 1024, device: String = DeviceName.current, tids: TIDSource = .system,
-        createsDrive: Bool = false
+        identity: DeviceIdentity? = nil, keyring: Keyring? = nil,
+        saveIdentity: (@Sendable (DeviceIdentity) -> Void)? = nil
     ) {
         self.init(
             client: client, owner: owner,
             space: XRPCClient.spaceURI(authority: owner, type: Lexicon.driveSpace, key: key), chunkSize: chunkSize,
-            device: device, tids: tids, createsDrive: createsDrive)
+            device: device, tids: tids, keys: DriveKeys(keyring: keyring, identity: identity),
+            saveIdentity: saveIdentity)
     }
 
     private init(
         client: XRPCClient, owner: String, space: String, chunkSize: Int, device: String, tids: TIDSource,
-        createsDrive: Bool
+        keys: DriveKeys, saveIdentity: (@Sendable (DeviceIdentity) -> Void)?
     ) {
         self.client = client
         self.owner = owner
@@ -46,25 +56,27 @@ public final class Drive: Sendable {
         self.chunkSize = chunkSize
         self.device = device
         self.tids = tids
-        self.createsDrive = createsDrive
+        self.keys = Locked(keys)
+        self.saveIdentity = saveIdentity
     }
 
-    /// Opens the logged-in account's drive.
+    /// The logged-in account's drive, as `identity` (this device). It's locked until `unlock`.
     public convenience init(
-        session: SessionManager, transport: any HTTPTransport = URLSessionTransport(), createsDrive: Bool = false
+        session: SessionManager, transport: any HTTPTransport = URLSessionTransport(),
+        identity: DeviceIdentity? = nil, saveIdentity: (@Sendable (DeviceIdentity) -> Void)? = nil
     ) async {
         let current = await session.session
         self.init(
             client: XRPCClient(service: current.service, session: session, transport: transport),
-            owner: current.did, createsDrive: createsDrive)
+            owner: current.did, device: identity?.name ?? DeviceName.current, identity: identity,
+            saveIdentity: saveIdentity)
     }
 
-    /// The same drive, creating it on a write or not (`createsDrive`).
-    public func with(createsDrive: Bool) -> Drive {
-        Drive(
-            client: client, owner: owner, space: space, chunkSize: chunkSize, device: device, tids: tids,
-            createsDrive: createsDrive)
-    }
+    /// The drive's keyring on this device: `nil` until it's unlocked.
+    public var keyring: Keyring? { keys.value.keyring }
+
+    /// This device, with what it now trusts.
+    public var identity: DeviceIdentity? { keys.value.identity }
 
     // MARK: Reading
 
@@ -85,20 +97,6 @@ public final class Drive: Sendable {
             cursor = page.records.isEmpty ? nil : page.cursor
         } while cursor != nil
         return DriveTree(entries)
-    }
-
-    /// The one place a stored node record becomes a `Node`, for listings and the change feed
-    /// alike. A record that doesn't decode (a newer format) is unreadable rather than dropped,
-    /// so it can't look deleted; so is one whose name could escape a local folder (e.g. `..`)
-    /// when downloaded. Our own writes never produce either.
-    public func readNode(id: String, cid: String, value: JSONValue?) -> NodeEntry {
-        guard let value, let record = try? value.decode(as: NodeRecord.self) else {
-            return .unreadable(UnreadableNode(id: id, cid: cid, reason: .newerFormat, value: value))
-        }
-        guard (try? DrivePath.validate(name: record.name)) != nil else {
-            return .unreadable(UnreadableNode(id: id, cid: cid, reason: .invalidName, value: value))
-        }
-        return .readable(Node(id: id, cid: cid, record: record))
     }
 
     // MARK: Following changes
@@ -133,12 +131,21 @@ public final class Drive: Sendable {
     ///
     /// A drive that's gone comes back as a snapshot with no revision: callers that have synced
     /// before must not take that for an empty drive.
+    ///
+    /// If this device's record changed (another device rotated the keyring, say), the keyring is
+    /// unwrapped again first, and what it couldn't read before is read again (`refreshKeys`).
     public func update(_ snapshot: DriveSnapshot?, now: Date = Date()) async throws -> DriveSnapshot {
+        var updated = try await fetch(snapshot, now: now)
+        if await refreshKeys(seeing: updated) { updated.reread(with: self) }
+        return updated
+    }
+
+    private func fetch(_ snapshot: DriveSnapshot?, now: Date) async throws -> DriveSnapshot {
         guard var snapshot, let revision = snapshot.revision, !snapshot.needsFullListing(at: now) else {
             return try await listEverything(now: now)
         }
         do {
-            try snapshot.apply(try await changes(since: revision), strict: true, read: readNode)
+            try snapshot.apply(try await changes(since: revision), strict: true, reading: self)
             return snapshot
         } catch let error where error is ChangeFeedGap || Self.isRefusal(error) {
             return try await listEverything(now: now)
@@ -167,9 +174,9 @@ public final class Drive: Sendable {
                 listing += page.records.map { ($0.collection ?? Lexicon.node, $0.rkey, $0.cid, $0.value) }
                 cursor = page.records.isEmpty ? nil : page.cursor
             } while cursor != nil
-            var snapshot = DriveSnapshot(listing: listing, commit: commit, listedAt: now, read: readNode)
+            var snapshot = DriveSnapshot(listing: listing, commit: commit, listedAt: now, reading: self)
             do {
-                try snapshot.apply(try await changes(since: commit.rev), strict: false, read: readNode)
+                try snapshot.apply(try await changes(since: commit.rev), strict: false, reading: self)
                 return snapshot
             } catch let gap as ChangeFeedGap {
                 problem = gap
@@ -178,7 +185,7 @@ public final class Drive: Sendable {
         throw problem
     }
 
-    private static func isMissing(_ error: XRPCError) -> Bool {
+    static func isMissing(_ error: XRPCError) -> Bool {
         error.error == "SpaceNotFound" || error.error == "RepoNotFound"
     }
 
@@ -190,7 +197,8 @@ public final class Drive: Sendable {
         return false
     }
 
-    /// Streams a file's contents in order, verifying every chunk and the whole file.
+    /// Streams a file's contents in order, decrypted, verifying every chunk (its CID, then that
+    /// it decrypts with its ID) and the whole file (its SHA-256, from the sealed record).
     public func read(_ node: Node, progress: Progress? = nil, into write: (Data) throws -> Void)
         async throws
     {
@@ -198,10 +206,16 @@ public final class Drive: Sendable {
         let total = node.record.size ?? 0
         var hasher = SHA256()
         var done = 0
-        for chunk in node.record.chunks ?? [] {
-            let data = try await client.getSpaceBlob(space: space, repo: owner, cid: chunk.cid)
-            guard CID.forBlob(data) == chunk.cid else {
+        for (index, chunk) in (node.record.chunks ?? []).enumerated() {
+            let ciphertext = try await client.getSpaceBlob(space: space, repo: owner, cid: chunk.cid)
+            guard CID.forBlob(ciphertext) == chunk.cid else {
                 throw ATDriveError.integrity("chunk \(chunk.cid) of \(node.name) doesn't match its CID")
+            }
+            let data: Data
+            do {
+                data = try chunk.id.decrypt(ciphertext)
+            } catch {
+                throw ATDriveError.integrity("chunk \(index + 1) of \(node.name) doesn't decrypt")
             }
             hasher.update(data: data)
             try write(data)
@@ -249,39 +263,22 @@ public final class Drive: Sendable {
 
     // MARK: Writing
 
-    /// Creates the drive: its space, and its settings with a new drive ID. Returns the drive's
-    /// settings: the ones written here, or the ones already there (another device created it).
-    /// Writes do this by themselves only if `createsDrive`.
-    @discardableResult
-    public func create() async throws -> DriveSettings {
-        do {
-            _ = try await client.createPersonalSpace(type: Lexicon.driveSpace, key: spaceKey)
-        } catch let error as XRPCError where error.error == "SpaceAlreadyExists" {}
-        let settings = DriveSettings()
-        do {
-            try await client.createSpaceRecord(
-                space: space, repo: owner, collection: Lexicon.settings, rkey: Lexicon.settingsKey, record: settings)
-            return settings
-        } catch let error as XRPCError where error.error == "RecordAlreadyExists" {
-            guard let existing = try await self.settings() else {
-                throw ATDriveError.unexpectedResponse("the drive's settings exist, but can't be read")
-            }
-            return existing
-        }
+    /// The drive's settings, or `nil` if it has none (it doesn't exist) or they can't be read
+    /// here (see `readSettings`).
+    public func settings() async throws -> DriveSettings? {
+        try await settingsRecord().flatMap { readSettings($0.value) }
     }
 
-    /// The drive's settings, or `nil` if it has none (it doesn't exist, or a version of ATDrive
-    /// from before there were settings created it).
-    public func settings() async throws -> DriveSettings? {
+    /// The settings record as stored, or `nil` if there's none: no settings means no drive
+    /// (creating one writes them first).
+    func settingsRecord() async throws -> (cid: String, value: JSONValue?)? {
         let page: XRPCClient.SpaceRecordPage<JSONValue>
         do {
             page = try await client.listRawSpaceRecords(space: space, repo: owner, collection: Lexicon.settings)
         } catch let error as XRPCError where Self.isMissing(error) {
             return nil
         }
-        return page.records.first { $0.rkey == Lexicon.settingsKey }?.value.flatMap {
-            try? $0.decode(as: DriveSettings.self)
-        }
+        return page.records.first { $0.rkey == Lexicon.settingsKey }.map { ($0.cid, $0.value) }
     }
 
     @discardableResult
@@ -294,6 +291,10 @@ public final class Drive: Sendable {
     /// Uploads a local file as `name` inside `parent`. Pass `replacing` to overwrite an existing
     /// file in place (it keeps its ID, so other devices see an edit rather than a new file).
     /// The recorded modification time is `modified`, or else the local file's.
+    ///
+    /// Each chunk is encrypted (`DriveKey.encryptChunk`) with the keyring's first key, never the
+    /// current one: chunk IDs stay the same across rotations, so a chunk the drive has keeps its
+    /// ID and its blob. The blob is the ciphertext; its ID goes in the sealed record.
     @discardableResult
     public func upload(
         _ file: URL, as name: String, in parent: String?, replacing existing: Node? = nil,
@@ -301,22 +302,24 @@ public final class Drive: Sendable {
     ) async throws -> Node {
         try DrivePath.validate(name: name)
         if let existing, existing.isFolder { throw ATDriveError.isAFolder(existing.name) }
+        guard let chunkKey = keyring?.keys.first else { throw DriveAccessError.locked }
         let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
         let total = (attributes[.size] as? NSNumber)?.intValue ?? 0
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
 
         var hasher = SHA256()
-        var chunks: [BlobRef] = []
+        var chunks: [ChunkRef] = []
         var done = 0
         progress?(0, total)
         while let data = try handle.read(upToCount: chunkSize), !data.isEmpty {
             hasher.update(data: data)
-            let blob = try await client.uploadBlob(data, mimeType: "application/octet-stream")
-            guard blob.cid == CID.forBlob(data), blob.size == data.count else {
+            let chunk = chunkKey.encryptChunk(data)
+            let blob = try await client.uploadBlob(chunk.ciphertext, mimeType: "application/octet-stream")
+            guard blob.cid == CID.forBlob(chunk.ciphertext), blob.size == chunk.ciphertext.count else {
                 throw ATDriveError.integrity("server stored a chunk of \(name) as \(blob.cid)")
             }
-            chunks.append(blob)
+            chunks.append(ChunkRef(blob: blob, id: chunk.id))
             done += data.count
             progress?(done, total)
         }
@@ -398,7 +401,7 @@ public final class Drive: Sendable {
         _ = try await commit(changes)
     }
 
-    private var spaceKey: String { String(space.split(separator: "/").last!) }
+    var spaceKey: String { String(space.split(separator: "/").last!) }
 
     // MARK: Writing with history
 
@@ -413,22 +416,25 @@ public final class Drive: Sendable {
         var record: NodeRecord?
         var versionID: String
         var version: VersionRecord
+    }
 
-        func writes() throws -> [SpaceWrite] {
-            let nodeWrite: SpaceWrite
-            switch (write, record) {
-            case (.create, let record?):
-                nodeWrite = .create(collection: Lexicon.node, rkey: node, value: try JSONValue(encoding: record))
-            case (.update, let record?):
-                nodeWrite = .update(collection: Lexicon.node, rkey: node, value: try JSONValue(encoding: record))
-            default:
-                nodeWrite = .delete(collection: Lexicon.node, rkey: node)
-            }
-            return [
-                nodeWrite,
-                .create(collection: Lexicon.version, rkey: versionID, value: try JSONValue(encoding: version)),
-            ]
+    /// A change's writes, sealed: the node record (or its deletion), then its version.
+    func writes(for change: NodeChange) throws -> [SpaceWrite] {
+        let nodeWrite: SpaceWrite
+        switch (change.write, change.record) {
+        case (.create, let record?):
+            nodeWrite = .create(collection: Lexicon.node, rkey: change.node, value: try stored(record, id: change.node))
+        case (.update, let record?):
+            nodeWrite = .update(collection: Lexicon.node, rkey: change.node, value: try stored(record, id: change.node))
+        default:
+            nodeWrite = .delete(collection: Lexicon.node, rkey: change.node)
         }
+        return [
+            nodeWrite,
+            .create(
+                collection: Lexicon.version, rkey: change.versionID,
+                value: try stored(change.version, id: change.versionID)),
+        ]
     }
 
     /// Stamps a change to `node` with a new version: it becomes `record` (`nil`: deleted), based
@@ -457,7 +463,7 @@ public final class Drive: Sendable {
     /// Writes one change. Returns the node as written (`nil` for a delete).
     @discardableResult
     func commit(_ change: NodeChange) async throws -> Node? {
-        let cids = try await apply(change.writes())
+        let cids = try await apply(writes(for: change))
         return change.record.map { Node(id: change.node, cid: cids[0] ?? "", record: $0) }
     }
 
@@ -472,7 +478,7 @@ public final class Drive: Sendable {
         for start in stride(from: 0, to: changes.count, by: perTransaction) {
             let batch = Array(changes[start..<min(start + perTransaction, changes.count)])
             do {
-                let cids = try await apply(try batch.flatMap { try $0.writes() })
+                let cids = try await apply(try batch.flatMap { try writes(for: $0) })
                 for (index, change) in batch.enumerated() {
                     if let record = change.record {
                         written.append(Node(id: change.node, cid: cids[index * 2] ?? "", record: record))
@@ -491,14 +497,14 @@ public final class Drive: Sendable {
         return (written, skipped)
     }
 
-    /// Applies writes as one transaction, creating the drive first if it doesn't exist and
-    /// `createsDrive`.
+    /// Applies writes as one transaction. Writes never create the drive: only `create` does, as
+    /// it has a recovery key to show (see `DriveKeys.swift`).
+    @discardableResult
     func apply(_ writes: [SpaceWrite]) async throws -> [String?] {
         do {
             return try await client.applySpaceWrites(space: space, repo: owner, writes: writes)
-        } catch let error as XRPCError where error.error == "SpaceNotFound" && createsDrive {
-            try await create()
-            return try await client.applySpaceWrites(space: space, repo: owner, writes: writes)
+        } catch let error as XRPCError where error.error == "SpaceNotFound" {
+            throw DriveAccessError.noDrive
         }
     }
 

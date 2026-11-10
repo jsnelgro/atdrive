@@ -333,12 +333,17 @@ private func randomData(_ count: Int) -> Data {
         #expect(throws: DriveCryptoError.authenticationFailed) { try Keyring(unwrapping: forged, with: device) }
     }
 
+    /// Both devices show the same code, each from its own key and the other's; a key the PDS
+    /// swapped in on either side changes it.
     @Test func pairingCodes() throws {
-        let code = PairingCode.make(for: device.publicKey)
+        let code = PairingCode.make(for: device.publicKey, and: approver.publicKey)
         #expect(code.wholeMatch(of: /\d{4} \d{4} \d{4} \d{4}/) != nil)
+        #expect(PairingCode.make(for: approver.publicKey, and: device.publicKey) == code)
         let samePublicKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: device.publicKey.rawRepresentation)
-        #expect(PairingCode.make(for: samePublicKey) == code)
-        #expect(PairingCode.make(for: approver.publicKey) != code)
+        #expect(PairingCode.make(for: samePublicKey, and: approver.publicKey) == code)
+        let pds = Curve25519.KeyAgreement.PrivateKey().publicKey
+        #expect(PairingCode.make(for: pds, and: approver.publicKey) != code)
+        #expect(PairingCode.make(for: device.publicKey, and: pds) != code)
     }
 }
 

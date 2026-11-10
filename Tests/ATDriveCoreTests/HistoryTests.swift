@@ -31,17 +31,15 @@ final class TestClock: @unchecked Sendable {
     let phone: Drive
     let directory: URL
 
-    init() throws {
-        let transport = pds
+    init() async throws {
+        let pds = pds
         let clock = clock
-        func device(_ name: String, _ clockID: UInt64) -> Drive {
-            Drive(
-                client: XRPCClient(service: URL(string: "https://pds.test")!, transport: transport),
-                owner: "did:plc:test", chunkSize: 4, device: name, tids: TIDSource(clockID: clockID) { clock.now },
-                createsDrive: true)
+        func device(_ name: String, _ clockID: UInt64, keyring: Keyring? = nil) -> Drive {
+            pds.device(name, tids: TIDSource(clockID: clockID) { clock.now }, keyring: keyring)
         }
         laptop = device("laptop", 1)
-        phone = device("phone", 2)
+        _ = try await laptop.create()
+        phone = device("phone", 2, keyring: laptop.keyring)
         directory = try temporaryDirectory()
     }
 
@@ -666,19 +664,11 @@ final class TestClock: @unchecked Sendable {
     // MARK: Drive identity
 
     @Test func creatingADriveWritesItsSettingsOnce() async throws {
-        let first = try await laptop.create()
-        let second = try await phone.create()
-        #expect(first == second && first.driveID != nil)
-        #expect(try await laptop.settings() == first)
-    }
-
-    @Test func aWriteCreatesAMissingDriveOnlyWhenAllowed() async throws {
-        let careful = laptop.with(createsDrive: false)
-        await #expect(throws: XRPCError.self) { try await careful.createFolder(named: "x", in: nil) }
-        #expect(!pds.spaceExists)
-        try await laptop.createFolder(named: "x", in: nil)
-        #expect(pds.spaceExists)
-        #expect(try await laptop.settings()?.driveID != nil)
+        let settings = try #require(try await laptop.settings())
+        #expect(settings.driveID?.count == 32 && settings.retentionDays == 30)
+        let other = pds.device("other")
+        await #expect(throws: DriveAccessError.driveExists) { try await other.create() }
+        #expect(try await laptop.settings() == settings)
     }
 
     // MARK: Small parts

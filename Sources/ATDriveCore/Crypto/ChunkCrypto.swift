@@ -63,7 +63,12 @@ extension DriveKey {
         let id = chunkID(for: plaintext)
         // AES-GCM fails only for oversized input (64 GiB), far beyond any chunk.
         let box = try! AES.GCM.seal(plaintext, using: id.chunkKey, nonce: ChunkID.nonce)
-        return EncryptedChunk(id: id, ciphertext: box.ciphertext + box.tag)
+        // A fresh `Data`: `box.ciphertext` is a slice of the sealed box, starting at 12, and
+        // appending to it would keep that start index, a trap for anyone indexing from 0.
+        var ciphertext = Data(capacity: box.ciphertext.count + box.tag.count)
+        ciphertext.append(contentsOf: box.ciphertext)
+        ciphertext.append(contentsOf: box.tag)
+        return EncryptedChunk(id: id, ciphertext: ciphertext)
     }
 }
 

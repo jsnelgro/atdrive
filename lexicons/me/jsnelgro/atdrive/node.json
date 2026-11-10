@@ -5,54 +5,20 @@
     "main": {
       "type": "record",
       "key": "tid",
-      "description": "A file or folder in a drive. The record key is its permanent ID: renames and moves update the record, never the key.",
+      "description": "A file or folder in a drive. The record key is its permanent ID: renames and moves update the record, never the key. All but the chunks' blob refs is sealed. The sealed payload is {name, parent?, kind ('file' or 'folder'), size?, sha256?, chunkIDs?, createdAt, modifiedAt?, version?, contentsFrom?}: parent is the folder's record key; sha256 is of the whole file, in hex; chunkIDs decrypt the chunks, in the same order; version is the record key of the node's current version; contentsFrom, of the version that holds these chunks.",
       "record": {
         "type": "object",
-        "required": ["name", "kind", "createdAt"],
+        "required": ["sealed"],
         "properties": {
-          "name": {
-            "type": "string",
-            "maxLength": 255,
-            "description": "File or folder name. Not empty, not '.' or '..', no '/'."
-          },
-          "parent": {
-            "type": "string",
-            "format": "record-key",
-            "description": "Record key of the folder this is in. Absent for the top level."
-          },
-          "kind": {
-            "type": "string",
-            "knownValues": ["file", "folder"]
-          },
-          "size": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Files only: size in bytes."
-          },
-          "sha256": {
-            "type": "string",
-            "description": "Files only: hex SHA-256 of the whole file."
-          },
           "chunks": {
             "type": "array",
             "items": { "type": "blob" },
-            "description": "Files only: the contents, split into blobs. Concatenated in order, they are the file."
+            "description": "Files only: the contents, in encrypted chunks, in order. Readable so the PDS keeps the blobs while the record references them."
           },
-          "createdAt": { "type": "string", "format": "datetime" },
-          "modifiedAt": {
-            "type": "string",
-            "format": "datetime",
-            "description": "Files only: the file's own modification time."
-          },
-          "version": {
-            "type": "string",
-            "format": "tid",
-            "description": "Record key of the node's current version (me.jsnelgro.atdrive.version): the change that left it like this."
-          },
-          "contentsFrom": {
-            "type": "string",
-            "format": "tid",
-            "description": "Files only: record key of the version that holds these chunks in history."
+          "sealed": {
+            "type": "ref",
+            "ref": "me.jsnelgro.atdrive.defs#sealedValue",
+            "description": "Everything else, sealed for this collection and record key."
           }
         }
       }

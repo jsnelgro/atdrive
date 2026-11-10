@@ -38,7 +38,7 @@ import Testing
     @Test func decodesRecords() throws {
         let record = NodeRecord(name: "a.txt", parent: "p", kind: .file, size: 3, sha256: "abc", chunks: [])
         let value = try JSONValue(encoding: record)
-        #expect(value["$type"]?.string == Lexicon.node)
+        #expect(value["name"]?.string == "a.txt")
         #expect(try value.decode(as: NodeRecord.self) == record)
     }
 

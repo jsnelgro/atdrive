@@ -8,7 +8,7 @@ import Testing
 #endif
 
 /// An in-memory stand-in for the handful of PDS endpoints `Drive` uses, so the drive logic
-/// (chunking, verification, paging, auto-creating the space, following the change feed) can be
+/// (chunking, encryption, verification, paging, following the change feed) can be
 /// tested without a network. Behaviour against the real server is checked by `LiveTests`.
 ///
 /// Like the reference PDS, every write gets a revision (a TID) and is logged with its index
@@ -144,7 +144,7 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
 
         case "com.atproto.space.getBlob":
             guard var data = blobs[query["cid"] ?? ""] else { return error(400, "BlobNotFound") }
-            if corruptDownloads, !data.isEmpty { data[0] ^= 0xFF }
+            if corruptDownloads, !data.isEmpty { data[data.startIndex] ^= 0xFF }
             return (data, response(200))
 
         case "com.atproto.space.applyWrites":
@@ -407,6 +407,50 @@ final class ScriptedTransport: HTTPTransport, @unchecked Sendable {
                 HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: headers)!
             )
         }
+    }
+}
+
+extension FakePDS {
+    /// A device using this PDS's drive (`did:plc:test`), with tiny chunks. Pass `keyring` to give
+    /// it the drive's keys straight away (devices sharing one, as tests do), or create the drive
+    /// with it (`Drive.create`), or unlock it.
+    func device(
+        _ name: String = "test", chunkSize: Int = 4, tids: TIDSource = .system, keyring: Keyring? = nil,
+        identity: DeviceIdentity? = nil, saveIdentity: (@Sendable (DeviceIdentity) -> Void)? = nil
+    ) -> Drive {
+        Drive(
+            client: XRPCClient(service: URL(string: "https://pds.test")!, transport: self), owner: "did:plc:test",
+            chunkSize: chunkSize, device: name, tids: tids, identity: identity ?? DeviceIdentity(name: name),
+            keyring: keyring, saveIdentity: saveIdentity)
+    }
+
+    /// A record's value as stored, if it exists.
+    func rawRecord(rkey: String, collection: String = Lexicon.node) -> [String: Any]? {
+        lock.withLock {
+            records["\(collection)/\(rkey)"].flatMap { try? JSONSerialization.jsonObject(with: $0.json) }
+                as? [String: Any]
+        }
+    }
+
+    /// Every record and blob as stored: all the PDS has.
+    var everythingStored: [Data] {
+        lock.withLock { records.values.map(\.json) + Array(blobs.values) }
+    }
+
+    /// Seals `payload` (any JSON object) with `keyring` for `collection`/`rkey` and stores it, as
+    /// a device with that keyring (a newer version of ATDrive, or another drive) would.
+    func insertSealed(
+        rkey: String, collection: String = Lexicon.node, _ payload: [String: Any], keyring: Keyring,
+        chunks: [[String: Any]]? = nil
+    ) throws {
+        let value = try JSONValue(parsing: JSONSerialization.data(withJSONObject: payload))
+        let sealed = try keyring.seal(value, collection: collection, rkey: rkey)
+        var record: [String: Any] = [
+            "$type": collection,
+            "sealed": ["keyID": sealed.keyID.rawValue, "sealed": ["$bytes": Base64.encode(sealed.sealed.data)]],
+        ]
+        if let chunks { record["chunks"] = chunks }
+        insertRawRecord(rkey: rkey, collection: collection, record)
     }
 }
 

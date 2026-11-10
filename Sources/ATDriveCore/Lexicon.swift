@@ -10,6 +10,11 @@ public enum Lexicon {
     public static let settings = "me.jsnelgro.atdrive.settings"
     /// Record key of the drive's settings record.
     public static let settingsKey = "self"
+    /// Record collection holding one record per device (keyed by its ID), with the drive's
+    /// keyring wrapped for it, plus the keyring wrapped with the recovery key (`recoveryKey`).
+    public static let device = "me.jsnelgro.atdrive.device"
+    /// Record key of the keyring wrapped with the recovery key, in `device`.
+    public static let recoveryKey = "recovery"
     /// Space key of the default drive.
     public static let defaultDriveKey = "default"
 
