@@ -54,9 +54,27 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
   - **How it works:** see *Folder sync* below.
   - **Later:** a FUSE mount, for drives too big to keep a full copy of (files fetched on demand).
 - [ ] **Phase 4, iOS:** the same extension code with an iOS host app.
-- [ ] **Storage v2** (see *Storage v2* below): incremental sync; 30 days of history (edits,
+- [x] **Storage v2** (see *Storage v2* below): incremental sync; 30 days of history (edits,
   renames, moves, deletes) that also stops races from losing edits; an encrypted-only drive; and
   transferring only changed chunks.
+  - **Tested** with unit tests against `FakePDS` on Linux, also with a 512 KiB stack (what Apple
+    platforms give threads other than the main one). macOS CI builds the app.
+  - **Not yet exercised:** any of it against the live alpha PDS, and the Mac app's new screens on a
+    real Mac.
+  - **Follow-ups:**
+    - **Live PDS:** run `LiveTests` and `LiveChangeFeedTests` (they need `ATDRIVE_LIVE_HANDLE`,
+      `ATDRIVE_LIVE_PASSWORD`, and `ATDRIVE_LIVE_RECOVERY_KEY` for an account that has a drive).
+      Unverified there: `listRepoOps`, `listRecords` across collections, `createRecord`,
+      `applyWrites` results, and the OAuth scope with the new collections.
+    - **Mac:**
+      - Try sign-in, the recovery key window and approval on a real Mac.
+      - Approve and remove devices from the app (the CLI does it today).
+      - Show history and the trash ("Restore Previous Version…" from Finder).
+      - `item(for:)` answers `noSuchItem` for records it can't read.
+      - Deleting a folder in Finder ignores unreadable items inside it.
+      - Log when the drive doesn't match its commit.
+    - **Encryption:** see *Step 3, open problems*. The roster can lose a concurrent change, a
+      removed device keeps its session, and `.atdrive/drive.json` holds decrypted metadata.
 - [ ] **Later:**
   - Publish the lexicons and narrow the OAuth scope (see below).
   - Shared folders (`memberspace`).
@@ -120,7 +138,7 @@ keeps exactly what `keptWhenDeleting` keeps.
 - **Damaged trees:** a node whose parent was deleted, and a cycle created by concurrent moves,
   are both shown at the top level, so nothing is ever hidden.
 
-## Storage v2 (planned)
+## Storage v2
 
 Goals:
 - Fetch only what changed, and upload only what changed.
@@ -129,7 +147,8 @@ Goals:
 - Keep file contents and names unreadable to whoever runs the PDS. Drives are encrypted only.
 
 There are no users yet, so none of this is backward compatible. The format changes in place, and
-existing test drives are wiped, not migrated. Four steps, in this order.
+existing test drives are wiped, not migrated. Built in four steps, in this order. Each step ends
+with what was decided while building it ("As built").
 
 ### What shapes the design
 
