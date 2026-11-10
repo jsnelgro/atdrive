@@ -36,7 +36,9 @@ public enum OAuthLogin {
     /// The scope to use once ATDrive's lexicons are published: access to ATDrive's spaces only.
     public static let narrowScope = "atproto space:\(Lexicon.driveSpace)?\(collections)&manage=create blob:*/*"
 
-    private static let collections = [Lexicon.node, Lexicon.version, Lexicon.settings].map { "collection=\($0)" }
+    private static let collections = [Lexicon.node, Lexicon.version, Lexicon.settings, Lexicon.device].map {
+        "collection=\($0)"
+    }
         .joined(separator: "&")
 
     public static func clientID(environment: [String: String] = ProcessInfo.processInfo.environment) -> String {

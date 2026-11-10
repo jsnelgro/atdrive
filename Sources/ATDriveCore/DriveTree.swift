@@ -19,16 +19,24 @@ public struct Node: Sendable, Identifiable, Equatable {
 /// A node record that exists in the drive but that this device can't read (yet). It must never
 /// be mistaken for a deletion: sync and the Mac extension leave it, and its local copy, alone.
 public struct UnreadableNode: Sendable, Equatable {
+    /// Why a record (a node, or a version) can't be read.
     public enum Reason: String, Sendable, Equatable, Codable, CustomStringConvertible {
         /// It doesn't decode: written by a newer version of ATDrive.
         case newerFormat
         /// Its name couldn't be used in a folder (e.g. `..`). Our own writes never do this.
         case invalidName
+        /// Sealed with a drive key this device doesn't have: one newer than its keyring (another
+        /// device rotated it), or any at all, before this device is unlocked.
+        case missingKey
+        /// Sealed, but it doesn't open: changed on the server, or moved there from another record.
+        case tampered
 
         public var description: String {
             switch self {
             case .newerFormat: "it was written by a newer version of ATDrive"
             case .invalidName: "its name can't be used in a folder"
+            case .missingKey: "it's sealed with a drive key this device doesn't have (yet)"
+            case .tampered: "it doesn't decrypt: it was changed on the server, or isn't where it was written"
             }
         }
     }

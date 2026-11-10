@@ -19,11 +19,13 @@ public struct Version: Sendable, Equatable, Identifiable {
     public var date: Date { TID.date(id) ?? .distantPast }
 }
 
-/// A version record this device can't read (e.g. a newer format). It's kept, so it can be read
-/// again later, and nothing here deletes it.
+/// A version record this device can't read (e.g. sealed with a key it doesn't have yet). It's
+/// kept, so it can be read again later, and nothing here deletes it.
 public struct UnreadableVersion: Sendable, Equatable {
     public let id: String
     public let cid: String
+    public let reason: UnreadableNode.Reason
+    /// The record as stored, to read again.
     public let value: JSONValue?
 }
 
@@ -57,21 +59,19 @@ public struct DriveHistory: Sendable {
 
     // MARK: Storage
 
-    /// Adds or replaces a stored version record; `cid == nil` removes it. One that doesn't
-    /// decode is kept as unreadable.
-    mutating func set(_ id: String, cid: String?, value: JSONValue?) {
-        remove(id)
-        guard let cid else { return }
-        if let value, let record = try? value.decode(as: VersionRecord.self) {
-            insert(Version(id: id, cid: cid, record: record))
-        } else {
-            unreadable[id] = UnreadableVersion(id: id, cid: cid, value: value)
+    /// Adds or replaces a stored version record, as `Drive.readVersion` read it. One it couldn't
+    /// read is kept as unreadable.
+    mutating func set(_ entry: VersionEntry) {
+        remove(entry.id)
+        switch entry {
+        case .readable(let version): insert(version)
+        case .unreadable(let record): unreadable[record.id] = record
         }
     }
 
-    /// Reads the unreadable records again, e.g. after an update that understands them.
-    mutating func reread() {
-        for record in unreadable.values { set(record.id, cid: record.cid, value: record.value) }
+    /// Reads the unreadable records again (with `Drive.readVersion`), e.g. once a key arrives.
+    mutating func reread(_ read: (String, String, JSONValue?) -> VersionEntry) {
+        for record in unreadable.values { set(read(record.id, record.cid, record.value)) }
     }
 
     private mutating func insert(_ version: Version) {
@@ -80,7 +80,8 @@ public struct DriveHistory: Sendable {
         byNode[version.node, default: []].insert(version.id, at: index)
     }
 
-    private mutating func remove(_ id: String) {
+    /// Forgets a version record (it was deleted).
+    mutating func remove(_ id: String) {
         unreadable[id] = nil
         guard let old = versions.removeValue(forKey: id) else { return }
         byNode[old.node]?.removeAll { $0 == id }
