@@ -639,11 +639,11 @@ import Testing
         #expect(FileManager.default.fileExists(atPath: saved))
         sync = nil
 
-        // Until it can be checked exactly against the drive, it's listed again on start.
+        // It matched the drive's commit, so it's checked again rather than listed on start.
         let reopened = try open()
         let calls = pds.calls.count
         #expect(try await reopened.sync().changes == 0)
-        #expect(pds.calls[calls...].contains("com.atproto.space.listRecords"))
+        #expect(!pds.calls[calls...].contains("com.atproto.space.listRecords"))
         try await expectSettled(reopened)
     }
 

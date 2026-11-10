@@ -31,12 +31,30 @@ import Testing
         pds.calls[index...].filter { $0 == "com.atproto.space.listRecords" }.count
     }
 
+    /// Whole-drive listings (however many pages each), by the commit each starts from.
+    func fullListings(since index: Int) -> Int {
+        pds.calls[index...].filter { $0 == "com.atproto.space.getLatestCommit" }.count
+    }
+
+    /// The snapshot saved and loaded again, as after a restart.
+    func reloaded(_ snapshot: DriveSnapshot) throws -> DriveSnapshot {
+        let saved = try #require(try snapshot.saved())
+        return try #require(DriveSnapshot(saved: saved, drive: drive))
+    }
+
+    /// The commit the drive is at now.
+    func latestCommit() async throws -> RepoCommit {
+        try #require(try await drive.client.latestSpaceCommit(space: drive.space, repo: drive.owner))
+    }
+
     /// The snapshot matches what a fresh full listing says, in every respect sync relies on.
     func expectSame(
         _ snapshot: DriveSnapshot, _ fresh: DriveSnapshot, sourceLocation: SourceLocation = #_sourceLocation
     ) {
         #expect(snapshot.revision == fresh.revision, sourceLocation: sourceLocation)
         #expect(snapshot.repo.records == fresh.repo.records, sourceLocation: sourceLocation)
+        // Kept current op by op, the hash is still the one over the records.
+        #expect(snapshot.repo.hash == RepoState(records: snapshot.repo.records).hash, sourceLocation: sourceLocation)
         #expect(snapshot.tree.nodes == fresh.tree.nodes, sourceLocation: sourceLocation)
         #expect(snapshot.tree.unreadable == fresh.tree.unreadable, sourceLocation: sourceLocation)
         for id in fresh.tree.nodes.keys {
@@ -65,7 +83,7 @@ import Testing
         let renamed: NodeRecord = try #require(changes.ops[1].value).decode()
         #expect(renamed.name == "a, renamed.txt")
         #expect(changes.revision == pds.revision)
-        #expect(changes.commit?.data == Data(count: 32))  // `$bytes`, unpadded
+        #expect(changes.commit?.data == pds.currentCommitData)  // `$bytes`, unpadded
     }
 
     @Test func pagesAreFollowedToTheHead() async throws {
@@ -157,36 +175,190 @@ import Testing
         #expect(snapshot.revision == pds.revision)
     }
 
-    @Test func compactionCanHideAWriteUntilTheNextFullListing() async throws {
+    @Test func theCheckCatchesAWriteCompactionHid() async throws {
         try await put("3aaaaaaaaaaa2", "a")
         let start = Date()
         var snapshot = try await drive.update(nil, now: start)
         try await put("3aaaaaaaaaaa3", "missed")
+        pds.insertRawRecord(rkey: "self", collection: "me.jsnelgro.atdrive.settings", ["retentionDays": 30])
         let compacted = try #require(pds.revision)
         try await put("3aaaaaaaaaaa2", "a, edited")
         pds.compactOps(through: compacted)
 
-        // Nothing in the feed shows the missed write (only an exact check would)...
+        // Nothing in the feed shows the missed writes (the edit's `prev` is the CID we hold), but
+        // the records don't match the commit, so the drive is listed straight away.
+        let calls = pds.calls.count
         snapshot = try await drive.update(snapshot, now: start + 60)
-        #expect(snapshot.tree.nodes["3aaaaaaaaaaa3"] == nil)
-        #expect(snapshot.tree.nodes["3aaaaaaaaaaa2"]?.name == "a, edited")
-        // ...so the whole drive is listed again every hour.
-        snapshot = try await drive.update(snapshot, now: start + DriveSnapshot.fullListingInterval)
+        #expect(fullListings(since: calls) == 1)
         #expect(snapshot.tree.nodes["3aaaaaaaaaaa3"]?.name == "missed")
+        #expect(snapshot.tree.nodes["3aaaaaaaaaaa2"]?.name == "a, edited")
+        #expect(snapshot.repo.cid("me.jsnelgro.atdrive.settings", "self") != nil)
+        #expect(snapshot.verified)
     }
 
-    @Test func aSavedSnapshotIsListedAgainBeforeItsTrusted() async throws {
+    @Test func aSavedSnapshotThatVerifiesIsntListedAgain() async throws {
         try await put("3aaaaaaaaaaa2", "a")
         let snapshot = try await drive.update(nil)
         let saved = try #require(try snapshot.saved())
+        try await put("3aaaaaaaaaaa3", "b")  // while it wasn't running
         let loaded = try #require(DriveSnapshot(saved: saved, drive: drive))
         expectSame(loaded, snapshot)
-        #expect(!loaded.listedThisRun && loaded.needsFullListing())
+        #expect(!loaded.listedThisRun && loaded.verified && !loaded.needsFullListing())
+
         let calls = pds.calls.count
         let updated = try await drive.update(loaded)
-        #expect(listings(since: calls) > 0 && updated.listedThisRun)
+        #expect(Array(pds.calls[calls...]) == ["com.atproto.space.listRepoOps"])
+        #expect(updated.verified && updated.tree.nodes["3aaaaaaaaaaa3"]?.name == "b")
+        expectSame(updated, try await drive.listEverything())
 
         #expect(DriveSnapshot(saved: Data("{}".utf8), drive: drive) == nil)
+    }
+
+    @Test func aSavedSnapshotThatDoesntVerifyIsListedAgain() async throws {
+        // Saved unverified (its listing didn't match): listed again on start.
+        pds.lyingCommits = .max
+        try await put("3aaaaaaaaaaa2", "a")
+        let unverified = try await drive.update(nil)
+        var loaded = try reloaded(unverified)
+        #expect(!loaded.verified && loaded.needsFullListing())
+        var calls = pds.calls.count
+        _ = try await drive.update(loaded)
+        #expect(fullListings(since: calls) == 1)
+
+        // Saved verified, but a write the feed no longer shows came in while it wasn't running.
+        pds.lyingCommits = 0
+        let verified = try await drive.update(nil)
+        try await put("3aaaaaaaaaaa3", "missed")
+        let compacted = try #require(pds.revision)
+        try await put("3aaaaaaaaaaa2", "a, edited")
+        pds.compactOps(through: compacted)
+        loaded = try reloaded(verified)
+        calls = pds.calls.count
+        let updated = try await drive.update(loaded)
+        #expect(fullListings(since: calls) == 1)
+        #expect(updated.verified && updated.tree.nodes["3aaaaaaaaaaa3"]?.name == "missed")
+    }
+
+    @Test func theHashStateIsSavedWithTheSnapshot() async throws {
+        try await put("3aaaaaaaaaaa2", "a")
+        pds.insertRawRecord(rkey: "self", collection: "me.jsnelgro.atdrive.settings", ["retentionDays": 30])
+        let snapshot = try await drive.update(nil)
+        let saved = try #require(try snapshot.saved())
+        let loaded = try #require(DriveSnapshot(saved: saved, drive: drive))
+        #expect(loaded.repo == snapshot.repo)  // the records, the commit and the hash
+        #expect(!loaded.repo.hash.setHash.isEmpty)
+
+        // A save without the state, or with a broken one, gets it from the records.
+        var json = try #require(try JSONSerialization.jsonObject(with: saved) as? [String: Any])
+        #expect((json["setHash"] as? String).flatMap { Data(base64Encoded: $0) } == snapshot.repo.hash.setHash.state)
+        for broken in [nil, Data(count: 7).base64EncodedString()] {
+            json["setHash"] = broken
+            let recomputed = try #require(
+                DriveSnapshot(saved: try JSONSerialization.data(withJSONObject: json), drive: drive))
+            #expect(recomputed.repo == snapshot.repo)
+            #expect(recomputed.verified)
+        }
+    }
+
+    // MARK: The exact check
+
+    @Test func theCheckPassesAfterAListingAndAfterOps() async throws {
+        try await put("3aaaaaaaaaaa2", "folder", folder: true)
+        try await put("3aaaaaaaaaaa3", "a.txt", in: "3aaaaaaaaaaa2")
+        pds.insertRawRecord(
+            rkey: "3aaaaaaaaaaa4", ["$type": Lexicon.node, "name": "x", "kind": "package", "createdAt": "2026"])
+        pds.insertRawRecord(rkey: "self", collection: "me.jsnelgro.atdrive.settings", ["retentionDays": 30])
+        var snapshot = try await drive.update(nil)
+        let listed = try await latestCommit()
+        #expect(snapshot.repo.check(listed))
+        #expect(snapshot.verified && snapshot.mismatch == nil)
+
+        try await put("3aaaaaaaaaaa3", "a, edited.txt", in: "3aaaaaaaaaaa2")
+        pds.deleteRawRecord(rkey: "3aaaaaaaaaaa4")
+        pds.insertRawRecord(rkey: "self", collection: "me.jsnelgro.atdrive.settings", ["retentionDays": 7])
+        pds.insertRawRecord(rkey: "3aaaaaaaaaaa5", collection: "me.jsnelgro.atdrive.version", ["n": 1])
+        let calls = pds.calls.count
+        snapshot = try await drive.update(snapshot)
+        #expect(listings(since: calls) == 0)
+        let latest = try await latestCommit()
+        #expect(snapshot.repo.check(latest) && snapshot.verified)
+        #expect(!snapshot.repo.check(listed))
+
+        // Every record counts, in every collection: leave one out, or hold an old CID, and the
+        // check fails.
+        for (collection, rkey) in [(Lexicon.node, "3aaaaaaaaaaa3"), ("me.jsnelgro.atdrive.version", "3aaaaaaaaaaa5")] {
+            var missing = snapshot.repo
+            missing.set(collection, rkey, cid: nil)
+            #expect(!missing.check(latest))
+            var old = snapshot.repo
+            old.set(collection, rkey, cid: "bafyreiold")
+            #expect(!old.check(latest))
+        }
+    }
+
+    @Test func aMismatchMeansAFullListing() async throws {
+        try await put("3aaaaaaaaaaa2", "a")
+        var snapshot = try await drive.update(nil)
+        try await put("3aaaaaaaaaaa2", "a, edited")
+        pds.lyingCommits = 1  // the feed connects, but the commit at its end doesn't match
+        let calls = pds.calls.count
+        snapshot = try await drive.update(snapshot)
+        #expect(fullListings(since: calls) == 1)
+        #expect(snapshot.verified && snapshot.mismatch == nil)
+        #expect(snapshot.tree.nodes["3aaaaaaaaaaa2"]?.name == "a, edited")
+    }
+
+    @Test func aListingThatNeverMatchesIsntRepeated() async throws {
+        pds.lyingCommits = .max  // as a server that hashes differently
+        try await put("3aaaaaaaaaaa2", "a")
+        var calls = pds.calls.count
+        var snapshot = try await drive.update(nil)
+        #expect(fullListings(since: calls) == 1)
+        #expect(!snapshot.verified && snapshot.mismatch != nil)
+        #expect(snapshot.tree.nodes["3aaaaaaaaaaa2"]?.name == "a")
+
+        // A verified snapshot whose check fails is listed once, not again and again.
+        pds.lyingCommits = 0
+        snapshot = try await drive.update(nil)
+        #expect(snapshot.verified)
+        pds.lyingCommits = .max
+        try await put("3aaaaaaaaaaa3", "b")
+        calls = pds.calls.count
+        snapshot = try await drive.update(snapshot)
+        #expect(fullListings(since: calls) == 1)
+        #expect(!snapshot.verified && snapshot.mismatch != nil)
+        #expect(snapshot.tree.nodes["3aaaaaaaaaaa3"]?.name == "b")
+    }
+
+    @Test func theFallbackRunsOnlyWhileTheCheckFails() async throws {
+        pds.lyingCommits = .max
+        try await put("3aaaaaaaaaaa2", "a")
+        let start = Date()
+        var snapshot = try await drive.update(nil, now: start)
+        #expect(!snapshot.verified)
+
+        // Unverified, it follows the feed without listing every time...
+        try await put("3aaaaaaaaaaa3", "b")
+        var calls = pds.calls.count
+        snapshot = try await drive.update(snapshot, now: start + 60)
+        #expect(fullListings(since: calls) == 0)
+        #expect(!snapshot.verified && snapshot.tree.nodes["3aaaaaaaaaaa3"]?.name == "b")
+        // ...and lists the whole drive every hour.
+        let hour = DriveSnapshot.fullListingInterval
+        calls = pds.calls.count
+        snapshot = try await drive.update(snapshot, now: start + hour)
+        #expect(fullListings(since: calls) == 1)
+
+        // Once a check passes, the hourly listing stops.
+        pds.lyingCommits = 0
+        calls = pds.calls.count
+        snapshot = try await drive.update(snapshot, now: start + hour + 60)
+        #expect(fullListings(since: calls) == 0)
+        #expect(snapshot.verified && snapshot.mismatch == nil)
+        #expect(!snapshot.needsFullListing(at: start + 100 * hour))
+        calls = pds.calls.count
+        snapshot = try await drive.update(snapshot, now: start + 3 * hour)
+        #expect(Array(pds.calls[calls...]) == ["com.atproto.space.listRepoOps"])
     }
 
     @Test func anIdleUpdateIsOneRequest() async throws {
@@ -274,6 +446,7 @@ import Testing
             let calls = pds.calls.count
             snapshot = try await drive.update(snapshot)
             #expect(listings(since: calls) == 0, "seed \(seed): followed the feed")
+            #expect(snapshot.verified, "seed \(seed): checked against the commit")
             expectSame(snapshot, try await drive.listEverything())
         }
         snapshot = try await drive.update(snapshot)
