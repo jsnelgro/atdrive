@@ -3,6 +3,9 @@ import Foundation
 
 /// A drive: one atproto space holding one record per file or folder, with file contents
 /// stored as chunked blobs. Everything here works by node ID; `DriveTree` maps paths to IDs.
+///
+/// Every write also records a version of what it changed, in the same transaction: that's the
+/// drive's history (`DriveHistory`; restoring, purging and pruning are in `History.swift`).
 public final class Drive: Sendable {
     public let client: XRPCClient
     /// DID of the account that owns the drive (and, for now, the only one writing to it).
