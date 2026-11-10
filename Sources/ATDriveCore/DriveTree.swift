@@ -30,6 +30,8 @@ public struct UnreadableNode: Sendable, Equatable {
         case missingKey
         /// Sealed, but it doesn't open: changed on the server, or moved there from another record.
         case tampered
+        /// A file whose chunk list continues in `chunks` records, and one of them isn't there.
+        case incomplete
 
         public var description: String {
             switch self {
@@ -37,6 +39,7 @@ public struct UnreadableNode: Sendable, Equatable {
             case .invalidName: "its name can't be used in a folder"
             case .missingKey: "it's sealed with a drive key this device doesn't have (yet)"
             case .tampered: "it doesn't decrypt: it was changed on the server, or isn't where it was written"
+            case .incomplete: "part of its list of contents is missing from the server"
             }
         }
     }

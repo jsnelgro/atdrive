@@ -19,8 +19,8 @@ import Foundation
 public enum OAuthLogin {
     /// What ATDrive asks for. Override with `ATDRIVE_OAUTH_SCOPE`.
     ///
-    /// - Writes: only ATDrive's records (nodes, their versions, and the drive's settings), and
-    ///   creating spaces.
+    /// - Writes: only ATDrive's records (nodes, their versions and long chunk lists, the drive's
+    ///   settings, and devices), and creating spaces.
     /// - Reads: spaces your account owns.
     /// - Blob uploads: needed for file contents.
     ///
@@ -36,10 +36,9 @@ public enum OAuthLogin {
     /// The scope to use once ATDrive's lexicons are published: access to ATDrive's spaces only.
     public static let narrowScope = "atproto space:\(Lexicon.driveSpace)?\(collections)&manage=create blob:*/*"
 
-    private static let collections = [Lexicon.node, Lexicon.version, Lexicon.settings, Lexicon.device].map {
-        "collection=\($0)"
-    }
-    .joined(separator: "&")
+    private static let collections = [
+        Lexicon.node, Lexicon.version, Lexicon.chunks, Lexicon.settings, Lexicon.device,
+    ].map { "collection=\($0)" }.joined(separator: "&")
 
     public static func clientID(environment: [String: String] = ProcessInfo.processInfo.environment) -> String {
         if let configured = environment["ATDRIVE_OAUTH_CLIENT_ID"], !configured.isEmpty { return configured }

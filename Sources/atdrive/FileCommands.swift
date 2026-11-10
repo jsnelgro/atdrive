@@ -111,7 +111,7 @@ struct Put: AsyncParsableCommand {
         let sources = paths.count == 1 ? paths : Array(paths.dropLast())
         let destination = DrivePath(paths.count == 1 ? "/" : paths.last!)
         let tree = try await drive.tree()
-        var uploader = Uploader(drive: drive, state: DriveState(tree), recursive: recursive)
+        var uploader = Uploader(drive: drive, state: DriveState(tree), recursive: recursive, known: tree.chunkCIDs)
 
         let target = try tree.find(destination)
         for source in sources {
@@ -156,6 +156,8 @@ struct Uploader {
     let drive: Drive
     var state: DriveState
     let recursive: Bool
+    /// Chunks the drive has: those current files use, and those uploaded since.
+    var known: Set<String>
 
     mutating func upload(_ local: URL, isDirectory: Bool, as name: String, in parent: String?, at path: DrivePath)
         async throws
@@ -178,7 +180,8 @@ struct Uploader {
             return
         }
         let node = try await drive.upload(
-            local, as: name, in: parent, replacing: existing, progress: Output.progress("↑", path))
+            local, as: name, in: parent, replacing: existing, known: known, progress: Output.progress("↑", path))
+        for chunk in node.record.chunks ?? [] { known.insert(chunk.cid) }
         Output.clearStatus()
         state.add(node)
         print("↑ \(path)  (\(Output.size(node.record.size ?? 0)))")
@@ -288,7 +291,9 @@ struct Get: AsyncParsableCommand {
             print("= \(local.relativePath)  (unchanged)")
             return
         }
-        try await drive.download(node, to: local, progress: Output.progress("↓", path))
+        // What the copy here has already isn't fetched again.
+        let previous = FileManager.default.fileExists(atPath: local.path) ? local : nil
+        try await drive.download(node, to: local, previous: previous, progress: Output.progress("↓", path))
         Output.clearStatus()
         print("↓ \(local.relativePath)  (\(Output.size(node.record.size ?? 0)))")
     }

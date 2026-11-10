@@ -10,6 +10,7 @@
       "collections": [
         "me.jsnelgro.atdrive.node",
         "me.jsnelgro.atdrive.version",
+        "me.jsnelgro.atdrive.chunks",
         "me.jsnelgro.atdrive.settings",
         "me.jsnelgro.atdrive.device"
       ]

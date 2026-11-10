@@ -146,10 +146,10 @@ import Testing
     // MARK: Space
 
     @Test func usageSaysWhatHistoryShares() async throws {
-        let a = try await upload("aaaabbbb", as: "a.txt")  // chunks: aaaa, bbbb
-        try await upload("aaaacccc", as: "a.txt", replacing: a)  // bbbb now only in history
+        let a = try await upload("aaaaaaaabbbbbbbb", as: "a.txt")  // chunks: aaaaaaaa, bbbbbbbb
+        try await upload("aaaaaaaacccccccc", as: "a.txt", replacing: a)  // bbbbbbbb now only in history
         let usage = try await snapshot().usage()
-        #expect(usage.current == 8 && usage.historyOnly == 4)
-        #expect(usage.shared == 8 && usage.sharedChunks == 2)  // aaaa and cccc are in versions too
+        #expect(usage.current == 16 && usage.historyOnly == 8)
+        #expect(usage.shared == 16 && usage.sharedChunks == 2)  // aaaaaaaa and cccccccc are in versions too
     }
 }

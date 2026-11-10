@@ -40,7 +40,7 @@ import Testing
         let file = try localFile("notes.txt", "hello, atproto!", modified: modified)  // 15 bytes
 
         let node = try await drive.upload(file, as: "notes.txt", in: nil)
-        #expect(node.record.chunks?.count == 4)  // 4 + 4 + 4 + 3
+        #expect(node.record.chunks?.count == 2)  // 8 + 7
         #expect(node.record.size == 15)
         #expect(node.record.sha256 == "2c4e50c0db301eb66910b359774d9c15298d04fb1ebdd79f96214abc4eabd01b")  // sha256sum
 

@@ -58,20 +58,53 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
     var opsPageSize = 3
     /// Fail the next calls to these methods (e.g. `com.atproto.space.getBlob`) with a 500.
     var failing: [String: Int] = [:]
+    /// Let this many more calls to these methods through, then fail every one after with a 500:
+    /// a transfer cut off partway.
+    var failingAfter: [String: Int] = [:]
     /// Serve this many more commits (`Int.max`: every one) with a `data` that matches no
     /// records, as a server that hashes differently would.
     var lyingCommits = 0
+    /// How long each request takes, so requests sent at once overlap.
+    var latency: Duration?
+    /// The most bytes an `applyWrites` request may have, as a real PDS limits it.
+    var requestLimit: Int?
+    /// The biggest `applyWrites` request so far, in bytes.
+    private(set) var biggestTransaction = 0
+    /// The most requests that were being handled at once.
+    private(set) var mostAtOnce = 0
+    private var atOnce = 0
 
     var recordCount: Int { lock.withLock { records.count } }
     /// The repo's current revision.
     var revision: String? { lock.withLock { rev } }
     var opCount: Int { lock.withLock { oplog.count } }
 
+    /// How many calls to `method` there have been.
+    func count(_ method: String) -> Int { lock.withLock { calls.filter { $0 == method }.count } }
+    /// How many blobs were uploaded, and fetched.
+    var uploads: Int { count("com.atproto.repo.uploadBlob") }
+    var downloads: Int { count("com.atproto.space.getBlob") }
+
+    /// Forgets the calls so far, so a test can count from here.
+    func resetCounts() {
+        lock.withLock {
+            calls = []
+            mostAtOnce = 0
+        }
+    }
+
     /// Called with each method name before it's handled (e.g. to change something mid-sync).
     var onRequest: (@Sendable (String) -> Void)?
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         onRequest?(request.url!.lastPathComponent)
+        let latency = lock.withLock {
+            atOnce += 1
+            mostAtOnce = max(mostAtOnce, atOnce)
+            return self.latency
+        }
+        defer { lock.withLock { atOnce -= 1 } }
+        if let latency { try await Task.sleep(for: latency) }
         return lock.withLock { handle(request) }
     }
 
@@ -82,6 +115,10 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
         if let remaining = failing[method], remaining > 0 {
             failing[method] = remaining - 1
             return error(500, "InternalServerError")
+        }
+        if let remaining = failingAfter[method] {
+            if remaining == 0 { return error(500, "InternalServerError") }
+            failingAfter[method] = remaining - 1
         }
         let query = Dictionary(
             (URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []).map {
@@ -111,6 +148,7 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
             guard spaceExists else { return error(400, "SpaceNotFound") }
             let collection = body["collection"] as? String ?? Lexicon.node
             let rkey = body["rkey"] as! String
+            if referencesMissingBlob(body["record"]!) { return error(400, "BlobNotFound") }
             let cid = commit([(collection, rkey, body["record"]!)])
             return json(["uri": "at://did:plc:test/\(collection)/\(rkey)", "cid": cid.first!])
 
@@ -119,6 +157,7 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
             let collection = body["collection"] as! String
             let rkey = body["rkey"] as? String ?? TID.next()
             if records["\(collection)/\(rkey)"] != nil { return error(400, "RecordAlreadyExists") }
+            if referencesMissingBlob(body["record"]!) { return error(400, "BlobNotFound") }
             let cid = commit([(collection, rkey, body["record"]!)])
             return json(["uri": "at://did:plc:test/\(collection)/\(rkey)", "cid": cid.first!])
 
@@ -149,12 +188,19 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
 
         case "com.atproto.space.applyWrites":
             guard spaceExists else { return error(400, "SpaceNotFound") }
+            let size = request.httpBody?.count ?? 0
+            if let limit = requestLimit, size > limit { return error(413, "PayloadTooLarge") }
+            biggestTransaction = max(biggestTransaction, size)
             // One transaction: checked in full before anything is written.
             var writes: [(collection: String, rkey: String, value: Any?)] = []
             var types: [String] = []
             var exists = Set(records.keys)
             let requested = body["writes"] as! [[String: Any]]
             guard requested.count <= 200 else { return error(400, "InvalidRequest") }
+            // A record can't reference a blob the PDS doesn't have (any more).
+            for write in requested {
+                if let value = write["value"], referencesMissingBlob(value) { return error(400, "BlobNotFound") }
+            }
             for write in requested {
                 let collection = write["collection"] as! String
                 let rkey = write["rkey"] as? String ?? TID.next()
@@ -298,6 +344,16 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
     /// Whether a blob is stored (it may have been garbage-collected).
     func hasBlob(_ cid: String) -> Bool { lock.withLock { blobs[cid] != nil } }
 
+    /// Whether a record value references a blob that isn't stored.
+    private func referencesMissingBlob(_ value: Any) -> Bool {
+        Self.blobReferences(in: value).contains { blobs[$0] == nil }
+    }
+
+    /// Every record's key in a collection.
+    func keys(in collection: String) -> [String] {
+        lock.withLock { records.keys.filter { $0.hasPrefix(collection + "/") }.map { split($0).rkey }.sorted() }
+    }
+
     private func commitJSON(_ rev: String) -> [String: Any] {
         var data = commitData
         if lyingCommits > 0 {
@@ -411,16 +467,18 @@ final class ScriptedTransport: HTTPTransport, @unchecked Sendable {
 }
 
 extension FakePDS {
-    /// A device using this PDS's drive (`did:plc:test`), with tiny chunks. Pass `keyring` to give
-    /// it the drive's keys straight away (devices sharing one, as tests do), or create the drive
-    /// with it (`Drive.create`), or unlock it.
+    /// A device using this PDS's drive (`did:plc:test`), with tiny chunks (8 bytes, unless
+    /// `transfers` says otherwise). Pass `keyring` to give it the drive's keys straight away
+    /// (devices sharing one, as tests do), or create the drive with it (`Drive.create`), or unlock
+    /// it.
     func device(
-        _ name: String = "test", chunkSize: Int = 4, tids: TIDSource = .system, keyring: Keyring? = nil,
-        identity: DeviceIdentity? = nil, saveIdentity: (@Sendable (DeviceIdentity) -> Void)? = nil
+        _ name: String = "test", transfers: TransferOptions = .fixed(8), tids: TIDSource = .system,
+        keyring: Keyring? = nil, identity: DeviceIdentity? = nil,
+        saveIdentity: (@Sendable (DeviceIdentity) -> Void)? = nil
     ) -> Drive {
         Drive(
             client: XRPCClient(service: URL(string: "https://pds.test")!, transport: self), owner: "did:plc:test",
-            chunkSize: chunkSize, device: name, tids: tids, identity: identity ?? DeviceIdentity(name: name),
+            transfers: transfers, device: name, tids: tids, identity: identity ?? DeviceIdentity(name: name),
             keyring: keyring, saveIdentity: saveIdentity)
     }
 
@@ -451,6 +509,14 @@ extension FakePDS {
         ]
         if let chunks { record["chunks"] = chunks }
         insertRawRecord(rkey: rkey, collection: collection, record)
+    }
+}
+
+extension TransferOptions {
+    /// Chunks of exactly `size` bytes (a power of two, 8 or more), the last one shorter: small
+    /// files get several chunks, at places a test can count on.
+    static func fixed(_ size: Int, parallel: Int = 4) -> TransferOptions {
+        TransferOptions(chunking: .init(minSize: size, averageSize: size, maxSize: size), parallel: parallel)
     }
 }
 

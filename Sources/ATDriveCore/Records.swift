@@ -92,6 +92,10 @@ public struct NodeRecord: Codable, Sendable, Equatable {
     /// Files only: the version that holds these `chunks` in history. A rename or move points
     /// its version there rather than copying the chunk list.
     public var contentsFrom: String?
+    /// Files only: how many `me.jsnelgro.atdrive.chunks` records hold `chunks`, when the list is
+    /// too long for a record. They're the ones of the version `contentsFrom`, and then neither
+    /// that version nor this record holds the chunks itself. `nil`: the list is in the record.
+    public var continuations: Int?
 
     public init(
         name: String, parent: String?, kind: Kind, size: Int? = nil, sha256: String? = nil,
@@ -148,6 +152,10 @@ public struct VersionRecord: Codable, Sendable, Equatable {
     public var contentsFrom: String?
     /// Files: the contents, when this version holds them itself.
     public var chunks: [ChunkRef]?
+    /// Files: how many `me.jsnelgro.atdrive.chunks` records hold `chunks`, when the list is too
+    /// long for this record (see `NodeRecord.continuations`). Their keys start with this
+    /// version's (`Lexicon.continuationKey`), and they go when it does.
+    public var continuations: Int?
 
     /// A version recording `state` (`nil` for a delete). `holdsContents` puts the chunk list in
     /// it; otherwise it points to the version that has them, `state.contentsFrom`.
@@ -169,6 +177,7 @@ public struct VersionRecord: Codable, Sendable, Equatable {
         if state.kind == .file {
             if holdsContents || state.contentsFrom == nil {
                 chunks = state.chunks ?? []
+                continuations = state.continuations
             } else {
                 contentsFrom = state.contentsFrom
             }
@@ -184,6 +193,7 @@ public struct VersionRecord: Codable, Sendable, Equatable {
         var record = NodeRecord(name: name, parent: parent, kind: kind, size: size, sha256: sha256, chunks: chunks)
         record.createdAt = createdAt ?? record.createdAt
         record.modifiedAt = modifiedAt
+        record.continuations = continuations
         return record
     }
 }

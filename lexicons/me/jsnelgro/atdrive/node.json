@@ -5,7 +5,7 @@
     "main": {
       "type": "record",
       "key": "tid",
-      "description": "A file or folder in a drive. The record key is its permanent ID: renames and moves update the record, never the key. All but the chunks' blob refs is sealed. The sealed payload is {name, parent?, kind ('file' or 'folder'), size?, sha256?, chunkIDs?, createdAt, modifiedAt?, version?, contentsFrom?}: parent is the folder's record key; sha256 is of the whole file, in hex; chunkIDs decrypt the chunks, in the same order; version is the record key of the node's current version; contentsFrom, of the version that holds these chunks.",
+      "description": "A file or folder in a drive. The record key is its permanent ID: renames and moves update the record, never the key. All but the chunks' blob refs is sealed. The sealed payload is {name, parent?, kind ('file' or 'folder'), size?, sha256?, chunkIDs?, createdAt, modifiedAt?, version?, contentsFrom?, continuations?}: parent is the folder's record key; sha256 is of the whole file, in hex; chunkIDs decrypt the chunks, in the same order; version is the record key of the node's current version; contentsFrom, of the version that holds these chunks. A chunk list too long for one record is in that version's me.jsnelgro.atdrive.chunks records instead: continuations says how many, and the record holds neither chunks nor chunkIDs.",
       "record": {
         "type": "object",
         "required": ["sealed"],
@@ -13,7 +13,7 @@
           "chunks": {
             "type": "array",
             "items": { "type": "blob" },
-            "description": "Files only: the contents, in encrypted chunks, in order. Readable so the PDS keeps the blobs while the record references them."
+            "description": "Files only: the contents, in encrypted chunks, in order. Readable so the PDS keeps the blobs while the record references them. Absent when they're in chunks records (continuations)."
           },
           "sealed": {
             "type": "ref",

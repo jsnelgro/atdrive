@@ -512,16 +512,16 @@ final class TestClock: @unchecked Sendable {
     // MARK: Space
 
     @Test func usageCountsEachChunkOnce() async throws {
-        let a = try await upload("aaaabbbb", as: "a.txt")  // chunks: aaaa, bbbb
-        try await upload("aaaabbbb", as: "copy.txt")  // the same chunks
-        try await upload("aaaacccc", as: "a.txt", replacing: a)  // bbbb now only in history
+        let a = try await upload("aaaaaaaabbbbbbbb", as: "a.txt")  // chunks: aaaaaaaa, bbbbbbbb
+        try await upload("aaaaaaaabbbbbbbb", as: "copy.txt")  // the same chunks
+        try await upload("aaaaaaaacccccccc", as: "a.txt", replacing: a)  // bbbbbbbb now only in history
         let usage = try await snapshot().usage()
-        #expect(usage.current == 12 && usage.currentChunks == 3)  // aaaa, bbbb (the copy), cccc
+        #expect(usage.current == 24 && usage.currentChunks == 3)  // aaaaaaaa, bbbbbbbb (the copy), cccccccc
         #expect(usage.historyOnly == 0)
         let gone = try await snapshot().tree.locate(DrivePath("/copy.txt"))!
         try await laptop.delete([gone])
         let after = try await snapshot().usage()
-        #expect(after.current == 8 && after.historyOnly == 4 && after.total == 12)
+        #expect(after.current == 16 && after.historyOnly == 8 && after.total == 24)
     }
 
     // MARK: Purging

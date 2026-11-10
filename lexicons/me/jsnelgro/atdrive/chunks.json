@@ -1,0 +1,27 @@
+{
+  "lexicon": 1,
+  "id": "me.jsnelgro.atdrive.chunks",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "any",
+      "description": "Part of a chunk list too long for the version record that holds it. The record key is the version's, a dash, and the part's number from 1 (\"<version>-1\", \"<version>-2\", ...). The version says how many parts there are, and holds no chunks itself; nor does a node whose contentsFrom is that version. The parts are written before or with the version, never changed, and deleted with it. The sealed payload is {chunkIDs}: the IDs that decrypt this part's chunks, in the same order.",
+      "record": {
+        "type": "object",
+        "required": ["chunks", "sealed"],
+        "properties": {
+          "chunks": {
+            "type": "array",
+            "items": { "type": "blob" },
+            "description": "This part of the contents, in encrypted chunks, in order. Readable so the PDS keeps the blobs while the record references them."
+          },
+          "sealed": {
+            "type": "ref",
+            "ref": "me.jsnelgro.atdrive.defs#sealedValue",
+            "description": "The chunks' IDs, sealed for this collection and record key."
+          }
+        }
+      }
+    }
+  }
+}
