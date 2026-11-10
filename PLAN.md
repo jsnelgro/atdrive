@@ -147,8 +147,8 @@ Goals:
 - Keep file contents and names unreadable to whoever runs the PDS. Drives are encrypted only.
 
 There are no users yet, so none of this is backward compatible. The format changes in place, and
-existing test drives are wiped, not migrated. Built in four steps, in this order. Each step ends
-with what was decided while building it ("As built").
+existing test drives are wiped, not migrated. Built in four steps, in this order. Steps 2 and 3
+end with what was decided while building them ("As built").
 
 ### What shapes the design
 
