@@ -69,18 +69,18 @@ import Testing
     }
 
     @Test func chunksAreEncryptedWithTheFirstKey() async throws {
-        let node = try await laptop.upload(try file("aaaabbbbcc"), as: "a.txt", in: nil)
+        let node = try await laptop.upload(try file("aaaaaaaabbbbbbbbcc"), as: "a.txt", in: nil)
         let first = try #require(laptop.keyring?.keys.first)
         let chunks = try #require(node.record.chunks)
-        #expect(chunks.map(\.size) == [4, 4, 2])  // the contents' sizes; the blobs are 16 bytes longer
-        for (chunk, piece) in zip(chunks, ["aaaa", "bbbb", "cc"]) {
+        #expect(chunks.map(\.size) == [8, 8, 2])  // the contents' sizes; the blobs are 16 bytes longer
+        for (chunk, piece) in zip(chunks, ["aaaaaaaa", "bbbbbbbb", "cc"]) {
             let expected = first.encryptChunk(Data(piece.utf8))
             #expect(chunk.id == expected.id)
             #expect(chunk.cid == CID.forBlob(expected.ciphertext))  // the CID covers the ciphertext
             #expect(chunk.blob.size == piece.utf8.count + 16)
             #expect(pds.blobs[chunk.cid] == expected.ciphertext)
         }
-        #expect(try await contents(node) == "aaaabbbbcc")
+        #expect(try await contents(node) == "aaaaaaaabbbbbbbbcc")
     }
 
     /// Whoever runs the PDS sees neither names nor contents, nor the hashes that would let it
@@ -90,7 +90,7 @@ import Testing
         let folder = "Very Private Folder"
         let text = "My social security number is 078-05-1120, and this is the whole file."
         // Big chunks, so unencrypted the whole file would be in one blob.
-        let drive = pds.device("big chunks", chunkSize: 1 << 20, keyring: laptop.keyring)
+        let drive = pds.device("big chunks", transfers: .standard, keyring: laptop.keyring)
         let parent = try await drive.createFolder(named: folder, in: nil)
         let node = try await drive.upload(try file(text), as: name, in: parent.id)
         let renamed = try await drive.move(node, to: parent.id, as: "renamed-" + name)
@@ -143,7 +143,7 @@ import Testing
         #expect(tree.nodes.isEmpty && tree.unreadable[a.id]?.reason == .tampered)
 
         // Blob refs that don't match the sealed chunk IDs: one dropped.
-        let b = try await laptop.upload(try file("bbbbcccc"), as: "b.txt", in: nil)
+        let b = try await laptop.upload(try file("bbbbbbbbcccccccc"), as: "b.txt", in: nil)
         var shortened = try #require(pds.rawRecord(rkey: b.id))
         shortened["chunks"] = Array(try #require(shortened["chunks"] as? [Any]).prefix(1))
         pds.insertRawRecord(rkey: b.id, shortened)

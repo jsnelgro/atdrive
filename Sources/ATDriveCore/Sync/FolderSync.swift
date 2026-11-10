@@ -150,7 +150,8 @@ public final class FolderSync {
         reportUnknown(view, base: base)
         let plan = SyncPlan(base: base.entries, local: local, remote: view.entries, unknown: view.unknown)
         let run = SyncRun(
-            plan: plan, base: base, local: local, remote: view, root: root, folder: folder, drive: drive
+            plan: plan, base: base, local: local, remote: view, root: root, folder: folder, drive: drive,
+            snapshot: snapshot
         ) { [unowned self] in self.report($0) }
         var failure: Error?
         do {
@@ -311,10 +312,15 @@ final class SyncRun {
     private var counter = 0
     private(set) var wroteRemote = false
     private(set) var changes = 0
+    /// The drive as fetched, for `known`.
+    private let snapshot: DriveSnapshot
+    /// Chunks the drive has, so uploads skip them: from the drive as fetched, plus what this
+    /// pass uploaded. Worked out on the first upload.
+    private lazy var known = snapshot.chunkCIDs
 
     init(
         plan: SyncPlan, base: SyncBase, local: LocalView, remote: RemoteView, root: String, folder: StateFolder,
-        drive: Drive, log: @escaping (SyncEvent) -> Void
+        drive: Drive, snapshot: DriveSnapshot, log: @escaping (SyncEvent) -> Void
     ) {
         self.plan = plan
         self.base = base
@@ -323,6 +329,7 @@ final class SyncRun {
         self.root = root
         self.folder = folder
         self.drive = drive
+        self.snapshot = snapshot
         self.log = log
         localSource = plan.localSource
         mergedOf = Dictionary(plan.localSource.map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
@@ -602,7 +609,10 @@ final class SyncRun {
         }
         let path = currentPath(localID)
         do {
-            return try await drive.upload(URL(fileURLWithPath: path), as: name, in: parent, replacing: existing)
+            let node = try await drive.upload(
+                URL(fileURLWithPath: path), as: name, in: parent, replacing: existing, known: known)
+            for chunk in node.record.chunks ?? [] { known.insert(chunk.cid) }
+            return node
         } catch  where Self.isLocal(error) {
             block(id, "couldn't read it (\(error.localizedDescription))")
             return nil
@@ -628,8 +638,13 @@ final class SyncRun {
             }
             try FileManager.default.createDirectory(atPath: folder.downloads, withIntermediateDirectories: true)
             let scratch = "\(folder.downloads)/\(nextScratchName())"
+            // The copy here, changed since the last pass or not, holds what the two versions
+            // share: only the rest is fetched. It's left alone until the new one replaces it.
+            let previous = (localSource[id] ?? copies[id].flatMap { localSource[$0] }).map {
+                URL(fileURLWithPath: currentPath($0))
+            }
             do {
-                try await drive.download(node, to: URL(fileURLWithPath: scratch))
+                try await drive.download(node, to: URL(fileURLWithPath: scratch), previous: previous)
             } catch let error as ATDriveError {
                 block(id, error.description)
                 continue

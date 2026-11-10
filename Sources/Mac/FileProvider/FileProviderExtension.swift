@@ -136,7 +136,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                     let modified = (itemTemplate.contentModificationDate ?? nil)
                     node = try await drive.upload(
                         try url ?? emptyFile(), as: name, in: parent, modified: modified,
-                        progress: Self.report(to: progress))
+                        known: tree.chunkCIDs, progress: Self.report(to: progress))
                 }
                 await index.noteSeen(node, parent: parent)
                 completionHandler(Item(node: node, parentID: parent), [], false, nil)
@@ -185,7 +185,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                     let gone = Node(id: item.itemIdentifier.rawValue, cid: "", record: record)
                     let restored = try await drive.upload(
                         edited, as: name, in: parent, replacing: gone, modified: modified,
-                        progress: Self.report(to: progress))
+                        known: tree.chunkCIDs, progress: Self.report(to: progress))
                     logger.notice("\(gone.id, privacy: .public) was deleted on the drive but edited here: kept")
                     await index.noteSeen(restored, parent: parent)
                     completionHandler(Item(node: restored, parentID: parent), [], false, nil)
@@ -224,7 +224,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                     case .local:
                         let updated = try await drive.upload(
                             edited, as: target.name, in: target.parent, replacing: node, modified: modified,
-                            progress: Self.report(to: progress))
+                            known: tree.chunkCIDs, progress: Self.report(to: progress))
                         await index.noteSeen(updated, parent: target.parent)
                         completionHandler(Item(node: updated, parentID: target.parent), [], false, nil)
                     case .remote:
@@ -240,7 +240,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                         let copy = Self.conflictName(for: target.name, in: target.parent, tree: tree)
                         _ = try await drive.upload(
                             edited, as: copy, in: target.parent, modified: modified,
-                            progress: Self.report(to: progress))
+                            known: tree.chunkCIDs, progress: Self.report(to: progress))
                         let kept = try await placed()
                         logger.notice("conflict on \(node.id, privacy: .public): saved local edit as a copy")
                         await index.noteSeen(kept, parent: target.parent)

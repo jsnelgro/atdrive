@@ -78,6 +78,7 @@ extension Drive {
                 record.size = lost.size
                 record.chunks = lost.chunks
                 record.contentsFrom = lost.contentsFrom
+                record.continuations = lost.continuations
                 record.modifiedAt = lost.modifiedAt
                 written = try await commit(
                     [change(.update, node: race.node, record: record, .edited, prev: current?.record.version)]
@@ -197,18 +198,26 @@ extension Drive {
             }
         }
         // Each node's versions oldest first, and its record with its newest: an interrupted
-        // purge leaves it as it was with less history, never a node without its version.
+        // purge leaves it as it was with less history, never a node without its version. A
+        // version's `chunks` records go with it.
+        let continuations = snapshot.continuationKeys()
         var groups: [[SpaceWrite]] = []
         for id in nodes {
             let versions = history.versions(of: id).map(\.id)
-            for version in versions.dropLast() { groups.append([.delete(collection: Lexicon.version, rkey: version)]) }
-            var last = versions.last.map { [SpaceWrite.delete(collection: Lexicon.version, rkey: $0)] } ?? []
+            for version in versions.dropLast() { groups.append(Self.deletes(version, continuations)) }
+            var last = versions.last.map { Self.deletes($0, continuations) } ?? []
             if tree.nodes[id] != nil || tree.unreadable[id] != nil {
                 last.insert(.delete(collection: Lexicon.node, rkey: id), at: 0)
             }
             if !last.isEmpty { groups.append(last) }
         }
         return try await deleteRecords(groups)
+    }
+
+    /// Deleting a version: it, then its `chunks` records.
+    private static func deletes(_ version: String, _ continuations: [String: [String]]) -> [SpaceWrite] {
+        [.delete(collection: Lexicon.version, rkey: version)]
+            + (continuations[version] ?? []).map { .delete(collection: Lexicon.chunks, rkey: $0) }
     }
 
     /// Purges everything in the trash. Returns how many records were deleted.
@@ -219,48 +228,68 @@ extension Drive {
 
     /// Applies the retention period (`DriveSettings.retentionDays`): deletes the versions older
     /// than it, except what's needed to know the drive as it was when the period starts (see
-    /// `DriveHistory.pruneable`). Deleting a version lets the server delete chunks nothing else
-    /// uses. Any device may prune, even at the same time. Returns how many versions it deleted.
+    /// `DriveHistory.pruneable`), each with its `chunks` records. Deleting a version lets the
+    /// server delete chunks nothing else uses. Any device may prune, even at the same time.
+    /// Returns how many versions it deleted.
+    ///
+    /// It also deletes `chunks` records that no version has, from before the retention period:
+    /// what's left of a change that was interrupted after writing them (see `Drive.commit`).
+    /// Newer ones may belong to a change still being written, so they wait.
     @discardableResult
     public func prune(_ snapshot: DriveSnapshot, now: Date = Date()) async throws -> Int {
-        let doomed = snapshot.history.pruneable(current: snapshot.tree, cutoff: now - snapshot.retention)
-        return try await deleteRecords(doomed.map { [.delete(collection: Lexicon.version, rkey: $0)] })
+        let cutoff = now - snapshot.retention
+        let doomed = snapshot.history.pruneable(current: snapshot.tree, cutoff: cutoff)
+        let continuations = snapshot.continuationKeys()
+        var groups = doomed.map { Self.deletes($0, continuations) }
+        let versions = snapshot.repo.records[Lexicon.version] ?? [:]
+        let cutoffID = TID.lowest(at: cutoff)
+        for (version, keys) in continuations.sorted(by: { $0.key < $1.key })
+        where versions[version] == nil && TID.date(version) != nil && version < cutoffID {
+            groups.append(keys.map { .delete(collection: Lexicon.chunks, rkey: $0) })
+        }
+        return try await deleteRecords(groups, counting: Lexicon.version)
     }
 
-    /// Deletes records, in transactions of up to `maxWrites` that keep each group together.
-    /// Records another device deleted first are skipped: a transaction that fails with
-    /// `RecordNotFound` is split until the missing ones are found. Returns how many it deleted.
-    func deleteRecords(_ groups: [[SpaceWrite]]) async throws -> Int {
+    /// Deletes records, in transactions of up to `maxWrites` that keep each group together (a
+    /// bigger group is split, in order). Records another device deleted first are skipped: a
+    /// transaction that fails with `RecordNotFound` is split until the missing ones are found.
+    /// Returns how many it deleted (of `collection`'s records, if given).
+    func deleteRecords(_ groups: [[SpaceWrite]], counting collection: String? = nil) async throws -> Int {
         var deleted = 0
         var batch: [[SpaceWrite]] = []
         var count = 0
+        let groups = groups.flatMap { group in
+            stride(from: 0, to: group.count, by: XRPCClient.maxWrites).map {
+                Array(group[$0..<min($0 + XRPCClient.maxWrites, group.count)])
+            }
+        }
         for group in groups {
             if count + group.count > XRPCClient.maxWrites, !batch.isEmpty {
-                deleted += try await deleteBatch(batch)
+                deleted += try await deleteBatch(batch, counting: collection)
                 batch = []
                 count = 0
             }
             batch.append(group)
             count += group.count
         }
-        if !batch.isEmpty { deleted += try await deleteBatch(batch) }
+        if !batch.isEmpty { deleted += try await deleteBatch(batch, counting: collection) }
         return deleted
     }
 
-    private func deleteBatch(_ groups: [[SpaceWrite]]) async throws -> Int {
+    private func deleteBatch(_ groups: [[SpaceWrite]], counting collection: String?) async throws -> Int {
         let writes = groups.flatMap { $0 }
         do {
             try await client.applySpaceWrites(space: space, repo: owner, writes: writes)
-            return writes.count
+            return writes.filter { collection == nil || $0.collection == collection }.count
         } catch let error as XRPCError where error.error == "RecordNotFound" {
             if groups.count > 1 {
                 let half = groups.count / 2
-                let first = try await deleteBatch(Array(groups[..<half]))
-                return first + (try await deleteBatch(Array(groups[half...])))
+                let first = try await deleteBatch(Array(groups[..<half]), counting: collection)
+                return first + (try await deleteBatch(Array(groups[half...]), counting: collection))
             }
             guard writes.count > 1 else { return 0 }  // already gone
             var deleted = 0
-            for write in writes { deleted += try await deleteBatch([[write]]) }
+            for write in writes { deleted += try await deleteBatch([[write]], counting: collection) }
             return deleted
         }
     }
@@ -390,6 +419,7 @@ struct Restoration {
                 record.size = target.size
                 record.chunks = target.chunks
                 record.contentsFrom = target.contentsFrom
+                record.continuations = target.continuations
                 record.modifiedAt = target.modifiedAt
             }
             if record != current.record || place[id]?.parent != parent {

@@ -127,6 +127,7 @@ public struct DriveHistory: Sendable {
             let holder = contentsHolder(of: version)
             state.chunks = holder?.record.chunks
             state.contentsFrom = holder?.id ?? version.record.contentsFrom
+            state.continuations = holder?.record.continuations
         }
         return state
     }
@@ -464,7 +465,9 @@ public struct DriveHistory: Sendable {
     /// what's needed to know each node's state when the window starts (its newest version on
     /// its line from before then) and anything a kept version takes its contents from. A node
     /// deleted before the window, with nothing of it after, loses every version. Unreadable
-    /// versions, and ones whose key isn't a TID, are never pruned.
+    /// versions, and ones whose key isn't a TID, are never pruned. Nor is the version a current
+    /// file takes its contents from: a long chunk list is only in that version's `chunks`
+    /// records, so they're what keeps the file's chunks.
     func pruneable(current: DriveTree, cutoff: Date) -> [String] {
         let cutoffID = TID.lowest(at: cutoff)
         let lineages = Lineages(self, current)
@@ -483,6 +486,9 @@ public struct DriveHistory: Sendable {
         }
         for version in versions.values where !doomed.contains(version.id) {
             if let from = version.record.contentsFrom { doomed.remove(from) }
+        }
+        for node in current.nodes.values {
+            if let from = node.record.contentsFrom { doomed.remove(from) }
         }
         return doomed.sorted()
     }

@@ -68,6 +68,9 @@ public struct DriveSnapshot: Sendable {
     public private(set) var tree: DriveTree
     /// Every version record: what changed, when, and the drive as it was.
     public private(set) var history = DriveHistory()
+    /// The `chunks` records, by key, as stored: the rest of chunk lists too long for the version
+    /// holding them. Node and version records are read with them.
+    public private(set) var continuations: [String: JSONValue] = [:]
     /// `nil` if the drive has no settings record, or one this device can't read (see
     /// `Drive.readSettings`): then the defaults apply.
     public private(set) var settings: DriveSettings?
@@ -110,17 +113,27 @@ public struct DriveSnapshot: Sendable {
         var repo = RepoState(revision: commit.rev, data: commit.data)
         var entries: [NodeEntry] = []
         var history = DriveHistory()
+        var continuations: [String: JSONValue] = [:]
+        for record in listing where record.collection == Lexicon.chunks {
+            continuations[record.rkey] = record.value
+        }
         for record in listing {
             repo.set(record.collection, record.rkey, cid: record.cid)
             switch record.collection {
-            case Lexicon.node: entries.append(drive.readNode(id: record.rkey, cid: record.cid, value: record.value))
-            case Lexicon.version: history.set(drive.readVersion(id: record.rkey, cid: record.cid, value: record.value))
+            case Lexicon.node:
+                entries.append(
+                    drive.readNode(id: record.rkey, cid: record.cid, value: record.value, continuations: continuations))
+            case Lexicon.version:
+                history.set(
+                    drive.readVersion(
+                        id: record.rkey, cid: record.cid, value: record.value, continuations: continuations))
             case Lexicon.settings where record.rkey == Lexicon.settingsKey:
                 (settings, unreadableSettings) = Self.readSettings(record.value, drive: drive)
             default: break
             }
         }
         self.history = history
+        self.continuations = continuations
         self.repo = repo
         tree = DriveTree(entries)
         self.listedAt = listedAt
@@ -166,8 +179,15 @@ public struct DriveSnapshot: Sendable {
         var nodes = tree.nodes
         var unreadable = tree.unreadable
         var history = self.history
+        var continuations = self.continuations
         var settings = (settings, unreadableSettings)
-        for (index, op) in ops.enumerated() {
+        // `chunks` records first, so the nodes and versions they continue are read with them.
+        // Each record's ops stay in order.
+        let order =
+            ops.indices.filter { ops[$0].collection == Lexicon.chunks }
+            + ops.indices.filter { ops[$0].collection != Lexicon.chunks }
+        for index in order {
+            let op = ops[index]
             let held = repo.cid(op.collection, op.rkey)
             if strict, op.prev != held {
                 throw ChangeFeedGap(
@@ -181,9 +201,13 @@ public struct DriveSnapshot: Sendable {
             }
             // Only each record's latest op matters for its value; the rest were replaced.
             guard isLatest else { continue }
+            if op.collection == Lexicon.chunks {
+                continuations[op.rkey] = op.cid == nil ? nil : op.value
+                continue
+            }
             if op.collection == Lexicon.version {
                 if let cid = op.cid {
-                    history.set(drive.readVersion(id: op.rkey, cid: cid, value: op.value))
+                    history.set(drive.readVersion(id: op.rkey, cid: cid, value: op.value, continuations: continuations))
                 } else {
                     history.remove(op.rkey)
                 }
@@ -197,7 +221,7 @@ public struct DriveSnapshot: Sendable {
             nodes[op.rkey] = nil
             unreadable[op.rkey] = nil
             if let cid = op.cid {
-                switch drive.readNode(id: op.rkey, cid: cid, value: op.value) {
+                switch drive.readNode(id: op.rkey, cid: cid, value: op.value, continuations: continuations) {
                 case .readable(let node): nodes[op.rkey] = node
                 case .unreadable(let record): unreadable[op.rkey] = record
                 }
@@ -213,6 +237,7 @@ public struct DriveSnapshot: Sendable {
         }
         self.repo = repo
         self.history = history
+        self.continuations = continuations
         (self.settings, unreadableSettings) = settings
         verified = matches
         self.mismatch = matches ? nil : mismatch
@@ -228,15 +253,29 @@ public struct DriveSnapshot: Sendable {
         (settings, unreadableSettings) = Self.readSettings(value, drive: drive)
     }
 
+    /// The keys of the `chunks` records in the drive, by the version they belong to, in order.
+    /// They count as part of it: deleting it deletes them too.
+    func continuationKeys() -> [String: [String]] {
+        var found: [String: [(index: Int, key: String)]] = [:]
+        for key in (repo.records[Lexicon.chunks] ?? [:]).keys {
+            guard let (version, index) = Lexicon.continuationOwner(key) else { continue }
+            found[version, default: []].append((index, key))
+        }
+        return found.mapValues { $0.sorted { $0.index < $1.index }.map(\.key) }
+    }
+
     /// Reads the unreadable records again with `drive`, e.g. once a key arrives.
     public mutating func reread(with drive: Drive) {
-        if !history.unreadable.isEmpty { history.reread(drive.readVersion) }
+        let continuations = continuations
+        if !history.unreadable.isEmpty {
+            history.reread { drive.readVersion(id: $0, cid: $1, value: $2, continuations: continuations) }
+        }
         if let value = unreadableSettings { setSettings(value, drive: drive) }
         guard !tree.unreadable.isEmpty else { return }
         var nodes = tree.nodes
         var unreadable: [UnreadableNode] = []
         for record in tree.unreadable.values {
-            switch drive.readNode(id: record.id, cid: record.cid, value: record.value) {
+            switch drive.readNode(id: record.id, cid: record.cid, value: record.value, continuations: continuations) {
             case .readable(let node): nodes[node.id] = node
             case .unreadable(let record): unreadable.append(record)
             }
@@ -247,9 +286,13 @@ public struct DriveSnapshot: Sendable {
     // MARK: Saving
 
     /// Bumped whenever what's saved, or how records are read, changes: older saves are ignored.
-    static let savedVersion = 3
+    static let savedVersion = 4
 
     private struct Saved: Codable {
+        struct SavedContinuation: Codable {
+            var key: String
+            var value: JSONValue
+        }
         struct SavedNode: Codable {
             var id: String
             var cid: String
@@ -287,6 +330,7 @@ public struct DriveSnapshot: Sendable {
         var unreadableVersions: [SavedUnreadableVersion]
         var settings: DriveSettings?
         var unreadableSettings: JSONValue?
+        var continuations: [SavedContinuation]
     }
 
     /// The snapshot as JSON, to pick up from after a restart. `nil` if there's no repo.
@@ -305,7 +349,8 @@ public struct DriveSnapshot: Sendable {
             unreadableVersions: history.unreadable.values.sorted { $0.id < $1.id }.map {
                 .init(id: $0.id, cid: $0.cid, reason: $0.reason, value: $0.value)
             },
-            settings: settings, unreadableSettings: unreadableSettings)
+            settings: settings, unreadableSettings: unreadableSettings,
+            continuations: continuations.sorted { $0.key < $1.key }.map { .init(key: $0.key, value: $0.value) })
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return try encoder.encode(saved)
@@ -319,8 +364,10 @@ public struct DriveSnapshot: Sendable {
         guard let saved = try? JSONDecoder().decode(Saved.self, from: data), saved.version == Self.savedVersion,
             saved.nodes.count == saved.records[Lexicon.node, default: [:]].count - saved.unreadable.count,
             saved.versions.count + saved.unreadableVersions.count
-                == saved.records[Lexicon.version, default: [:]].count
+                == saved.records[Lexicon.version, default: [:]].count,
+            saved.continuations.count <= saved.records[Lexicon.chunks, default: [:]].count
         else { return nil }
+        continuations = Dictionary(saved.continuations.map { ($0.key, $0.value) }, uniquingKeysWith: { a, _ in a })
         history = DriveHistory(
             saved.versions.map { Version(id: $0.id, cid: $0.cid, record: $0.record) },
             unreadable: saved.unreadableVersions.map {
