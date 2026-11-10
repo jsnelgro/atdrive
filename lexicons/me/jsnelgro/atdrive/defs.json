@@ -1,0 +1,49 @@
+{
+  "lexicon": 1,
+  "id": "me.jsnelgro.atdrive.defs",
+  "defs": {
+    "sealedValue": {
+      "type": "object",
+      "description": "The encrypted part of a record: everything the PDS doesn't need to see, as JSON, sealed with AES-256-GCM under the drive key's record-sealing subkey. The record's collection and key are the associated data, so it can't be moved to another record.",
+      "required": ["keyID", "sealed"],
+      "properties": {
+        "keyID": {
+          "type": "string",
+          "maxLength": 16,
+          "description": "Which drive key sealed it: 8 bytes derived from the key, as hex."
+        },
+        "sealed": {
+          "type": "bytes",
+          "description": "A random 12-byte nonce, the ciphertext, then the 16-byte tag."
+        }
+      }
+    },
+    "wrappedKeyring": {
+      "type": "object",
+      "description": "The drive's keyring wrapped for one device's public key: HPKE (RFC 9180) in auth mode, with X25519, HKDF-SHA256 and ChaCha20-Poly1305. Auth mode proves which device wrapped it.",
+      "required": ["sender", "encapsulatedKey", "ciphertext"],
+      "properties": {
+        "sender": {
+          "type": "bytes",
+          "description": "The raw public key of the device that wrapped it."
+        },
+        "encapsulatedKey": { "type": "bytes", "description": "HPKE's enc: the ephemeral public key." },
+        "ciphertext": {
+          "type": "bytes",
+          "description": "The keyring's keys, oldest first, 32 bytes each, then the 16-byte tag."
+        }
+      }
+    },
+    "recoveryWrappedKeyring": {
+      "type": "object",
+      "description": "The drive's keyring wrapped with the recovery key: AES-256-GCM under a key derived from it.",
+      "required": ["sealed"],
+      "properties": {
+        "sealed": {
+          "type": "bytes",
+          "description": "A random 12-byte nonce, the ciphertext, then the 16-byte tag."
+        }
+      }
+    }
+  }
+}

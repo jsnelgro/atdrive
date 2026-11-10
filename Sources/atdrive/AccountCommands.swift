@@ -14,6 +14,11 @@ struct Login: AsyncParsableCommand {
             up on (it starts with http://127.0.0.1 and won't load) back here.
 
             For scripts, --app-password signs in with an app password instead.
+
+            Then this device gets the drive's keys: the drive is encrypted. With no drive yet, it's
+            created, and its recovery key shown once. For a drive made elsewhere, approve this
+            device from one that has the keys (`atdrive devices approve`, comparing a code shown on
+            both), or type the recovery key.
             """
     )
 
@@ -60,6 +65,7 @@ struct Login: AsyncParsableCommand {
         }
         try SessionStore().save(session)
         print("Logged in as @\(session.handle) (\(session.did)) on \(session.service.host ?? "\(session.service)")")
+        try await KeySetup.run()
     }
 
     private func readPassword() throws -> String {
@@ -101,12 +107,21 @@ struct WhoAmI: AsyncParsableCommand {
         commandName: "whoami", abstract: "Show the logged-in account and where its drive lives.")
 
     func run() async throws {
-        let context = try await Context.load()
+        let context = try await Context.locked()
         let session = await context.session.session
         print("handle: @\(session.handle)")
         print("did:    \(session.did)")
         print("pds:    \(session.service.absoluteString)")
         print("drive:  \(context.drive.space)")
+        if let device = context.drive.identity {
+            print("device: \(device.name) (\(device.id))")
+        }
+        do {
+            try await context.drive.unlock()
+            print("keys:   this device has the drive's keys")
+        } catch let error as DriveAccessError {
+            print("keys:   \(error)")
+        }
     }
 }
 

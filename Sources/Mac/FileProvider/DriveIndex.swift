@@ -7,9 +7,12 @@ import Foundation
 /// enumerators can report "what changed since revision X" by comparing two snapshots.
 ///
 /// The repo revision (a TID that moves on every write) doubles as the File Provider sync anchor.
-/// Checking it is one small request, so a full listing only happens when something changed.
+/// The drive is kept current with its change feed (`Drive.update`): one small request when
+/// nothing changed, and only what changed otherwise.
 actor DriveIndex {
     private var cachedDrive: Drive?
+    /// The drive as last fetched, every record included.
+    private var snapshot: DriveSnapshot?
     private var current: (revision: String, tree: DriveTree)?
     private var history: [(revision: String, tree: DriveTree)] = []
     private let historyLimit = 16
@@ -17,25 +20,51 @@ actor DriveIndex {
     /// Anchor for a drive nothing has been written to yet.
     static let emptyRevision = "empty"
 
-    /// The logged-in account's drive. Read lazily, so logging in after the extension starts works.
-    func drive() throws -> Drive {
+    /// The logged-in account's drive, unlocked with this Mac's keys. Read lazily, so signing in
+    /// (and getting the keys) after the extension starts works. Until the app has set this Mac
+    /// up with the drive's keys, it's "not signed in". The extension never creates a drive: the
+    /// app does, as it shows the recovery key.
+    func drive() async throws -> Drive {
         if let cachedDrive { return cachedDrive }
-        guard let store = AppGroup.sessionStore(), let session = try store.load() else {
+        guard let store = AppGroup.sessionStore(), let session = try store.load(),
+            let devices = AppGroup.deviceStore(), let identity = try devices.load()
+        else {
             throw NSFileProviderError(.notAuthenticated)
         }
         let manager = SessionManager(session) { updated in try? store.save(updated) }
-        let drive = Drive(client: XRPCClient(service: session.service, session: manager), owner: session.did)
+        let drive = Drive(
+            client: XRPCClient(service: session.service, session: manager), owner: session.did,
+            device: identity.name, identity: identity
+        ) { updated in try? devices.save(updated) }
+        do {
+            try await drive.unlock()
+        } catch is DriveAccessError {
+            throw NSFileProviderError(.notAuthenticated)
+        }
         cachedDrive = drive
         return drive
     }
 
-    /// The drive as it is now: re-listed only if its revision moved since last time.
+    /// The drive as it is now, with the changes since last time applied.
     func refresh() async throws -> (revision: String, tree: DriveTree) {
-        let drive = try drive()
-        let revision = try await drive.latestRevision() ?? Self.emptyRevision
+        let drive = try await drive()
+        var updated = try await drive.update(snapshot)
+        if updated.revision == nil, let current, current.revision != Self.emptyRevision {
+            // Gone since we last saw it (say the server was wiped). Showing it as empty would
+            // delete everything here, which may be the only copy left.
+            throw NSFileProviderError(.serverUnreachable)
+        }
+        // Changes that lost a race between devices, settled as `atdrive sync` does. Only when
+        // something changed: a race needs a new version. A failure is tried again next change.
+        if updated.revision != nil, updated.revision != snapshot?.revision,
+            let settled = try? await drive.settleRaces(in: updated), !settled.isEmpty
+        {
+            updated = try await drive.update(updated)
+        }
+        snapshot = updated
+        let revision = updated.revision ?? Self.emptyRevision
         if let current, current.revision == revision { return current }
-        let tree = try await drive.tree()
-        let latest = (revision: revision, tree: tree)
+        let latest = (revision: revision, tree: updated.tree)
         current = latest
         history.removeAll { $0.revision == revision }
         history.append(latest)

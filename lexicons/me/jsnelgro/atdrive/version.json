@@ -1,0 +1,27 @@
+{
+  "lexicon": 1,
+  "id": "me.jsnelgro.atdrive.version",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "tid",
+      "description": "One change to a file or folder, written with the node change it records. The record key is a TID made when the change was. All but the chunks' blob refs is sealed. The sealed payload is {node, change ('created', 'edited', 'moved', 'deleted' or 'restored'), device, prev?, name?, parent?, kind?, size?, sha256?, createdAt?, modifiedAt?, contentsFrom?, chunkIDs?, continuations?}: the node's record key, the device that made the change, the version it was based on (two versions with the same prev are a race), and the node's state after the change (nothing after a delete). contentsFrom names the version holding this state's chunks, when this one doesn't (a rename or move, or a restore). A chunk list too long for one record is in this version's me.jsnelgro.atdrive.chunks records instead (\"<key>-1\", \"<key>-2\", ...): continuations says how many, and the record holds neither chunks nor chunkIDs.",
+      "record": {
+        "type": "object",
+        "required": ["sealed"],
+        "properties": {
+          "chunks": {
+            "type": "array",
+            "items": { "type": "blob" },
+            "description": "Files: the contents, when this version holds them and they fit. Referencing them keeps the blobs for as long as the version is kept."
+          },
+          "sealed": {
+            "type": "ref",
+            "ref": "me.jsnelgro.atdrive.defs#sealedValue",
+            "description": "Everything else, sealed for this collection and record key."
+          }
+        }
+      }
+    }
+  }
+}

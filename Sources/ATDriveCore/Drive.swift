@@ -3,80 +3,242 @@ import Foundation
 
 /// A drive: one atproto space holding one record per file or folder, with file contents
 /// stored as chunked blobs. Everything here works by node ID; `DriveTree` maps paths to IDs.
+///
+/// Every write also records a version of what it changed, in the same transaction: that's the
+/// drive's history (`DriveHistory`; restoring, purging and pruning are in `History.swift`).
+///
+/// Drives are encrypted, and only encrypted. Records are sealed and file contents encrypted with
+/// the drive's keyring (`SealedRecords.swift`), which a device unwraps from its own device record
+/// when it opens the drive (`unlock`, in `DriveKeys.swift`). Until then everything in it reads as
+/// unreadable, and writes fail.
 public final class Drive: Sendable {
     public let client: XRPCClient
     /// DID of the account that owns the drive (and, for now, the only one writing to it).
     public let owner: String
     /// The space's URI.
     public let space: String
-    /// Files are split into blobs of this size.
-    public let chunkSize: Int
+    /// How file contents are cut into chunks (each encrypted and stored as a blob), how many move
+    /// at once, and how long a chunk list a record holds.
+    public let transfers: TransferOptions
+    /// Recorded on every change this makes (`VersionRecord.device`).
+    public let device: String
+    /// Where new IDs (and so the times of changes) come from.
+    public let tids: TIDSource
+    /// The drive's keys on this device, and this device. Both can change while the drive is open:
+    /// unlocking it, or another device rotating the keyring (`refreshKeys`).
+    let keys: Locked<DriveKeys>
+    /// Saves this device's identity when what it trusts changes (`DeviceTrust`).
+    let saveIdentity: (@Sendable (DeviceIdentity) -> Void)?
 
     public typealias Progress = @Sendable (_ bytesDone: Int, _ bytesTotal: Int) -> Void
 
-    public init(
+    /// `identity` is this device, to unlock the drive with (`unlock`) and to save when what it
+    /// trusts changes (`saveIdentity`). `keyring`, if given, unlocks it straight away.
+    public convenience init(
         client: XRPCClient, owner: String, key: String = Lexicon.defaultDriveKey,
-        chunkSize: Int = 4 * 1024 * 1024
+        transfers: TransferOptions = .standard, device: String = DeviceName.current, tids: TIDSource = .system,
+        identity: DeviceIdentity? = nil, keyring: Keyring? = nil,
+        saveIdentity: (@Sendable (DeviceIdentity) -> Void)? = nil
+    ) {
+        self.init(
+            client: client, owner: owner,
+            space: XRPCClient.spaceURI(authority: owner, type: Lexicon.driveSpace, key: key), transfers: transfers,
+            device: device, tids: tids, keys: DriveKeys(keyring: keyring, identity: identity),
+            saveIdentity: saveIdentity)
+    }
+
+    private init(
+        client: XRPCClient, owner: String, space: String, transfers: TransferOptions, device: String,
+        tids: TIDSource, keys: DriveKeys, saveIdentity: (@Sendable (DeviceIdentity) -> Void)?
     ) {
         self.client = client
         self.owner = owner
-        self.space = XRPCClient.spaceURI(authority: owner, type: Lexicon.driveSpace, key: key)
-        self.chunkSize = chunkSize
+        self.space = space
+        self.transfers = transfers
+        self.device = device
+        self.tids = tids
+        self.keys = Locked(keys)
+        self.saveIdentity = saveIdentity
     }
 
-    /// Opens the logged-in account's drive.
-    public convenience init(session: SessionManager, transport: any HTTPTransport = URLSessionTransport())
-        async
-    {
+    /// The logged-in account's drive, as `identity` (this device). It's locked until `unlock`.
+    public convenience init(
+        session: SessionManager, transport: any HTTPTransport = URLSessionTransport(),
+        identity: DeviceIdentity? = nil, saveIdentity: (@Sendable (DeviceIdentity) -> Void)? = nil
+    ) async {
         let current = await session.session
         self.init(
             client: XRPCClient(service: current.service, session: session, transport: transport),
-            owner: current.did)
+            owner: current.did, device: identity?.name ?? DeviceName.current, identity: identity,
+            saveIdentity: saveIdentity)
     }
+
+    /// The drive's keyring on this device: `nil` until it's unlocked.
+    public var keyring: Keyring? { keys.value.keyring }
+
+    /// This device, with what it now trusts.
+    public var identity: DeviceIdentity? { keys.value.identity }
 
     // MARK: Reading
 
     /// Every file and folder in the drive. An empty drive (or one never written to) is empty.
+    /// Records this device can't read are in the tree's `unreadable`.
     public func tree() async throws -> DriveTree {
-        var nodes: [Node] = []
-        var cursor: String?
-        repeat {
-            let page: XRPCClient.SpaceRecordPage<NodeRecord>
-            do {
-                page = try await client.listSpaceRecords(
-                    space: space, repo: owner, collection: Lexicon.node, cursor: cursor,
-                    as: NodeRecord.self)
-            } catch let error as XRPCError
-                where error.error == "SpaceNotFound" || error.error == "RepoNotFound"
-            {
-                return DriveTree([])
+        guard let nodes = try await listCollection(Lexicon.node) else { return DriveTree([]) }
+        var entries = nodes.map { readNode(id: $0.rkey, cid: $0.cid, value: $0.value) }
+        // Files whose chunk lists continue in `chunks` records: those are listed (after the
+        // nodes, so they're there for every node listed) only when there are any.
+        let incomplete = entries.indices.filter {
+            if case .unreadable(let record) = entries[$0], record.reason == .incomplete { return true }
+            return false
+        }
+        if !incomplete.isEmpty, let listed = try await listCollection(Lexicon.chunks) {
+            var continuations: [String: JSONValue] = [:]
+            for record in listed { continuations[record.rkey] = record.value }
+            for index in incomplete {
+                let node = nodes[index]
+                entries[index] = readNode(id: node.rkey, cid: node.cid, value: node.value, continuations: continuations)
             }
-            nodes += page.records.compactMap { record in
-                // Skip records we can't read, or whose names could escape a local folder
-                // (e.g. "..") when downloaded. Our own writes never produce these.
-                guard let value = record.value, (try? DrivePath.validate(name: value.name)) != nil else {
-                    return nil
-                }
-                return Node(id: record.rkey, cid: record.cid, record: value)
-            }
-            cursor = page.records.isEmpty ? nil : page.cursor
-        } while cursor != nil
-        return DriveTree(nodes)
+        }
+        return DriveTree(entries)
     }
 
-    /// Streams a file's contents in order, verifying every chunk and the whole file.
-    public func read(_ node: Node, progress: Progress? = nil, into write: (Data) throws -> Void)
-        async throws
-    {
+    /// Every record in a collection, pages followed to the end; `nil` if the drive has no repo.
+    private func listCollection(_ collection: String) async throws -> [XRPCClient.SpaceRecordPage<JSONValue>.Record]? {
+        var records: [XRPCClient.SpaceRecordPage<JSONValue>.Record] = []
+        var cursor: String?
+        repeat {
+            let page: XRPCClient.SpaceRecordPage<JSONValue>
+            do {
+                page = try await client.listRawSpaceRecords(
+                    space: space, repo: owner, collection: collection, cursor: cursor)
+            } catch let error as XRPCError where Self.isMissing(error) {
+                return nil
+            }
+            records += page.records
+            cursor = page.records.isEmpty ? nil : page.cursor
+        } while cursor != nil
+        return records
+    }
+
+    // MARK: Following changes
+
+    /// Every write since `revision`, in every collection, in order (pages followed to the end),
+    /// and the commit the drive is now at: `nil` if the drive has no repo (gone, or never
+    /// written to). The feed may have been compacted: `DriveSnapshot` checks that it connects.
+    public func changes(since revision: String) async throws -> DriveChanges {
+        var ops: [RepoOp] = []
+        var cursor: String?
+        while true {
+            let page: RepoOpsPage
+            do {
+                page = try await client.listRepoOps(space: space, repo: owner, since: revision, cursor: cursor)
+            } catch let error as XRPCError where Self.isMissing(error) {
+                return DriveChanges(ops: [], commit: nil)
+            }
+            ops += page.ops
+            guard page.commit == nil, let next = page.cursor, !page.ops.isEmpty else {
+                return DriveChanges(ops: ops, commit: page.commit)
+            }
+            cursor = next
+        }
+    }
+
+    /// Brings a snapshot of the drive up to date: applies the changes since its revision, which
+    /// is one request when nothing changed. Lists the whole drive instead when there's no
+    /// snapshot (or revision), when the change feed doesn't connect to it or the server refuses
+    /// it, and when the records stop matching the commit (a compacted feed can hide writes).
+    /// While a listing itself doesn't match (say the server hashes differently), it also lists
+    /// once per process and every hour (see `DriveSnapshot.needsFullListing`).
+    ///
+    /// A drive that's gone comes back as a snapshot with no revision: callers that have synced
+    /// before must not take that for an empty drive.
+    ///
+    /// If this device's record changed (another device rotated the keyring, say), the keyring is
+    /// unwrapped again first, and what it couldn't read before is read again (`refreshKeys`).
+    public func update(_ snapshot: DriveSnapshot?, now: Date = Date()) async throws -> DriveSnapshot {
+        var updated = try await fetch(snapshot, now: now)
+        if await refreshKeys(seeing: updated) { updated.reread(with: self) }
+        return updated
+    }
+
+    private func fetch(_ snapshot: DriveSnapshot?, now: Date) async throws -> DriveSnapshot {
+        guard var snapshot, let revision = snapshot.revision, !snapshot.needsFullListing(at: now) else {
+            return try await listEverything(now: now)
+        }
+        do {
+            try snapshot.apply(try await changes(since: revision), strict: true, reading: self)
+            return snapshot
+        } catch let error where error is ChangeFeedGap || Self.isRefusal(error) {
+            return try await listEverything(now: now)
+        }
+    }
+
+    /// The whole drive, every collection, listed from scratch. Writes made while listing are
+    /// caught up on with the change feed, so the snapshot is exactly at a revision. It's kept
+    /// even if it doesn't match the commit, as `mismatch`: listing again wouldn't help.
+    public func listEverything(now: Date = Date()) async throws -> DriveSnapshot {
+        var problem = ChangeFeedGap(description: "the drive kept changing while it was listed")
+        for _ in 0..<3 {
+            guard let commit = try await client.latestSpaceCommit(space: space, repo: owner) else {
+                return DriveSnapshot(listedAt: now)
+            }
+            var listing: [(collection: String, rkey: String, cid: String, value: JSONValue?)] = []
+            var cursor: String?
+            repeat {
+                let page: XRPCClient.SpaceRecordPage<JSONValue>
+                do {
+                    page = try await client.listRawSpaceRecords(
+                        space: space, repo: owner, collection: nil, cursor: cursor)
+                } catch let error as XRPCError where Self.isMissing(error) {
+                    return DriveSnapshot(listedAt: now)
+                }
+                listing += page.records.map { ($0.collection ?? Lexicon.node, $0.rkey, $0.cid, $0.value) }
+                cursor = page.records.isEmpty ? nil : page.cursor
+            } while cursor != nil
+            var snapshot = DriveSnapshot(listing: listing, commit: commit, listedAt: now, reading: self)
+            do {
+                try snapshot.apply(try await changes(since: commit.rev), strict: false, reading: self)
+                return snapshot
+            } catch let gap as ChangeFeedGap {
+                problem = gap
+            }
+        }
+        throw problem
+    }
+
+    static func isMissing(_ error: XRPCError) -> Bool {
+        error.error == "SpaceNotFound" || error.error == "RepoNotFound"
+    }
+
+    /// The server answered, but not with changes we could use (e.g. a revision it no longer
+    /// knows). Network trouble isn't one of these: a full listing would fail the same way.
+    private static func isRefusal(_ error: Error) -> Bool {
+        if error is XRPCError { return true }
+        if case .unexpectedResponse? = error as? ATDriveError { return true }
+        return false
+    }
+
+    /// Streams a file's contents in order, decrypted, verifying every chunk (its CID, then that
+    /// it decrypts with its ID) and the whole file (its SHA-256, from the sealed record).
+    ///
+    /// `previous` is a local file that may hold an older version of it (a synced copy, say): the
+    /// chunks the two share are read from there instead of fetched (see `LocalChunks`). The rest
+    /// are fetched `transfers.parallel` at a time.
+    public func read(
+        _ node: Node, previous: URL? = nil, progress: Progress? = nil, into write: (Data) throws -> Void
+    ) async throws {
         guard !node.isFolder else { throw ATDriveError.isAFolder(node.name) }
+        let chunks = node.record.chunks ?? []
         let total = node.record.size ?? 0
+        var local: LocalChunks?
+        if let previous, let key = keyring?.keys.first, !chunks.isEmpty {
+            local = await LocalChunks(
+                of: previous, wanted: Set(chunks.map(\.id)), key: key, chunking: transfers.chunking)
+        }
         var hasher = SHA256()
         var done = 0
-        for chunk in node.record.chunks ?? [] {
-            let data = try await client.getSpaceBlob(space: space, repo: owner, cid: chunk.cid)
-            guard CID.forBlob(data) == chunk.cid else {
-                throw ATDriveError.integrity("chunk \(chunk.cid) of \(node.name) doesn't match its CID")
-            }
+        try await readChunks(chunks, of: node.name, local: local) { data in
             hasher.update(data: data)
             try write(data)
             done += data.count
@@ -92,7 +254,13 @@ public final class Drive: Sendable {
 
     /// Downloads a file to `destination`, replacing it atomically, and restores its
     /// modification time. A failed download leaves nothing behind.
-    public func download(_ node: Node, to destination: URL, progress: Progress? = nil) async throws {
+    ///
+    /// `previous` is a local file that may hold an older version (often `destination` itself):
+    /// only the chunks it doesn't have are fetched (see `read`). It's left as it is: the new
+    /// contents go to a file beside `destination`, which replaces it once complete.
+    public func download(_ node: Node, to destination: URL, previous: URL? = nil, progress: Progress? = nil)
+        async throws
+    {
         let partial = destination.deletingLastPathComponent()
             .appendingPathComponent(".\(destination.lastPathComponent).atdrive-partial")
         guard FileManager.default.createFile(atPath: partial.path, contents: nil) else {
@@ -102,7 +270,7 @@ public final class Drive: Sendable {
         defer { if !finished { try? FileManager.default.removeItem(at: partial) } }
         let handle = try FileHandle(forWritingTo: partial)
         do {
-            try await read(node, progress: progress) { try handle.write(contentsOf: $0) }
+            try await read(node, previous: previous, progress: progress) { try handle.write(contentsOf: $0) }
             try handle.close()
         } catch {
             try? handle.close()
@@ -116,62 +284,94 @@ public final class Drive: Sendable {
     }
 
     /// The revision (TID) of the latest change to the drive, or `nil` if nothing has ever been
-    /// written. Cheap: use it to check for changes before listing everything with `tree()`.
+    /// written. To follow changes, use `update` (or `changes(since:)`) instead.
     public func latestRevision() async throws -> String? {
         try await client.latestSpaceRevision(space: space, repo: owner)
     }
 
     // MARK: Writing
 
-    /// Creates the drive's space. Writes do this automatically the first time.
-    public func create() async throws {
+    /// The drive's settings, or `nil` if it has none (it doesn't exist) or they can't be read
+    /// here (see `readSettings`).
+    public func settings() async throws -> DriveSettings? {
+        try await settingsRecord().flatMap { readSettings($0.value) }
+    }
+
+    /// The settings record as stored, or `nil` if there's none: no settings means no drive
+    /// (creating one writes them first).
+    func settingsRecord() async throws -> (cid: String, value: JSONValue?)? {
+        let page: XRPCClient.SpaceRecordPage<JSONValue>
         do {
-            _ = try await client.createPersonalSpace(type: Lexicon.driveSpace, key: spaceKey)
-        } catch let error as XRPCError where error.error == "SpaceAlreadyExists" {}
+            page = try await client.listRawSpaceRecords(space: space, repo: owner, collection: Lexicon.settings)
+        } catch let error as XRPCError where Self.isMissing(error) {
+            return nil
+        }
+        return page.records.first { $0.rkey == Lexicon.settingsKey }.map { ($0.cid, $0.value) }
     }
 
     @discardableResult
     public func createFolder(named name: String, in parent: String?) async throws -> Node {
         try DrivePath.validate(name: name)
-        return try await write(id: TID.next(), NodeRecord(name: name, parent: parent, kind: .folder))
+        let folder = NodeRecord(name: name, parent: parent, kind: .folder)
+        return try await commit(change(.create, node: tids.next(), record: folder, .created, prev: nil))!
     }
 
     /// Uploads a local file as `name` inside `parent`. Pass `replacing` to overwrite an existing
     /// file in place (it keeps its ID, so other devices see an edit rather than a new file).
     /// The recorded modification time is `modified`, or else the local file's.
+    ///
+    /// The file is cut where its contents say (`Chunker`), so an edit changes only the chunks
+    /// around it. Chunks a record in the drive already references (`known`: their CIDs, as
+    /// `DriveSnapshot.chunkCIDs` or `DriveTree.chunkCIDs` give them) aren't uploaded again, so a
+    /// new version costs only what changed, and a copy of a file in the drive costs nothing. The
+    /// rest go up `transfers.parallel` at a time (see `store`). Writing the node comes last, so
+    /// an upload that's interrupted leaves the file as it was.
+    ///
+    /// A chunk reused that way can be deleted before the node is written, by another device
+    /// pruning or purging the last record that had it. The PDS then refuses the write, and the
+    /// chunks it reused are uploaded, and the write tried, once more.
     @discardableResult
     public func upload(
         _ file: URL, as name: String, in parent: String?, replacing existing: Node? = nil,
-        modified: Date? = nil, progress: Progress? = nil
+        modified: Date? = nil, known: Set<String> = [], progress: Progress? = nil
     ) async throws -> Node {
         try DrivePath.validate(name: name)
         if let existing, existing.isFolder { throw ATDriveError.isAFolder(existing.name) }
-        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
-        let total = (attributes[.size] as? NSNumber)?.intValue ?? 0
-        let handle = try FileHandle(forReadingFrom: file)
-        defer { try? handle.close() }
-
-        var hasher = SHA256()
-        var chunks: [BlobRef] = []
-        var done = 0
-        progress?(0, total)
-        while let data = try handle.read(upToCount: chunkSize), !data.isEmpty {
-            hasher.update(data: data)
-            let blob = try await client.uploadBlob(data, mimeType: "application/octet-stream")
-            guard blob.cid == CID.forBlob(data), blob.size == data.count else {
-                throw ATDriveError.integrity("server stored a chunk of \(name) as \(blob.cid)")
-            }
-            chunks.append(blob)
-            done += data.count
-            progress?(done, total)
+        let modified =
+            try modified ?? FileManager.default.attributesOfItem(atPath: file.path)[.modificationDate] as? Date
+        let progress = progress.map(Self.monotonic)
+        let contents = try await store(file, known: known, progress: progress)
+        do {
+            return try await write(contents, as: name, in: parent, replacing: existing, modified: modified)
+        } catch  where Self.isMissingBlob(error) && !contents.reused.isEmpty {
+            let known = known.subtracting(contents.reused).union(contents.uploaded)
+            let again = try await store(file, known: known, progress: progress)
+            return try await write(again, as: name, in: parent, replacing: existing, modified: modified)
         }
+    }
 
+    /// Writes a file's node (and version) for contents just stored.
+    private func write(
+        _ contents: StoredContents, as name: String, in parent: String?, replacing existing: Node?, modified: Date?
+    ) async throws -> Node {
         var record = NodeRecord(
-            name: name, parent: parent, kind: .file, size: done,
-            sha256: hasher.finalize().hexString, chunks: chunks,
-            modifiedAt: modified ?? attributes[.modificationDate] as? Date)
-        if let existing { record.createdAt = existing.record.createdAt }
-        return try await write(id: existing?.id ?? TID.next(), record)
+            name: name, parent: parent, kind: .file, size: contents.size, sha256: contents.sha256,
+            chunks: contents.chunks, modifiedAt: modified)
+        guard let existing else {
+            return try await commit(
+                change(.create, node: tids.next(), record: record, .created, prev: nil, newContents: true))!
+        }
+        record.createdAt = existing.record.createdAt
+        var edit = change(
+            .update, node: existing.id, record: record, .edited, prev: existing.record.version, newContents: true)
+        do {
+            return try await commit(edit)!
+        } catch let error as XRPCError where error.error == "RecordNotFound" {
+            // Deleted elsewhere meanwhile: an edit outlives a delete (`ConflictRules`), so it's
+            // written back under its own ID. The delete's version lost the race.
+            edit.write = .create
+            return try await commit(edit)!
+        }
     }
 
     /// Whether a local file has the same contents as a file in the drive.
@@ -191,14 +391,20 @@ public final class Drive: Sendable {
         return hasher.finalize().hexString
     }
 
-    /// Renames and/or moves a file or folder. Folders move with everything inside them.
+    /// Renames and/or moves a file or folder. Folders move with everything inside them. Throws
+    /// `notFound` if it was deleted meanwhile: a move doesn't keep something deleted elsewhere
+    /// (`ConflictRules`).
     @discardableResult
     public func move(_ node: Node, to parent: String?, as name: String) async throws -> Node {
         try DrivePath.validate(name: name)
         var record = node.record
         record.parent = parent
         record.name = name
-        return try await write(id: node.id, record)
+        do {
+            return try await commit(change(.update, node: node.id, record: record, .moved, prev: node.record.version))!
+        } catch let error as XRPCError where error.error == "RecordNotFound" {
+            throw ATDriveError.notFound(node.name)
+        }
     }
 
     /// Writes a node back under its own ID, e.g. a folder deleted elsewhere that something is
@@ -206,28 +412,238 @@ public final class Drive: Sendable {
     @discardableResult
     public func restore(_ node: Node) async throws -> Node {
         try DrivePath.validate(name: node.name)
-        return try await write(id: node.id, node.record)
-    }
-
-    /// Deletes files and folders. To delete a folder's contents too, include them (see
-    /// `DriveTree.descendants`), deepest first, so an interrupted delete leaves no orphans.
-    public func delete(_ nodes: [Node]) async throws {
-        try await client.deleteSpaceRecords(
-            space: space, repo: owner, collection: Lexicon.node, rkeys: nodes.map(\.id))
-    }
-
-    private var spaceKey: String { String(space.split(separator: "/").last!) }
-
-    private func write(id: String, _ record: NodeRecord) async throws -> Node {
-        func put() async throws -> String {
-            try await client.putSpaceRecord(
-                space: space, repo: owner, collection: Lexicon.node, rkey: id, record: record)
-        }
+        var restore = change(.create, node: node.id, record: node.record, .restored, prev: node.record.version)
         do {
-            return Node(id: id, cid: try await put(), record: record)
-        } catch let error as XRPCError where error.error == "SpaceNotFound" {
-            try await create()
-            return Node(id: id, cid: try await put(), record: record)
+            return try await commit(restore)!
+        } catch let error as XRPCError where error.error == "RecordAlreadyExists" {
+            restore.write = .update
+            return try await commit(restore)!
         }
     }
+
+    /// Deletes files and folders, recording each in history (so they're in the trash). To delete
+    /// a folder's contents too, include them (see `DriveTree.descendants`), deepest first, so an
+    /// interrupted delete leaves no orphans. Anything already deleted elsewhere is skipped.
+    public func delete(_ nodes: [Node]) async throws {
+        // All the versions first: one delete happens at one moment (see `DriveHistory.sameDeletion`).
+        let changes = nodes.map { change(.delete, node: $0.id, record: nil, .deleted, prev: $0.record.version) }
+        _ = try await commit(changes)
+    }
+
+    var spaceKey: String { String(space.split(separator: "/").last!) }
+
+    // MARK: Writing with history
+
+    /// A change to one node as it's written: the node record (or its deletion), and the version
+    /// that records the change, in the same transaction.
+    struct NodeChange: Sendable {
+        enum Write: Sendable { case create, update, delete }
+
+        var write: Write
+        var node: String
+        /// The node as written, its `version` (and `contentsFrom`) filled in; `nil` for a delete.
+        var record: NodeRecord?
+        var versionID: String
+        var version: VersionRecord
+        /// The version's chunk list in `chunks` records, when it holds new contents too long for
+        /// one record: each record's part, in order. Empty otherwise.
+        var continuations: [[ChunkRef]] = []
+    }
+
+    /// A change's writes, sealed: the node record (or its deletion), its version, then the
+    /// `chunks` records the version's chunk list continues in.
+    func writes(for change: NodeChange) throws -> [SpaceWrite] {
+        let nodeWrite: SpaceWrite
+        switch (change.write, change.record) {
+        case (.create, let record?):
+            nodeWrite = .create(collection: Lexicon.node, rkey: change.node, value: try stored(record, id: change.node))
+        case (.update, let record?):
+            nodeWrite = .update(collection: Lexicon.node, rkey: change.node, value: try stored(record, id: change.node))
+        default:
+            nodeWrite = .delete(collection: Lexicon.node, rkey: change.node)
+        }
+        var writes: [SpaceWrite] = [
+            nodeWrite,
+            .create(
+                collection: Lexicon.version, rkey: change.versionID,
+                value: try stored(change.version, id: change.versionID)),
+        ]
+        for (index, part) in change.continuations.enumerated() {
+            let key = Lexicon.continuationKey(of: change.versionID, index + 1)
+            writes.append(.create(collection: Lexicon.chunks, rkey: key, value: try stored(part, key: key)))
+        }
+        return writes
+    }
+
+    /// Stamps a change to `node` with a new version: it becomes `record` (`nil`: deleted), based
+    /// on `prev`. A file's version holds the chunk list if `newContents`; otherwise it points to
+    /// the version that does (`record.contentsFrom`), so a rename or move copies no chunks. A
+    /// chunk list too long for a record (`transfers.chunkListLimit`) goes in `chunks` records
+    /// of the version's, which the node points to as well (`NodeRecord.continuations`).
+    func change(
+        _ write: NodeChange.Write, node: String, record: NodeRecord?, _ kind: VersionRecord.Change, prev: String?,
+        newContents: Bool = false
+    ) -> NodeChange {
+        let versionID = tids.next()
+        var stamped = record
+        stamped?.version = versionID
+        var continuations: [[ChunkRef]] = []
+        if let state = stamped {
+            if state.kind != .file {
+                stamped?.contentsFrom = nil
+                stamped?.continuations = nil
+            } else if newContents || state.contentsFrom == nil {
+                stamped?.contentsFrom = versionID
+                continuations = Self.continuationParts(of: state.chunks ?? [], limit: transfers.chunkListLimit)
+                stamped?.continuations = continuations.isEmpty ? nil : continuations.count
+            }
+        }
+        let version = VersionRecord(
+            node: node, change: kind, device: device, prev: prev, state: stamped,
+            holdsContents: stamped?.contentsFrom == versionID)
+        return NodeChange(
+            write: write, node: node, record: stamped, versionID: versionID, version: version,
+            continuations: continuations)
+    }
+
+    /// Writes one change. Returns the node as written (`nil` for a delete).
+    ///
+    /// Its records go in one transaction if they fit (`transfers.transactionLimit`). If they
+    /// don't, the `chunks` records go first, a transaction at a time, then the node and version
+    /// together: until the version exists nothing names those records, so an interrupted change
+    /// leaves the drive as it was (and records that pruning deletes, see `orphanedContinuations`).
+    @discardableResult
+    func commit(_ change: NodeChange) async throws -> Node? {
+        let writes = try writes(for: change)
+        let together = fits(writes)
+        if !together {
+            for batch in transactions(Array(writes.dropFirst(2))) {
+                do {
+                    try await apply(batch)
+                } catch let error as XRPCError where error.error == "RecordAlreadyExists" {
+                    // Written by an earlier try of this same change: their keys are its version's.
+                }
+            }
+        }
+        let cids = try await apply(together ? writes : Array(writes.prefix(2)))
+        return change.record.map { Node(id: change.node, cid: cids[0] ?? "", record: $0) }
+    }
+
+    /// Writes changes in order, as many to a transaction as fit (`fits`). A transaction that
+    /// fails because a record already exists, or doesn't exist, is tried again one change at a
+    /// time; the changes that fail that way on their own are left out (another device got
+    /// there first) and returned as `skipped`.
+    func commit(_ changes: [NodeChange]) async throws -> (written: [Node], skipped: [NodeChange]) {
+        var written: [Node] = []
+        var skipped: [NodeChange] = []
+        var batch: [(change: NodeChange, writes: [SpaceWrite])] = []
+        var batchSize = 0
+        func flush() async throws {
+            defer {
+                batch = []
+                batchSize = 0
+            }
+            if batch.count > 1 {
+                do {
+                    let cids = try await apply(batch.flatMap(\.writes))
+                    var offset = 0
+                    for (change, writes) in batch {
+                        if let record = change.record {
+                            written.append(Node(id: change.node, cid: cids[offset] ?? "", record: record))
+                        }
+                        offset += writes.count
+                    }
+                    return
+                } catch let error as XRPCError where Self.isRace(error) {}
+            }
+            for (change, _) in batch {
+                do {
+                    if let node = try await commit(change) { written.append(node) }
+                } catch let error as XRPCError where Self.isRace(error) {
+                    skipped.append(change)
+                }
+            }
+        }
+        for change in changes {
+            let writes = try writes(for: change)
+            let size = Self.size(of: writes)
+            let count = batch.reduce(writes.count) { $0 + $1.writes.count }
+            if !batch.isEmpty, count > XRPCClient.maxWrites || batchSize + size > transfers.transactionLimit {
+                try await flush()
+            }
+            batch.append((change, writes))
+            batchSize += size
+        }
+        if !batch.isEmpty { try await flush() }
+        return (written, skipped)
+    }
+
+    /// Whether writes fit in one transaction: at most `XRPCClient.maxWrites` of them, and
+    /// `transfers.transactionLimit` bytes.
+    func fits(_ writes: [SpaceWrite]) -> Bool {
+        writes.count <= XRPCClient.maxWrites && Self.size(of: writes) <= transfers.transactionLimit
+    }
+
+    static func size(of writes: [SpaceWrite]) -> Int { writes.reduce(0) { $0 + size(of: $1) } }
+
+    /// Writes split into transactions that fit, in order. A write too big on its own is a
+    /// transaction of its own.
+    func transactions(_ writes: [SpaceWrite]) -> [[SpaceWrite]] {
+        var transactions: [[SpaceWrite]] = []
+        var current: [SpaceWrite] = []
+        var size = 0
+        for write in writes {
+            let added = Self.size(of: write)
+            if !current.isEmpty, current.count == XRPCClient.maxWrites || size + added > transfers.transactionLimit {
+                transactions.append(current)
+                current = []
+                size = 0
+            }
+            current.append(write)
+            size += added
+        }
+        if !current.isEmpty { transactions.append(current) }
+        return transactions
+    }
+
+    /// About how many bytes a write takes in an `applyWrites` request.
+    static func size(of write: SpaceWrite) -> Int {
+        let overhead = 150 + write.collection.utf8.count + write.rkey.utf8.count
+        switch write {
+        case .create(_, _, let value), .update(_, _, let value): return overhead + value.serialized().count
+        case .delete: return overhead
+        }
+    }
+
+    /// Applies writes as one transaction. Writes never create the drive: only `create` does, as
+    /// it has a recovery key to show (see `DriveKeys.swift`).
+    @discardableResult
+    func apply(_ writes: [SpaceWrite]) async throws -> [String?] {
+        do {
+            return try await client.applySpaceWrites(space: space, repo: owner, writes: writes)
+        } catch let error as XRPCError where error.error == "SpaceNotFound" {
+            throw DriveAccessError.noDrive
+        }
+    }
+
+    /// A write that failed because another device changed the same record first.
+    static func isRace(_ error: XRPCError) -> Bool {
+        error.error == "RecordAlreadyExists" || error.error == "RecordNotFound"
+    }
+}
+
+/// What the change feed says happened since a revision (`Drive.changes(since:)`).
+public struct DriveChanges: Sendable {
+    /// Every write, in every collection, in order. An op's value is there only while its
+    /// version is the record's current one, so ops that later ones replaced have none.
+    public var ops: [RepoOp]
+    /// The commit the drive is now at; `nil` if it has no repo (gone, or never written to).
+    public var commit: RepoCommit?
+
+    public init(ops: [RepoOp], commit: RepoCommit?) {
+        self.ops = ops
+        self.commit = commit
+    }
+
+    public var revision: String? { commit?.rev }
 }

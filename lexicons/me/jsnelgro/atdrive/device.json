@@ -1,0 +1,40 @@
+{
+  "lexicon": 1,
+  "id": "me.jsnelgro.atdrive.device",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "any",
+      "description": "A device that holds the drive's keys, or asks for them, keyed by the device's ID (a TID). Not sealed: a device asks before it has the keys, and the others read its public key to wrap the keyring for it. One more record, key 'recovery', holds only recoveryKeyring.",
+      "record": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 255,
+            "description": "The device's name, shown in device lists and pairing prompts."
+          },
+          "publicKey": {
+            "type": "bytes",
+            "description": "The device's raw X25519 public key."
+          },
+          "keyring": {
+            "type": "ref",
+            "ref": "me.jsnelgro.atdrive.defs#wrappedKeyring",
+            "description": "The drive's keyring, wrapped for this device. Absent while it waits to be approved."
+          },
+          "approvedBy": {
+            "type": "string",
+            "description": "The ID of the device that approved this one, if it wasn't itself."
+          },
+          "createdAt": { "type": "string", "format": "datetime" },
+          "recoveryKeyring": {
+            "type": "ref",
+            "ref": "me.jsnelgro.atdrive.defs#recoveryWrappedKeyring",
+            "description": "Only in the record with key 'recovery': the keyring wrapped with the recovery key."
+          }
+        }
+      }
+    }
+  }
+}

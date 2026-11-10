@@ -6,8 +6,14 @@
       "type": "space",
       "key": "any",
       "name": "ATDrive",
-      "description": "A drive of files and folders. The default drive's key is \"default\".",
-      "collections": ["me.jsnelgro.atdrive.node"]
+      "description": "A drive of files and folders, encrypted: only the devices that hold its keys can read it. The default drive's key is \"default\".",
+      "collections": [
+        "me.jsnelgro.atdrive.node",
+        "me.jsnelgro.atdrive.version",
+        "me.jsnelgro.atdrive.chunks",
+        "me.jsnelgro.atdrive.settings",
+        "me.jsnelgro.atdrive.device"
+      ]
     }
   }
 }

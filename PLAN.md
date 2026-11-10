@@ -53,13 +53,31 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
   - **Not yet exercised:** against the live alpha PDS, and under systemd on a real server.
   - **How it works:** see *Folder sync* below.
   - **Later:** a FUSE mount, for drives too big to keep a full copy of (files fetched on demand).
-    Uploading only the changed chunks of an edited file. Several transfers at once.
 - [ ] **Phase 4, iOS:** the same extension code with an iOS host app.
+- [x] **Storage v2** (see *Storage v2* below): incremental sync; 30 days of history (edits,
+  renames, moves, deletes) that also stops races from losing edits; an encrypted-only drive; and
+  transferring only changed chunks.
+  - **Tested** with unit tests against `FakePDS` on Linux, also with a 512 KiB stack (what Apple
+    platforms give threads other than the main one). macOS CI builds the app.
+  - **Not yet exercised:** any of it against the live alpha PDS, and the Mac app's new screens on a
+    real Mac.
+  - **Follow-ups:**
+    - **Live PDS:** run `LiveTests` and `LiveChangeFeedTests` (they need `ATDRIVE_LIVE_HANDLE`,
+      `ATDRIVE_LIVE_PASSWORD`, and `ATDRIVE_LIVE_RECOVERY_KEY` for an account that has a drive).
+      Unverified there: `listRepoOps`, `listRecords` across collections, `createRecord`,
+      `applyWrites` results, and the OAuth scope with the new collections.
+    - **Mac:**
+      - Try sign-in, the recovery key window and approval on a real Mac.
+      - Approve and remove devices from the app (the CLI does it today).
+      - Show history and the trash ("Restore Previous Version…" from Finder).
+      - `item(for:)` answers `noSuchItem` for records it can't read.
+      - Deleting a folder in Finder ignores unreadable items inside it.
+      - Log when the drive doesn't match its commit.
+    - **Encryption:** see *Step 3, open problems*. The roster can lose a concurrent change, a
+      removed device keeps its session, and `.atdrive/drive.json` holds decrypted metadata.
 - [ ] **Later:**
   - Publish the lexicons and narrow the OAuth scope (see below).
   - Shared folders (`memberspace`).
-  - Client-side encryption.
-  - Parallel transfers.
 
 ## Folder sync
 
@@ -120,6 +138,327 @@ keeps exactly what `keptWhenDeleting` keeps.
 - **Damaged trees:** a node whose parent was deleted, and a cycle created by concurrent moves,
   are both shown at the top level, so nothing is ever hidden.
 
+## Storage v2
+
+Goals:
+- Fetch only what changed, and upload only what changed.
+- Keep 30 days of history: edits, renames, moves and deletes. The trash is part of it.
+- Never lose an edit to two devices writing at once.
+- Keep file contents and names unreadable to whoever runs the PDS. Drives are encrypted only.
+
+There are no users yet, so none of this is backward compatible. The format changes in place, and
+existing test drives are wiped, not migrated. Built in four steps, in this order. Steps 2 and 3
+end with what was decided while building them ("As built").
+
+### What shapes the design
+
+Checked against the reference branch at `704b9e2` (2026-11-05):
+
+- **A blob lives only while a record references it.** The PDS can't see links inside blobs, so
+  blobs that point to other blobs (how IPFS stores big files) would be garbage-collected. Every
+  link to a blob has to be in a record, and records are capped at 1 MiB.
+- **No compare-and-swap.** `putRecord` and `applyWrites` take no expected version, so the last
+  write wins.
+  - **So no Dolt- or git-style tree with one root.** That design works only because moving the
+    head is a compare-and-swap. Without one, two devices that each build a new root from the same
+    old one silently overwrite each other.
+  - Every edit would also rewrite each folder above it, up to the root, so edits in unrelated
+    folders would compete for the same records.
+  - One record per file stays: edits to different files never touch the same record. Anything
+    several devices write gets one record per writer.
+- **What there is instead:**
+  - Create-if-absent: `createRecord` and `applyWrites#create` fail with `RecordAlreadyExists`.
+  - Updates and deletes of a missing record fail with `RecordNotFound`.
+  - `applyWrites` is one transaction of up to 200 writes.
+- **There's a change feed:** `com.atproto.space.listRepoOps(since:)` returns every write after a
+  revision, with the record values. It isn't history: the server may compact it.
+- **`listRecords` lists a whole collection.** It can't start at a key or prefix: only a cursor
+  and `reverse`.
+- **A space's commit is a set hash** (LtHash over the repo's records), not a Merkle tree. There's
+  no server-side tree to reuse; the change feed finds what changed.
+- **Blobs are content-addressed** (CID = SHA-256 of the bytes), so identical chunks are stored once.
+- **Self-hosted PDSes default to a 5 MB blob limit,** so chunks stay at most 4 MiB.
+
+**Not doing:**
+- **A DHT:** handle → DID → PDS already says where everything is.
+- **Erasure coding:** one PDS is one point of failure, and shards on it protect nothing.
+- **A root that every write goes through:** see compare-and-swap above. Version records (step 2)
+  give the useful parts: the drive as of any time, and cheap comparisons.
+- **Per-device logs (Hypercore):** the change feed plus `ConflictRules` already cover it.
+
+### Step 1: incremental sync
+
+- **Sync must never mistake "can't see it" for "deleted".** Today two things look like deletions
+  to `SyncPlan`, so it would delete local copies:
+  - A record this device can't read: `Drive.tree()` drops it. After step 3, that includes a record
+    sealed with a key this device doesn't have yet.
+  - A drive that's gone, say because the alpha PDS was wiped: on `SpaceNotFound`, `tree()` returns
+    an empty drive. The local folder may then be the only copy left.
+- **The fix:**
+  - `tree()` returns unreadable records as unknown. Sync and the Mac extension leave those IDs
+    alone and say why.
+  - A missing drive that this device has synced before stops sync, as a missing folder does.
+- **Applying changes:**
+  - `Spaces.swift` gets `listRepoOps`. `Drive.changes(since:)` turns ops into upserts and deletes,
+    and `DriveTree` applies them.
+  - `FolderSync` and `DriveIndex` keep the tree and its revision, and apply changes instead of
+    listing everything. A poll becomes one request, which returns nothing when nothing changed. It
+    replaces `getLatestCommit`.
+- **Gaps:**
+  - Each op's `prev` must equal the CID we hold for that record (none for a create). A mismatch, an
+    error, or no saved revision means a full listing, as today.
+  - After the last page, check our copy against the commit. Its `data` is an LtHash over every
+    record in the repo (`RepoSetHash` in `LtHash.swift`, on `BLAKE3.swift`). A mismatch means a
+    full listing.
+  - The check covers every collection, including ones this client doesn't understand. Those are
+    tracked by CID without being decoded, so they can't make the check fail forever.
+- Persisting the tree also covers the Mac's "persist snapshots across extension restarts".
+
+### Step 2: history
+
+Thirty days of every change: edits, renames, moves and deletes.
+
+- **One version record per change.**
+  - Every write to a file or folder also writes a `me.jsnelgro.atdrive.version` record, in the
+    same `applyWrites`. Its rkey is a new TID (when).
+  - It holds the node's ID; the kind of change (created, edited, moved, deleted, restored); the
+    device; and `prev`, the version the change was based on.
+  - It also holds the node's state after the change: name and folder, and, for files, size, hash,
+    modified time and chunks.
+  - A rename or move doesn't copy the chunk list. It names the version that holds the contents, so
+    it's tiny.
+- **The node record stays the current state,** so listing the tree is still one collection. It
+  also names its current version.
+- **Versions keep old chunks alive:** the PDS deletes a blob only once no record references it.
+- **Two devices changing the same file at once can't lose an edit.**
+  - Today the second node update silently replaces the first (README, "Current limitations").
+  - Version records have unique keys, so both survive even when one node update wins. Their shared
+    `prev` shows the race.
+  - Any client that sees a version the node's current version doesn't descend from applies
+    `ConflictRules` to it, as for changes in two places today:
+    - A lost edit comes back as a conflicted copy, or restores the file if the winner deleted it.
+    - A lost move is dropped (the drive's move wins), but stays in history.
+  - The conflicted copy's node ID is the lost version's ID, written with create-if-absent, so two
+    clients that notice the same race make one copy.
+- **The drive as of a time T** in the last 30 days: for each node, its newest version from before
+  T. No version, or a delete, means it didn't exist then.
+- **Trash** is the deletes of the last 30 days: nodes whose newest version is a delete.
+  - Restoring one creates the node again under its own ID, from the version before the delete (a
+    create, so it fails if the node is already back). It also writes a "restored" version.
+  - It brings back the folders it was in, if they were deleted too.
+- **Folders:** deleting a folder deletes, and versions, everything in it. That's one node delete
+  and one version per item, deepest first, 100 items per `applyWrites`.
+- **Finding a file's versions:** clients list the `version` collection once, then keep it current
+  with the change feed, which includes record values.
+- **Pruning:**
+  - The retention (30 days) is in the drive's `me.jsnelgro.atdrive.settings` record (rkey `self`),
+    so every device agrees.
+  - Versions older than that are deleted, except what's needed to know each node's state at the
+    start of the window: its newest older version, and the version that one takes its contents
+    from.
+  - A node deleted before the window loses all of its versions.
+  - Any device may prune during a sync pass. If another device already deleted a version, the
+    batch fails with `RecordNotFound`; retry without it.
+  - Deleting versions lets the PDS delete chunks nothing else uses. Storage grows with how much
+    changes, not with how many versions are kept.
+- **Purging** deletes a file or folder and all of its versions now, for things that mustn't stay
+  around.
+- **Later:**
+  - **Thinning past 30 days** (one a day, then one a week), as Dropbox does. It only changes which
+    versions pruning deletes.
+  - **Snapshots:** `atdrive snapshot` writes records listing every node's current version, and
+    pruning keeps whatever a snapshot lists. The drive as of that moment stays restorable past 30
+    days, and costs only the chunks that change afterwards.
+- **Caveat:** times come from the writing device's clock, which also decides which side of a race
+  lost.
+- **As built:**
+  - **Node records name their contents version too** (`contentsFrom`), so a move doesn't have to
+    look up the current version to find the chunks.
+  - **What happens to a lost change** is `ConflictRules.lostChange`:
+    - A lost edit becomes a conflicted copy (made once, under the lost version's ID).
+    - If the winner only moved the file, the lost edit's contents go on the file instead.
+    - If the winner deleted the file, the lost edit restores it.
+    - A lost move or delete is dropped, but stays in history. A move can't bring back a deleted
+      file: only edits and restores do.
+  - **The drive as of a time** follows each node's line of changes. Changes that lost a race show
+    in `history`, not in the past view. Only races within the retention period are settled.
+  - **Items deleted with their folder** are those deleted within a second before it. They're
+    hidden from the top level of the trash, and come back with the folder.
+  - **Restoring a folder to a time** brings back what was in it then, and leaves what's been
+    added since.
+  - **Drives are created only on purpose** (`createsDrive`). Sync saves the drive's ID and when it
+    last pruned in `state.json`.
+  - **The OAuth scope** names the new collections, so sessions from before need a new sign-in.
+
+### Step 3: encryption
+
+Drives are encrypted only. Spaces' access control still applies; encryption protects against the
+PDS operator.
+
+- **Records** (`node`, `version`, and `chunks` from step 4):
+  - Only what the PDS needs stays readable: `chunks` (so blobs are kept) and a key ID.
+  - Everything else, `parent` included, is `sealed`: AES-GCM under a key derived from the drive
+    key. The collection and rkey are associated data, so the PDS can't swap records between files.
+  - There's no plaintext `sha256`: it would let the server confirm you hold a known file.
+- **Chunks: keyed convergent encryption,** as in Tahoe-LAFS and borg:
+  - A chunk's ID is HMAC(drive key, plaintext), and its key is derived from that ID. Each key
+    encrypts exactly one plaintext, so AES-GCM can use a fixed nonce.
+  - Chunk IDs, and step 4's chunker seed, always come from the drive's **first** key, even after
+    rotations. Otherwise every file's chunks would get new IDs and boundaries after a device is
+    removed, and nothing would be reused.
+  - Identical chunks encrypt to identical bytes, so they're stored once and step 4 can skip them.
+    Without the drive key, the server can't test for known files.
+  - Chunk IDs go in the sealed metadata. Sharing a folder later can hand over those, not the
+    drive key.
+- **The rest of the code doesn't change.** `NodeRecord` stays the in-memory type, and sealing is a
+  layer between `Drive` and `Spaces`. `SyncPlan`, `ConflictRules` and the extension compare
+  hashes after decryption.
+- **What the server still sees:**
+  - How many records there are.
+  - Chunk counts and sizes (so roughly file sizes).
+  - Creation times (TIDs), and when writes happen.
+  - Which chunks are shared between files and versions.
+  - A malicious PDS can drop or roll back records, but can't read or forge them.
+- **Keys:**
+  - **The drive key** is 32 random bytes, made when the drive is created. The keyring is every
+    drive key so far, oldest first; the newest seals new records.
+  - **Each device has its own key pair** (Curve25519), stored where its session is.
+  - **One record per device** (`me.jsnelgro.atdrive.device`) holds the keyring wrapped for that
+    device's public key. One more (rkey `recovery`) wraps it for the recovery key. They're separate
+    records because two devices editing one shared keyring record would overwrite each other.
+  - **Wrapping uses HPKE in auth mode,** so a device can tell which device wrapped its keyring.
+    Anyone can wrap a keyring for a public key, the PDS included. A device accepts one only from
+    itself or from a device it has confirmed, so the PDS can't get it to seal new records under a
+    key the PDS knows.
+  - **The recovery key** is 256 random bits, shown once when the drive is created as 14 groups of 4
+    letters and digits (Crockford base32, with a checksum that catches typos). It's high-entropy,
+    so it needs no password KDF (swift-crypto has no Argon2).
+  - **Adding a device:** `atdrive login`, then one of:
+    - `atdrive unlock` with the recovery key.
+    - Approve it from a device that has the key:
+      - The new device posts its public key. The approving device posts its own.
+      - Both show a 16-digit code computed from the two keys, and the user confirms on both that
+        they match.
+      - Only then does the approver wrap the keyring for the new device. The new device accepts it
+        only from the approver it confirmed.
+      - 16 digits, because the PDS sees the keys first. Against a shorter code, it could try keys
+        of its own until one matched.
+  - **Removing a device:**
+    - Delete its record, and add a new drive key for new records. Wrap the keyring again for the
+      remaining devices and the recovery key.
+    - What the removed device already had stays readable to it.
+    - It also keeps the first key, so it can still test whether the drive holds a chunk it already
+      knows. That's the price of keeping chunk IDs stable.
+    - It still holds a session for the account, so it can still write records. Remaining devices
+      ignore keyrings it wraps.
+  - Losing every device and the recovery key loses the data. Creating the drive says so, next to
+    the recovery key.
+  - **Creating a drive is interactive,** because it has to show the recovery key: `atdrive login`
+    does it (and unlocks, or asks for approval, on a drive that exists), and so does the Mac app's
+    first sign-in. The background `atdrive sync` service never creates a drive.
+- **As built:**
+  - **Only `create()` makes a drive,** from `atdrive login` or the Mac app's first sign-in. Writes
+    never do, and `atdrive sync` and `put` on an account with no drive say to run `atdrive login`.
+  - **The roster** (the approved devices' public keys) is sealed in the settings record. When keys
+    rotate, the keyring is wrapped only for keys in the roster, never for keys read from device
+    records, which the PDS can change.
+  - **A device takes a keyring only if** it holds every key the device accepted before (devices
+    keep fingerprints of past keys, so made-up or replayed keyrings are refused), and it was
+    wrapped by the device itself, by its confirmed approver (its first keyring only), or by a
+    device in the roster.
+  - **The pairing code** is SHA-256 over both devices' public keys, sorted, shown as 16 digits.
+  - **Device records aren't sealed,** since a waiting device has no key yet. The PDS sees device
+    names.
+  - **Removing a device asks for the recovery key,** since only it can wrap the new keyring for
+    recovery. Pressing Enter instead makes a new recovery key and shows it.
+  - **Each device's key** is in `device.json` (mode 600) beside `session.json`, or in the App Group
+    container on the Mac. The keyring itself is never stored; it's unwrapped from the device's
+    record, and again whenever that record changes.
+  - **Approving and removing devices** is CLI-only for now. The Mac app can create a drive, show
+    the recovery key, unlock with it, and be approved.
+  - **Open problems:**
+    - The roster is one record, so two approvals or removals at once can overwrite each other.
+    - A removed device keeps an account session, and records it writes with old keys are still
+      read.
+    - `.atdrive/drive.json` holds decrypted metadata next to the synced files.
+
+
+### Step 4: transfer only changed chunks
+
+- **Content-defined chunking (FastCDC):**
+  - Boundaries follow the content, so an insert near the start changes one or two chunks instead of
+    every chunk after it. A new version then costs only those chunks.
+  - Min 256 KiB, average 1 MiB, max 4 MiB. The mean comes out at about 1.1 MiB, since nothing is
+    cut before 256 KiB.
+  - The chunker is seeded from the drive's first key, so chunk sizes don't fingerprint files and
+    boundaries don't move when keys rotate.
+- **Skip chunks the drive already has.** The tree lists every chunk's CID, and an encrypted chunk
+  whose CID is already there isn't uploaded. Copying a file within the drive uploads nothing.
+- **Download only missing chunks.**
+  - Re-chunk the local copy of the previous version (the synced file, or what the Mac has on disk).
+    Reuse chunks whose IDs match the file's sealed chunk IDs, and fetch the rest.
+  - The local file is the cache.
+- **Parallel transfers:** a few chunks at a time.
+  - Chunks never change, and writing the node record is what makes the new contents current. An
+    interrupted upload leaves the old version in place.
+- **Bigger files:** smaller chunks mean more of them per record (about 6 GB per record at a
+  1 MiB average, with chunk IDs). Past that, the chunk list continues in
+  `me.jsnelgro.atdrive.chunks` records, written in the same `applyWrites`.
+
+### Lexicons
+
+Add `version`, `settings`, `device` and `chunks` to `lexicons/`, to `drive.json`'s
+`collections`, and to the narrow OAuth scope.
+
+### CLI
+
+| Command | What it does |
+|---|---|
+| `history [path]` | Changes to a file, or to a folder and everything in it (the whole drive without a path): when, what, which device |
+| `ls` / `tree` / `get` / `cat --at <when>` | The drive as it was. `<when>` is `2h` or `3d` (ago), `2026-11-08`, `2026-11-08T14:00`, or a version ID. Paths are looked up as of then, so something moved since is found under its old path |
+| `restore <path> --at <when>` | Put a file or folder back as it was: contents, name and place. For a folder, everything in it too. It's recorded as new versions, so it can be undone |
+| `restore <path> --previous` | Undo a file's latest change |
+| `trash` | What was deleted in the last 30 days |
+| `trash restore <path>…` | Bring things back where they were |
+| `purge <path>…` | Delete now, with all history |
+| `trash empty` | Purge everything in the trash |
+| `du` | Space used by current files and by history, and what they share |
+| `prune` | Apply the retention now |
+| `devices` | The devices that hold the drive key |
+| `devices approve <code>` / `devices remove <name>` | Add or remove one |
+| `unlock` / `recovery-key` | Set up this device with the recovery key / make a new recovery key |
+
+The time is a flag rather than part of the path (`path@when`), because file names can contain `@`
+(`icon@2x.png`).
+
+On the Mac, trash and history start in a menu-bar window. A Finder right-click action ("Restore
+Previous Version…", a File Provider custom action) could open it there. Whether Finder can show
+history itself is an open question.
+
+### Tests
+
+- **`FakePDS` gains:**
+  - `listRepoOps`, with compaction, to test gaps.
+  - Create-if-absent, and `RecordNotFound` in `applyWrites`.
+  - Blob garbage collection: a blob disappears once nothing references it, so history that doesn't
+    keep its chunks fails a test.
+  - A way to wipe the space, for the missing-drive guard.
+- **The guards:** a record this device can't read, and a drive that's gone, must not delete local
+  files.
+- **History replay:**
+  - Run random edits, renames, moves, deletes and restores, snapshotting the tree as they go.
+  - Check that the drive rebuilt for each snapshot's time matches the snapshot, before and after
+    pruning.
+- **Races:** two devices change the same file at once. Both versions must survive, and exactly one
+  conflicted copy must appear, even when both devices notice the race.
+- **Chunking** gets fixed test vectors, so every platform cuts the same boundaries.
+
+### Open questions
+
+- **Create-if-absent:** is it reliable under concurrent writes on the live PDS? Restores and
+  conflicted copies rely on it.
+- **Finder:** can it show history (File Provider has no obvious API for server-side versions)?
+
 ## Protocol notes (alpha, as of 2026-11-05)
 
 - **Reference implementation:** `bluesky-social/atproto`, branch `permissioned-data-alpha`.
@@ -142,3 +481,5 @@ keeps exactly what `keptWhenDeleting` keeps.
     that.
   - Spaces are **not** end-to-end encrypted.
 - **No compare-and-swap** on space writes, so conflict detection has to happen on the client.
+  Creates do fail if the record exists (`RecordAlreadyExists`).
+- **Change feed:** `listRepoOps(since:)` lists writes after a revision. See *Storage v2*.

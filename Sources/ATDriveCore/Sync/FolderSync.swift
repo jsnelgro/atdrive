@@ -3,21 +3,35 @@ import Foundation
 /// Two-way sync between a local folder and the drive, like a Dropbox folder.
 ///
 /// Each call to `sync()` is one pass: list the folder (cheap: `lstat` only, files are read only
-/// when they look changed), check the drive's revision (one small request) and list it if it
-/// moved, work out what changed on each side since the last pass (`SyncPlan`), and apply that.
-/// Nothing is pushed without checking the drive first, and nothing local is overwritten or
-/// deleted if it changed after the folder was listed: that's left for the next pass.
+/// when they look changed), fetch what changed on the drive since last time (one small request
+/// when nothing did; see `Drive.update`), work out what changed on each side since the last
+/// pass (`SyncPlan`), and apply that. Nothing is pushed without checking the drive first, and
+/// nothing local is overwritten or deleted if it changed after the folder was listed: that's
+/// left for the next pass.
 ///
 /// What the last pass agreed on is saved in `.atdrive/state.json` inside the folder, so a pass
 /// can tell "deleted here" from "new on the drive". Deleting that folder (or syncing into a new
-/// one) starts over by merging: matching things are paired up and nothing is deleted.
+/// one) starts over by merging: matching things are paired up and nothing is deleted. The drive
+/// as last fetched is saved beside it (`drive.json`), to carry on from after a restart.
+///
+/// Two things are never taken for deletions on the drive: records this device can't read (left
+/// alone on both sides, and reported), and a drive that's gone (syncing stops, as it does when
+/// the folder disappears). A drive wiped and created again counts as gone: it has another ID
+/// (`DriveSettings.driveID`). Sync never creates a drive: that shows a recovery key, so only
+/// `atdrive login` does it.
+///
+/// Each pass that fetches changes also settles races between devices (`Drive.settleRaces`), and
+/// once a day it prunes history (`Drive.prune`).
 ///
 /// Not thread-safe: use it from one task.
 public final class FolderSync {
     public let root: String
+    /// Unlocked: it has the drive's keys.
     public private(set) var drive: Drive
     /// Files changed more recently than this are left for the next pass (still being written).
     public let settle: TimeInterval
+    /// How often history is pruned.
+    public static let pruneInterval: TimeInterval = 24 * 60 * 60
 
     private let folder: StateFolder
     private let log: @Sendable (SyncEvent) -> Void
@@ -25,8 +39,17 @@ public final class FolderSync {
     private var reported: Set<String> = []
     private var state: SyncState
     private var lockDescriptor: Int32
-    /// The drive as last listed, and its revision then. `nil` after we write to it.
-    private var remote: (revision: String?, view: RemoteView)?
+    /// The drive as last fetched.
+    private var remote: DriveSnapshot?
+    /// Whether this process wrote to the drive since `remote` was fetched: it's brought up to
+    /// date before it's trusted again.
+    private var remoteIsStale = false
+    /// When `remote` was last saved, and at what revision. Saving rewrites the whole tree, so
+    /// it's done at most once a minute (any saved snapshot is a consistent one to resume from).
+    private var saved: (at: Date, revision: String?)?
+    /// The revision races were last looked for at: a race needs a new version, so there's
+    /// nothing new to settle until the drive moves on.
+    private var settledAt: String?
 
     public struct Result: Sendable {
         /// How many things were uploaded, downloaded, moved, deleted or renamed.
@@ -71,6 +94,10 @@ public final class FolderSync {
             close(lockDescriptor)
             throw error
         }
+        // A head start for the first pass, which still brings it up to date before using it:
+        // it may predate this folder's last writes.
+        remote = folder.loadSnapshot(drive: drive)
+        remoteIsStale = true
     }
 
     deinit { close(lockDescriptor) }
@@ -96,17 +123,35 @@ public final class FolderSync {
         let local = LocalView(scan: try FolderScan(root: root), base: base, root: root, settle: settle)
         for path in local.skipped { report(SyncEvent(.skipped, "/" + path, "not a regular file or folder")) }
         var checked = false
-        if checkRemote || remote == nil || local.differs(from: base) {
-            let revision = try await drive.latestRevision()
-            if remote == nil || remote?.revision != revision {
-                remote = (revision, RemoteView(try await drive.tree()))
-            }
+        if checkRemote || remote == nil || remoteIsStale || local.differs(from: base) {
+            try await fetch()
             checked = true
         }
-        let view = remote!.view
-        let plan = SyncPlan(base: base.entries, local: local, remote: view.entries)
+        try checkDrive()
+        if checked, let revision = remote!.revision {
+            if revision != settledAt {
+                // Changes that lost a race between devices; then the drive as that left it.
+                let settled = try await drive.settleRaces(in: remote!)
+                if !settled.isEmpty {
+                    try await fetch()
+                    for race in settled { report(race) }
+                }
+                settledAt = remote!.revision
+            }
+            await pruneIfDue()
+        }
+        if remote!.revision == nil, !local.entries.isEmpty {
+            // A first sync, with something to put in a drive the account doesn't have yet. Only
+            // `atdrive login` creates one: it has a recovery key to show.
+            throw DriveAccessError.noDrive
+        }
+        let snapshot = remote!
+        let view = RemoteView(snapshot.tree, base: base)
+        reportUnknown(view, base: base)
+        let plan = SyncPlan(base: base.entries, local: local, remote: view.entries, unknown: view.unknown)
         let run = SyncRun(
-            plan: plan, base: base, local: local, remote: view, root: root, folder: folder, drive: drive
+            plan: plan, base: base, local: local, remote: view, root: root, folder: folder, drive: drive,
+            snapshot: snapshot
         ) { [unowned self] in self.report($0) }
         var failure: Error?
         do {
@@ -116,7 +161,7 @@ public final class FolderSync {
         } catch {
             failure = error
         }
-        if run.wroteRemote { remote = nil }
+        if run.wroteRemote { remoteIsStale = true }
         let items = run.agreedItems()
         if items != state.items {
             state.items = items
@@ -126,9 +171,84 @@ public final class FolderSync {
         return Result(changes: run.changes, checkedRemote: checked, waiting: local.waiting, folders: local.folders)
     }
 
+    /// Brings the drive as last fetched up to date, and saves it now and then.
+    private func fetch() async throws {
+        let updated = try await drive.update(remote)
+        let now = Date()
+        if updated.listedAt != remote?.listedAt
+            || (updated.revision != saved?.revision && now.timeIntervalSince(saved?.at ?? .distantPast) >= 60)
+        {
+            folder.saveSnapshot(updated)
+            saved = (now, updated.revision)
+        }
+        remote = updated
+        remoteIsStale = false
+    }
+
+    /// Stops if the drive this folder was synced with is gone: missing (say the server was
+    /// wiped), or wiped and created again (it has another ID). Missing isn't empty, and a new
+    /// drive doesn't have what was deleted from this one: the folder may be the only copy left.
+    private func checkDrive() throws {
+        guard let snapshot = remote, snapshot.revision != nil else {
+            if !state.items.isEmpty || state.driveID != nil { throw SyncError.driveMissing(root) }
+            return
+        }
+        let id = snapshot.settings?.driveID
+        if let known = state.driveID {
+            guard id == known else { throw SyncError.driveMissing(root) }
+        } else if let id {
+            state.driveID = id
+            try folder.save(state)
+        }
+    }
+
+    /// Prunes the drive's history if this folder hasn't in the last day.
+    private func pruneIfDue() async {
+        let now = Date()
+        if let last = state.pruned, last <= now, now.timeIntervalSince(last) < Self.pruneInterval { return }
+        state.pruned = now
+        try? folder.save(state)
+        do {
+            if try await drive.prune(remote!, now: now) > 0 { remoteIsStale = true }
+        } catch {
+            report(SyncEvent(.skipped, "/", "couldn't prune the drive's history (\(error)); trying again tomorrow"))
+        }
+    }
+
+    private func report(_ race: Drive.SettledRace) {
+        let tree = remote!.tree
+        let written = tree.nodes[race.written.id].map(tree.path(of:))?.description ?? "item \(race.written.id)"
+        switch race.outcome {
+        case .conflictedCopy:
+            let original = tree.nodes[race.node].map(tree.path(of:))?.description ?? "item \(race.node)"
+            report(SyncEvent(.raced, original, "kept both; the other change is \(written)"))
+        case .restore:
+            report(SyncEvent(.raced, written, "it was deleted while being edited, so it's back, with the edit"))
+        case .contents:
+            report(SyncEvent(.raced, written, "kept both changes"))
+        case .dropped:
+            break
+        }
+    }
+
     private func report(_ event: SyncEvent) {
-        if event.kind == .skipped, !reported.insert(event.description).inserted { return }
+        if event.kind == .skipped || event.kind == .unreadable, !reported.insert(event.description).inserted {
+            return
+        }
         log(event)
+    }
+
+    /// Says (once) what on the drive this device can't read: things synced before by where
+    /// they are here, and the rest by record key.
+    private func reportUnknown(_ view: RemoteView, base: SyncBase) {
+        for id in view.unknown.sorted() {
+            if let record = view.tree.unreadable[id] {
+                let place = base.paths[id].map { "/" + $0 } ?? "item \(id)"
+                report(SyncEvent(.unreadable, place, record.reason.description))
+            } else if let place = base.paths[id] {
+                report(SyncEvent(.unreadable, "/" + place, "it's in a folder that can't be read"))
+            }
+        }
     }
 
     /// Puts back anything left mid-move by a pass that was killed: at its old path if that's
@@ -192,10 +312,15 @@ final class SyncRun {
     private var counter = 0
     private(set) var wroteRemote = false
     private(set) var changes = 0
+    /// The drive as fetched, for `known`.
+    private let snapshot: DriveSnapshot
+    /// Chunks the drive has, so uploads skip them: from the drive as fetched, plus what this
+    /// pass uploaded. Worked out on the first upload.
+    private lazy var known = snapshot.chunkCIDs
 
     init(
         plan: SyncPlan, base: SyncBase, local: LocalView, remote: RemoteView, root: String, folder: StateFolder,
-        drive: Drive, log: @escaping (SyncEvent) -> Void
+        drive: Drive, snapshot: DriveSnapshot, log: @escaping (SyncEvent) -> Void
     ) {
         self.plan = plan
         self.base = base
@@ -204,6 +329,7 @@ final class SyncRun {
         self.root = root
         self.folder = folder
         self.drive = drive
+        self.snapshot = snapshot
         self.log = log
         localSource = plan.localSource
         mergedOf = Dictionary(plan.localSource.map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
@@ -225,7 +351,7 @@ final class SyncRun {
                 queue.append((id, childPath))
             }
         }
-        for id in order { pending[id] = steps(for: id) }
+        for id in order { pending[id] = plan.held.contains(id) ? [] : steps(for: id) }
         for (copy, original) in plan.splitFrom {
             log(SyncEvent(.conflict, display(original), display(copy)))
             changes += 1
@@ -397,7 +523,8 @@ final class SyncRun {
             let entry = plan.merged[id]!
             var parent: String? = nil
             if let parentID = entry.parent {
-                guard remote.entries[parentID] != nil || created[parentID] != nil else {
+                let onDrive = remote.entries[parentID] != nil || plan.held.contains(parentID)
+                guard onDrive || created[parentID] != nil else {
                     blocked.insert(id)
                     continue
                 }
@@ -416,7 +543,12 @@ final class SyncRun {
                     }
                     log(SyncEvent(.uploaded, display(id)))
                 } else {
-                    node = try await drive.move(existing, to: parent, as: entry.name)
+                    do {
+                        node = try await drive.move(existing, to: parent, as: entry.name)
+                    } catch ATDriveError.notFound(_) {
+                        block(id, "it was deleted on the drive meanwhile")  // settled next time
+                        continue
+                    }
                     log(SyncEvent(.movedOnDrive, remote.tree.path(of: existing).description, display(id)))
                 }
             } else if entry.isFolder {
@@ -447,7 +579,8 @@ final class SyncRun {
         guard !doomed.isEmpty else { return }
         var all = doomed
         for id in doomed where remote.entries[id]!.isFolder {
-            for inside in remote.tree.descendants(of: id) where remote.entries[inside.id] == nil {
+            for inside in remote.tree.descendants(of: id)
+            where remote.entries[inside.id] == nil && !remote.unknown.contains(inside.id) {
                 all.insert(inside.id)
             }
         }
@@ -476,7 +609,10 @@ final class SyncRun {
         }
         let path = currentPath(localID)
         do {
-            return try await drive.upload(URL(fileURLWithPath: path), as: name, in: parent, replacing: existing)
+            let node = try await drive.upload(
+                URL(fileURLWithPath: path), as: name, in: parent, replacing: existing, known: known)
+            for chunk in node.record.chunks ?? [] { known.insert(chunk.cid) }
+            return node
         } catch  where Self.isLocal(error) {
             block(id, "couldn't read it (\(error.localizedDescription))")
             return nil
@@ -502,8 +638,13 @@ final class SyncRun {
             }
             try FileManager.default.createDirectory(atPath: folder.downloads, withIntermediateDirectories: true)
             let scratch = "\(folder.downloads)/\(nextScratchName())"
+            // The copy here, changed since the last pass or not, holds what the two versions
+            // share: only the rest is fetched. It's left alone until the new one replaces it.
+            let previous = (localSource[id] ?? copies[id].flatMap { localSource[$0] }).map {
+                URL(fileURLWithPath: currentPath($0))
+            }
             do {
-                try await drive.download(node, to: URL(fileURLWithPath: scratch))
+                try await drive.download(node, to: URL(fileURLWithPath: scratch), previous: previous)
             } catch let error as ATDriveError {
                 block(id, error.description)
                 continue
@@ -574,7 +715,7 @@ final class SyncRun {
             if goneHere && goneThere { items[id] = nil }
         }
         let recently = Int64((Date().timeIntervalSince1970 - 2) * 1_000_000_000)
-        for id in order where pending[id]!.isEmpty && !blocked.contains(id) {
+        for id in order where pending[id]!.isEmpty && !blocked.contains(id) && !plan.held.contains(id) {
             let entry = plan.merged[id]!
             guard let localID = localSource[id], !local.frozen.contains(localID), var stat = stats[localID]
             else { continue }

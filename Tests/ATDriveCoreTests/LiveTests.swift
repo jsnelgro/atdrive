@@ -20,9 +20,9 @@ struct LiveTests {
         let session = try await Auth.login(identifier: handle, password: password, resolver: IdentityResolver())
         let manager = SessionManager(session)
         // Small chunks so a modest file still spans several blobs.
-        let drive = Drive(
-            client: XRPCClient(service: session.service, session: manager), owner: session.did,
-            chunkSize: 64 * 1024)
+        let drive = try await openLiveDrive(
+            session: session, manager: manager,
+            transfers: TransferOptions(chunking: .init(minSize: 16 << 10, averageSize: 64 << 10, maxSize: 128 << 10)))
 
         let folderName = "atdrive-live-test-\(TID.next())"
         let revisionBefore = try await drive.latestRevision()
@@ -39,7 +39,7 @@ struct LiveTests {
 
             let file = try await drive.upload(source, as: "random.bin", in: folder.id)
             created.insert(file, at: 0)
-            #expect(file.record.chunks?.count == 4)
+            #expect((file.record.chunks?.count ?? 0) > 1)
 
             let tree = try await drive.tree()
             let listed = try #require(try tree.locate(DrivePath("/\(folderName)/random.bin")))
@@ -60,6 +60,26 @@ struct LiveTests {
         #expect(try await drive.tree().child(named: folderName, in: nil) == nil)
         await Auth.logout(await manager.session)
     }
+}
+
+/// The live account's drive, unlocked by a new test device: it creates the drive if the account
+/// has none (and drops its recovery key), or unlocks it with `ATDRIVE_LIVE_RECOVERY_KEY`. Each
+/// run that unlocks leaves a device record behind (`atdrive devices remove` clears them).
+func openLiveDrive(session: Session, manager: SessionManager, transfers: TransferOptions = .standard) async throws
+    -> Drive
+{
+    let drive = Drive(
+        client: XRPCClient(service: session.service, session: manager), owner: session.did, transfers: transfers,
+        identity: DeviceIdentity(name: "atdrive live test"))
+    do {
+        _ = try await drive.create()
+    } catch DriveAccessError.driveExists {
+        let text = try #require(
+            ProcessInfo.processInfo.environment["ATDRIVE_LIVE_RECOVERY_KEY"],
+            "the account has a drive: set ATDRIVE_LIVE_RECOVERY_KEY to its recovery key")
+        try await drive.unlock(recoveryKey: try RecoveryKey(parsing: text))
+    }
+    return drive
 }
 
 private func liveCredentials() -> (handle: String, password: String)? {
