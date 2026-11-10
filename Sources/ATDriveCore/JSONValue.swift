@@ -84,8 +84,13 @@ public enum JSONValue: Sendable, Hashable {
             index += count
         }
 
+        /// Records are a few levels deep. The cap is low because each level is a stack frame, and
+        /// threads off the main one get 512 KiB of stack on Apple platforms (the File Provider
+        /// extension's included): 512 levels overflowed it in a debug build.
+        static let maxDepth = 64
+
         mutating func value(depth: Int) throws -> JSONValue {
-            guard depth < 512 else { throw fail() }
+            guard depth < Self.maxDepth else { throw fail() }
             skipWhitespace()
             guard index < bytes.count else { throw fail() }
             switch bytes[index] {
