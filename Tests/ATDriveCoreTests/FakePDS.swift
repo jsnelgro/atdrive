@@ -8,7 +8,7 @@ import Testing
 #endif
 
 /// An in-memory stand-in for the handful of PDS endpoints `Drive` uses, so the drive logic
-/// (chunking, verification, paging, auto-creating the space, following the change feed) can be
+/// (chunking, encryption, verification, paging, following the change feed) can be
 /// tested without a network. Behaviour against the real server is checked by `LiveTests`.
 ///
 /// Like the reference PDS, every write gets a revision (a TID) and is logged with its index

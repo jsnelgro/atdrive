@@ -228,13 +228,6 @@ public struct DriveSnapshot: Sendable {
         (settings, unreadableSettings) = Self.readSettings(value, drive: drive)
     }
 
-    /// Whether some records couldn't be read because this device lacks the key they're sealed
-    /// with, or doesn't have the drive's keys yet.
-    public var needsKeys: Bool {
-        tree.unreadable.values.contains { $0.reason == .missingKey }
-            || history.unreadable.values.contains { $0.reason == .missingKey } || unreadableSettings != nil
-    }
-
     /// Reads the unreadable records again with `drive`, e.g. once a key arrives.
     public mutating func reread(with drive: Drive) {
         if !history.unreadable.isEmpty { history.reread(drive.readVersion) }
