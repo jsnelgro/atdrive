@@ -442,7 +442,7 @@ extension Output {
             let why =
                 switch result.reasons[id] {
                 case .contentsGone?: "its contents are no longer in history"
-                case .unreadable?: "this version of atdrive can't read it"
+                case .unreadable?: "it can't be read here"
                 case .changedElsewhere?, nil: "it changed on another device at the same moment; try again"
                 }
             warn("skipped \(path(of: id, in: snapshot, past: past)): \(why)")
