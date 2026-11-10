@@ -39,7 +39,7 @@ public enum OAuthLogin {
     private static let collections = [Lexicon.node, Lexicon.version, Lexicon.settings, Lexicon.device].map {
         "collection=\($0)"
     }
-        .joined(separator: "&")
+    .joined(separator: "&")
 
     public static func clientID(environment: [String: String] = ProcessInfo.processInfo.environment) -> String {
         if let configured = environment["ATDRIVE_OAUTH_CLIENT_ID"], !configured.isEmpty { return configured }

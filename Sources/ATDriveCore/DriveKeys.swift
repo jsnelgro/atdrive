@@ -211,7 +211,8 @@ extension Drive {
             .create(
                 collection: Lexicon.device, rkey: Lexicon.recoveryKey,
                 value: try JSONValue(encoding: RecoveryRecord(keyring: try keyring.wrapped(for: recoveryKey)))),
-            .create(collection: Lexicon.device, rkey: me.id, value: try JSONValue(encoding: me.record(holding: keyring))),
+            .create(
+                collection: Lexicon.device, rkey: me.id, value: try JSONValue(encoding: me.record(holding: keyring))),
         ]
         let cids: [String?]
         do {
@@ -265,6 +266,11 @@ extension Drive {
             keys.update { $0.deviceRecord = cid }
         }
         return keyring != before.keyring
+    }
+
+    /// Uses `keyring` from now on, as if unlocked with it. For tests, whose devices share one.
+    func use(_ keyring: Keyring) {
+        keys.update { $0.keyring = keyring }
     }
 
     /// Uses `keyring` from now on, as unwrapped from this device's record at `deviceRecord`, and
@@ -350,7 +356,8 @@ extension Drive {
             records.devices[me.id] == nil
                 ? .create(collection: Lexicon.device, rkey: me.id, value: record)
                 : .update(collection: Lexicon.device, rkey: me.id, value: record),
-            .update(collection: Lexicon.settings, rkey: Lexicon.settingsKey, value: try stored(settings, with: keyring)),
+            .update(
+                collection: Lexicon.settings, rkey: Lexicon.settingsKey, value: try stored(settings, with: keyring)),
         ])
         // The recovery key is the last word: what this device trusted before doesn't matter.
         var fresh = me
@@ -404,7 +411,8 @@ extension Drive {
             existing == nil
                 ? .create(collection: Lexicon.device, rkey: device.id, value: value)
                 : .update(collection: Lexicon.device, rkey: device.id, value: value),
-            .update(collection: Lexicon.settings, rkey: Lexicon.settingsKey, value: try stored(settings, with: keyring)),
+            .update(
+                collection: Lexicon.settings, rkey: Lexicon.settingsKey, value: try stored(settings, with: keyring)),
         ])
     }
 
@@ -459,7 +467,8 @@ extension Drive {
                 ? .create(collection: Lexicon.device, rkey: Lexicon.recoveryKey, value: recovery)
                 : .update(collection: Lexicon.device, rkey: Lexicon.recoveryKey, value: recovery))
         writes.append(
-            .update(collection: Lexicon.settings, rkey: Lexicon.settingsKey, value: try stored(settings, with: rotated)))
+            .update(collection: Lexicon.settings, rkey: Lexicon.settingsKey, value: try stored(settings, with: rotated))
+        )
         let cids = try await apply(writes)
         accept(rotated, as: me, deviceRecord: cids[mine])
         return true

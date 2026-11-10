@@ -9,12 +9,10 @@ import Testing
     let drive: Drive
 
     init() {
-        drive = Drive(
-            client: XRPCClient(service: URL(string: "https://pds.test")!, transport: pds), owner: "did:plc:test",
-            chunkSize: 4)
+        drive = pds.device()
     }
 
-    /// Writes a node record directly (no blobs), as any device would.
+    /// Writes a node record directly (sealed, no blobs), as any device would.
     @discardableResult
     func put(_ id: String, _ name: String, in parent: String? = nil, folder: Bool = false, sha: String = "x")
         async throws -> String
@@ -22,9 +20,10 @@ import Testing
         let record = NodeRecord(
             name: name, parent: parent, kind: folder ? .folder : .file, size: folder ? nil : 1,
             sha256: folder ? nil : sha, chunks: folder ? nil : [])
-        if !pds.spaceExists { try await drive.create() }
+        if !pds.spaceExists { _ = try await drive.create() }
         return try await drive.client.putSpaceRecord(
-            space: drive.space, repo: drive.owner, collection: Lexicon.node, rkey: id, record: record)
+            space: drive.space, repo: drive.owner, collection: Lexicon.node, rkey: id,
+            record: try drive.stored(record, id: id))
     }
 
     func listings(since index: Int) -> Int {
@@ -87,7 +86,11 @@ import Testing
         #expect(changes.ops[0].prev == nil)  // a create
         #expect(changes.ops[1].prev != nil && changes.ops[1].prev != changes.ops[1].cid)
         #expect(changes.ops[2].value == .object(["retentionDays": .integer(30)]))
-        let renamed: NodeRecord = try #require(changes.ops[1].value).decode()
+        let op = changes.ops[1]
+        guard case .readable(let renamed) = drive.readNode(id: op.rkey, cid: op.cid!, value: op.value) else {
+            Issue.record("unreadable")
+            return
+        }
         #expect(renamed.name == "a, renamed.txt")
         #expect(changes.revision == pds.revision)
         #expect(changes.commit?.data == pds.currentCommitData)  // `$bytes`, unpadded
@@ -149,7 +152,7 @@ import Testing
             ],
             commit: RepoCommit(rev: "3zzzzzzzzzzz2", data: Data(count: 32)))
         #expect(throws: ChangeFeedGap.self) {
-            try snapshot.apply(changes, strict: true, read: drive.readNode)
+            try snapshot.apply(changes, strict: true, reading: drive)
         }
         #expect(snapshot.tree.nodes["3aaaaaaaaaaa2"]?.name == "a")  // unchanged
     }

@@ -41,11 +41,20 @@ import Testing
     }
 
     @Test func folderRecordOmitsFileFields() throws {
+        let keyring = Keyring(DriveKey())
+        let drive = FakePDS().device(keyring: keyring)
         let record = NodeRecord(name: "Docs", parent: nil, kind: .folder)
-        let object = try JSONSerialization.jsonObject(with: XRPCClient.encoder.encode(record)) as! [String: Any]
+        let stored = try drive.stored(record, id: "3jzfcijpj2z2a")
+        let object = try JSONSerialization.jsonObject(with: stored.serialized()) as! [String: Any]
         #expect(object["$type"] as? String == "me.jsnelgro.atdrive.node")
-        #expect(Set(object.keys) == ["$type", "name", "kind", "createdAt"])
-        #expect(try JSONDecoder().decode(NodeRecord.self, from: XRPCClient.encoder.encode(record)) == record)
+        #expect(Set(object.keys) == ["$type", "sealed"])  // no chunks
+        let sealed = try #require(SealedRecord(stored)).sealed
+        let payload = try keyring.open(sealed, as: JSONValue.self, collection: Lexicon.node, rkey: "3jzfcijpj2z2a")
+        guard case .object(let fields) = payload else { throw CancellationError() }
+        #expect(Set(fields.keys) == ["name", "kind", "createdAt"])
+        #expect(
+            drive.readNode(id: "3jzfcijpj2z2a", cid: "c", value: stored)
+                == .readable(Node(id: "3jzfcijpj2z2a", cid: "c", record: record)))
     }
 
     @Test func timestampsRoundTrip() {

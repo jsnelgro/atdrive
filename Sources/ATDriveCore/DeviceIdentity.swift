@@ -35,7 +35,9 @@ public struct DeviceIdentity: Codable, Sendable, Equatable, CustomStringConverti
     public var publicKeyBytes: Bytes { Bytes(publicKey.rawRepresentation) }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, privateKeyData = "privateKey", trust
+        case id, name
+        case privateKeyData = "privateKey"
+        case trust
     }
 
     public init(from decoder: Decoder) throws {

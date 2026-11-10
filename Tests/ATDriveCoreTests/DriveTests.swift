@@ -8,10 +8,9 @@ import Testing
     let drive: Drive
     let directory: URL
 
-    init() throws {
-        drive = Drive(
-            client: XRPCClient(service: URL(string: "https://pds.test")!, transport: pds),
-            owner: "did:plc:test", chunkSize: 4, createsDrive: true)
+    init() async throws {
+        drive = pds.device()
+        _ = try await drive.create()
         directory = try temporaryDirectory()
     }
 
@@ -22,9 +21,18 @@ import Testing
         return url
     }
 
-    @Test func emptyDriveBeforeAnythingIsWritten() async throws {
+    @Test func aNewDriveIsEmpty() async throws {
         #expect(try await drive.tree().nodes.isEmpty)
-        #expect(!pds.spaceExists)
+        #expect(pds.spaceExists)
+    }
+
+    /// Only `create` makes a drive: it has a recovery key to show. A write doesn't.
+    @Test func writesDontCreateADrive() async throws {
+        let empty = FakePDS()
+        let device = empty.device(keyring: Keyring(DriveKey()))
+        await #expect(throws: DriveAccessError.noDrive) { try await device.createFolder(named: "x", in: nil) }
+        #expect(!empty.spaceExists)
+        #expect(try await device.tree().nodes.isEmpty)
     }
 
     @Test func uploadsInChunksAndDownloadsIdentically() async throws {
@@ -32,7 +40,6 @@ import Testing
         let file = try localFile("notes.txt", "hello, atproto!", modified: modified)  // 15 bytes
 
         let node = try await drive.upload(file, as: "notes.txt", in: nil)
-        #expect(pds.spaceExists)  // created on first write
         #expect(node.record.chunks?.count == 4)  // 4 + 4 + 4 + 3
         #expect(node.record.size == 15)
         #expect(node.record.sha256 == "2c4e50c0db301eb66910b359774d9c15298d04fb1ebdd79f96214abc4eabd01b")  // sha256sum
@@ -70,7 +77,9 @@ import Testing
             try localFile("a.txt", "two, longer"), as: "a.txt", in: nil, replacing: first)
         #expect(second.id == first.id)
         #expect(second.record.createdAt == first.record.createdAt)
-        #expect(pds.recordCount == 4)  // the settings, the node, and a version for each write
+        // The settings, this device's record and the recovery record; the node, and a version for
+        // each write.
+        #expect(pds.recordCount == 6)
         #expect(second.record.version != first.record.version)
     }
 
@@ -99,18 +108,31 @@ import Testing
     }
 
     @Test func oddRecordsAreUnreadableNotFatalOrDropped() async throws {
+        let keyring = try #require(drive.keyring)
+        try pds.insertSealed(
+            rkey: "3aaaaaaaaaaa2", ["name": "future", "kind": "symlink", "createdAt": "2026-01-01T00:00:00Z"],
+            keyring: keyring)
+        try pds.insertSealed(
+            rkey: "3aaaaaaaaaaa3", ["name": "ok", "kind": "folder", "createdAt": "2026-01-01T00:00:00Z"],
+            keyring: keyring)
+        try pds.insertSealed(
+            rkey: "3aaaaaaaaaaa4", ["name": "..", "kind": "file", "createdAt": "2026-01-01T00:00:00Z"],
+            keyring: keyring)
+        // Not sealed at all: from before drives were encrypted, or made up by the PDS.
         pds.insertRawRecord(
-            rkey: "3aaaaaaaaaaa2",
-            ["$type": Lexicon.node, "name": "future", "kind": "symlink", "createdAt": "2026-01-01T00:00:00Z"])
-        pds.insertRawRecord(
-            rkey: "3aaaaaaaaaaa3",
-            ["$type": Lexicon.node, "name": "ok", "kind": "folder", "createdAt": "2026-01-01T00:00:00Z"])
-        pds.insertRawRecord(
-            rkey: "3aaaaaaaaaaa4",
-            ["$type": Lexicon.node, "name": "..", "kind": "file", "createdAt": "2026-01-01T00:00:00Z"])
+            rkey: "3aaaaaaaaaaa5",
+            ["$type": Lexicon.node, "name": "plain", "kind": "folder", "createdAt": "2026-01-01T00:00:00Z"])
+        // Sealed with a drive key this device doesn't have.
+        try pds.insertSealed(
+            rkey: "3aaaaaaaaaaa6", ["name": "secret", "kind": "folder", "createdAt": "2026-01-01T00:00:00Z"],
+            keyring: Keyring(DriveKey()))
         let tree = try await drive.tree()
         #expect(tree.children(of: nil).map(\.name) == ["ok"])
-        #expect(tree.unreadable.mapValues(\.reason) == ["3aaaaaaaaaaa2": .newerFormat, "3aaaaaaaaaaa4": .invalidName])
+        #expect(
+            tree.unreadable.mapValues(\.reason) == [
+                "3aaaaaaaaaaa2": .newerFormat, "3aaaaaaaaaaa4": .invalidName, "3aaaaaaaaaaa5": .newerFormat,
+                "3aaaaaaaaaaa6": .missingKey,
+            ])
         #expect(tree.unreadable["3aaaaaaaaaaa2"]?.cid == pds.cid(of: "3aaaaaaaaaaa2"))
     }
 

@@ -11,15 +11,10 @@ import Testing
     let other: Drive
     let folder: URL
 
-    init() throws {
-        let transport = pds
-        func device() -> Drive {
-            Drive(
-                client: XRPCClient(service: URL(string: "https://pds.test")!, transport: transport),
-                owner: "did:plc:test", chunkSize: 4, createsDrive: true)
-        }
-        drive = device()  // `FolderSync` decides for itself whether to create the drive
-        other = device()
+    init() async throws {
+        drive = pds.device("here")
+        _ = try await drive.create()  // `atdrive login` does this: syncing never creates a drive
+        other = pds.device("elsewhere", keyring: drive.keyring)
         folder = try temporaryDirectory().appendingPathComponent("drive")
     }
 
@@ -578,11 +573,12 @@ import Testing
         #expect(read("a.txt") == "the only copy")
         #expect(!pds.spaceExists)  // and not made again with only b.txt in it
 
-        // A folder that never synced still creates the drive.
+        // Nor does a folder that never synced: creating a drive is `atdrive login`'s.
         try FileManager.default.removeItem(at: folder.appendingPathComponent(".atdrive"))
         let fresh = try open()
-        try await fresh.sync()
-        #expect(try await driveFiles() == ["a.txt", "b.txt"])
+        await #expect(throws: DriveAccessError.noDrive) { try await fresh.sync() }
+        #expect(!pds.spaceExists)
+        #expect(read("a.txt") == "the only copy" && read("b.txt") == "new")
     }
 
     // MARK: Following the drive

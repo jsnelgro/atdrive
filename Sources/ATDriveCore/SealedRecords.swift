@@ -125,7 +125,8 @@ struct VersionPayload: Codable {
 
     func record(chunks blobs: [BlobRef]?) -> VersionRecord? {
         guard let chunks = ChunkRef.pair(blobs, chunkIDs) else { return nil }
-        var record = VersionRecord(node: node, change: change, device: device, prev: prev, state: nil, holdsContents: false)
+        var record = VersionRecord(
+            node: node, change: change, device: device, prev: prev, state: nil, holdsContents: false)
         record.name = name
         record.parent = parent
         record.kind = kind

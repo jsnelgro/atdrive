@@ -26,7 +26,9 @@ struct ListDevices: AsyncParsableCommand {
             let status = device.approved ? "approved" : "waiting for approval"
             let marker = device.isThisDevice ? "*" : " "
             let note = device.isThisDevice ? "  (this device)" : ""
-            print("\(marker) \(device.name.padding(toLength: width, withPad: " ", startingAt: 0))  \(device.id)  \(status)\(note)")
+            print(
+                "\(marker) \(device.name.padding(toLength: width, withPad: " ", startingAt: 0))  \(device.id)  \(status)\(note)"
+            )
         }
         if !unlocked {
             print("\n(This device doesn't have the drive's keys, so these are as the records say.)")
@@ -247,7 +249,9 @@ enum KeySetup {
             """)
         let width = approvers.map(\.name.count).max() ?? 0
         for device in approvers {
-            print("  \(device.name.padding(toLength: width, withPad: " ", startingAt: 0))  \(try device.pairingCode(with: me))")
+            print(
+                "  \(device.name.padding(toLength: width, withPad: " ", startingAt: 0))  \(try device.pairingCode(with: me))"
+            )
         }
         if approvers.isEmpty { print("  (no device has them: use the recovery key, `atdrive unlock`)") }
         print("\nWaiting for approval… (Ctrl-C to stop; `atdrive login` again picks up from here)")
