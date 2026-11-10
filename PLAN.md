@@ -250,7 +250,26 @@ Thirty days of every change: edits, renames, moves and deletes.
   - **Snapshots:** `atdrive snapshot` writes records listing every node's current version, and
     pruning keeps whatever a snapshot lists. The drive as of that moment stays restorable past 30
     days, and costs only the chunks that change afterwards.
-- **Caveat:** times come from the writing device's clock.
+- **Caveat:** times come from the writing device's clock, which also decides which side of a race
+  lost.
+- **As built:**
+  - **Node records name their contents version too** (`contentsFrom`), so a move doesn't have to
+    look up the current version to find the chunks.
+  - **What happens to a lost change** is `ConflictRules.lostChange`:
+    - A lost edit becomes a conflicted copy (made once, under the lost version's ID).
+    - If the winner only moved the file, the lost edit's contents go on the file instead.
+    - If the winner deleted the file, the lost edit restores it.
+    - A lost move or delete is dropped, but stays in history. A move can't bring back a deleted
+      file: only edits and restores do.
+  - **The drive as of a time** follows each node's line of changes. Changes that lost a race show
+    in `history`, not in the past view. Only races within the retention period are settled.
+  - **Items deleted with their folder** are those deleted within a second before it. They're
+    hidden from the top level of the trash, and come back with the folder.
+  - **Restoring a folder to a time** brings back what was in it then, and leaves what's been
+    added since.
+  - **Drives are created only on purpose** (`createsDrive`). Sync saves the drive's ID and when it
+    last pruned in `state.json`.
+  - **The OAuth scope** names the new collections, so sessions from before need a new sign-in.
 
 ### Step 3: encryption
 
@@ -315,6 +334,9 @@ PDS operator.
       ignore keyrings it wraps.
   - Losing every device and the recovery key loses the data. Creating the drive says so, next to
     the recovery key.
+  - **Creating a drive is interactive,** because it has to show the recovery key: `atdrive login`
+    does it (and unlocks, or asks for approval, on a drive that exists), and so does the Mac app's
+    first sign-in. The background `atdrive sync` service never creates a drive.
 
 ### Step 4: transfer only changed chunks
 
