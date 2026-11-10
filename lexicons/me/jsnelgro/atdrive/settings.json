@@ -5,20 +5,14 @@
     "main": {
       "type": "record",
       "key": "literal:self",
-      "description": "The drive's settings, which every device follows. Written when the drive is created.",
+      "description": "The drive's settings, which every device follows. Written when the drive is created, and when a device is approved or removed. Sealed, so the PDS can't change them. The sealed payload is {retentionDays (default 30), driveID, roster: [{id, name, publicKey}]}: how long history is kept; a random ID (a drive with another one was wiped and created again); and the devices approved to hold the drive's keys, whose public keys keyrings are wrapped for and accepted from.",
       "record": {
         "type": "object",
-        "required": ["retentionDays"],
+        "required": ["sealed"],
         "properties": {
-          "retentionDays": {
-            "type": "integer",
-            "minimum": 1,
-            "default": 30,
-            "description": "How long history (old versions, and the trash) is kept."
-          },
-          "driveID": {
-            "type": "string",
-            "description": "Random, made when the drive is created. A drive with another ID was wiped and created again."
+          "sealed": {
+            "type": "ref",
+            "ref": "me.jsnelgro.atdrive.defs#sealedValue"
           }
         }
       }

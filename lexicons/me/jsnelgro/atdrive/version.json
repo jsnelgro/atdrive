@@ -5,57 +5,20 @@
     "main": {
       "type": "record",
       "key": "tid",
-      "description": "One change to a file or folder, written with the node change it records. The record key is a TID made when the change was. It holds the node's state after the change (nothing after a delete), and the version the change was based on.",
+      "description": "One change to a file or folder, written with the node change it records. The record key is a TID made when the change was. All but the chunks' blob refs is sealed. The sealed payload is {node, change ('created', 'edited', 'moved', 'deleted' or 'restored'), device, prev?, name?, parent?, kind?, size?, sha256?, createdAt?, modifiedAt?, contentsFrom?, chunkIDs?}: the node's record key, the device that made the change, the version it was based on (two versions with the same prev are a race), and the node's state after the change (nothing after a delete). contentsFrom names the version holding this state's chunks, when this one doesn't (a rename or move, or a restore).",
       "record": {
         "type": "object",
-        "required": ["node", "change", "device"],
+        "required": ["sealed"],
         "properties": {
-          "node": {
-            "type": "string",
-            "format": "record-key",
-            "description": "Record key of the node (me.jsnelgro.atdrive.node) that changed."
-          },
-          "change": {
-            "type": "string",
-            "knownValues": ["created", "edited", "moved", "deleted", "restored"]
-          },
-          "device": {
-            "type": "string",
-            "maxLength": 255,
-            "description": "The device that made the change."
-          },
-          "prev": {
-            "type": "string",
-            "format": "tid",
-            "description": "Record key of the version this change was based on: the node's current version as the device last saw it. Absent for a node's first version. Two versions with the same prev are a race."
-          },
-          "name": {
-            "type": "string",
-            "maxLength": 255,
-            "description": "After the change (absent after a delete): the node's name."
-          },
-          "parent": {
-            "type": "string",
-            "format": "record-key",
-            "description": "After the change: the folder it's in. Absent for the top level."
-          },
-          "kind": {
-            "type": "string",
-            "knownValues": ["file", "folder"]
-          },
-          "size": { "type": "integer", "minimum": 0 },
-          "sha256": { "type": "string" },
-          "createdAt": { "type": "string", "format": "datetime" },
-          "modifiedAt": { "type": "string", "format": "datetime" },
-          "contentsFrom": {
-            "type": "string",
-            "format": "tid",
-            "description": "Files: record key of the version holding this state's chunks, when this one doesn't (a rename or move, or a restore)."
-          },
           "chunks": {
             "type": "array",
             "items": { "type": "blob" },
             "description": "Files: the contents, when this version holds them. Referencing them keeps the blobs for as long as the version is kept."
+          },
+          "sealed": {
+            "type": "ref",
+            "ref": "me.jsnelgro.atdrive.defs#sealedValue",
+            "description": "Everything else, sealed for this collection and record key."
           }
         }
       }
