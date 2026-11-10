@@ -12,6 +12,17 @@ extension Drive {
         /// What couldn't be: its contents are no longer in history, it can't be read here, or
         /// another device changed it at the same moment.
         public var skipped: [String]
+        /// Why each of `skipped` was.
+        public var reasons: [String: Skip] = [:]
+
+        public enum Skip: Sendable, Equatable {
+            /// A file whose contents are no longer in history.
+            case contentsGone
+            /// This version of ATDrive can't read its record.
+            case unreadable
+            /// Another device changed it at the same moment.
+            case changedElsewhere
+        }
     }
 
     // MARK: Races
@@ -132,10 +143,16 @@ extension Drive {
     }
 
     /// Undoes a node's latest change: puts it back as the change before left it (restores it
-    /// if the latest change deleted it, and deletes it if it restored it).
+    /// if the latest change deleted it, and deletes it if it restored it). Undoing a folder's
+    /// delete brings back what was deleted with it, as restoring it from the trash does.
     @discardableResult
     public func restorePrevious(_ id: String, in snapshot: DriveSnapshot) async throws -> RestoreResult {
         let history = snapshot.history
+        if snapshot.tree.nodes[id] == nil, snapshot.tree.unreadable[id] == nil,
+            history.trash(current: snapshot.tree).contains(where: { $0.id == id })
+        {
+            return try await restoreFromTrash([id], in: snapshot)
+        }
         guard let previous = history.previousVersion(of: id, current: snapshot.tree) else {
             throw ATDriveError.notFound(id)
         }
@@ -288,6 +305,7 @@ struct Restoration {
     private var folders: Set<String>
     private(set) var changes: [Drive.NodeChange] = []
     private(set) var skipped: [String] = []
+    private(set) var reasons: [String: Drive.RestoreResult.Skip] = [:]
 
     init(drive: Drive, snapshot: DriveSnapshot) {
         self.drive = drive
@@ -352,11 +370,11 @@ struct Restoration {
     /// if it's gone, or changed back if it's there.
     mutating func restore(_ id: String, to target: NodeRecord, in parent: String?) {
         if target.kind == .file, target.chunks == nil {
-            skipped.append(id)  // its contents are no longer in history
+            skip(id, .contentsGone)
             return
         }
         if tree.unreadable[id] != nil {
-            skipped.append(id)
+            skip(id, .unreadable)
             return
         }
         var name = target.name
@@ -391,9 +409,16 @@ struct Restoration {
         taken[parent, default: [:]][name] = id
     }
 
+    private mutating func skip(_ id: String, _ reason: Drive.RestoreResult.Skip) {
+        skipped.append(id)
+        reasons[id] = reason
+    }
+
     /// Writes the changes, folders first.
     func commit() async throws -> Drive.RestoreResult {
         let (written, raced) = try await drive.commit(changes)
-        return Drive.RestoreResult(restored: written, skipped: skipped + raced.map(\.node))
+        var reasons = reasons
+        for change in raced { reasons[change.node] = .changedElsewhere }
+        return Drive.RestoreResult(restored: written, skipped: skipped + raced.map(\.node), reasons: reasons)
     }
 }
