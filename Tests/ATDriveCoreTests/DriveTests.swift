@@ -11,7 +11,7 @@ import Testing
     init() throws {
         drive = Drive(
             client: XRPCClient(service: URL(string: "https://pds.test")!, transport: pds),
-            owner: "did:plc:test", chunkSize: 4)
+            owner: "did:plc:test", chunkSize: 4, createsDrive: true)
         directory = try temporaryDirectory()
     }
 
@@ -70,7 +70,8 @@ import Testing
             try localFile("a.txt", "two, longer"), as: "a.txt", in: nil, replacing: first)
         #expect(second.id == first.id)
         #expect(second.record.createdAt == first.record.createdAt)
-        #expect(pds.recordCount == 1)
+        #expect(pds.recordCount == 4)  // the settings, the node, and a version for each write
+        #expect(second.record.version != first.record.version)
     }
 
     @Test func corruptedDownloadIsRejectedAndLeavesNothing() async throws {

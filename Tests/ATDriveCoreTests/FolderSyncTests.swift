@@ -16,9 +16,9 @@ import Testing
         func device() -> Drive {
             Drive(
                 client: XRPCClient(service: URL(string: "https://pds.test")!, transport: transport),
-                owner: "did:plc:test", chunkSize: 4)
+                owner: "did:plc:test", chunkSize: 4, createsDrive: true)
         }
-        drive = device()
+        drive = device()  // `FolderSync` decides for itself whether to create the drive
         other = device()
         folder = try temporaryDirectory().appendingPathComponent("drive")
     }
@@ -138,7 +138,7 @@ import Testing
 
         let calls = pds.calls.count
         #expect(try await sync.sync().changes == 0)
-        #expect(!pds.calls[calls...].contains("com.atproto.space.putRecord"))
+        #expect(!pds.calls[calls...].contains("com.atproto.space.applyWrites"))
         try await expectSettled(sync)
     }
 
@@ -173,7 +173,7 @@ import Testing
         #expect(read(copy) == "this computer's")
         // The folder and the identical file were paired up, not uploaded again: only the copy
         // and mine.txt were.
-        #expect(pds.calls[calls...].filter { $0 == "com.atproto.space.putRecord" }.count == 2)
+        #expect(pds.calls[calls...].filter { $0 == "com.atproto.space.applyWrites" }.count == 2)
         try await expectSettled(sync)
     }
 
@@ -211,7 +211,7 @@ import Testing
         #expect(try await driveFiles() == ["Pictures/", "Pictures/1.jpg", "Pictures/2019/", "Pictures/2019/2.jpg"])
         #expect(try await (node("/Pictures/1.jpg").id, node("/Pictures/2019/2.jpg").id) == ids)
         let made = pds.calls[calls...]
-        #expect(made.filter { $0 == "com.atproto.space.putRecord" }.count == 1)
+        #expect(made.filter { $0 == "com.atproto.space.applyWrites" }.count == 1)
         #expect(!made.contains("com.atproto.repo.uploadBlob"))
         try await expectSettled(sync)
     }
@@ -660,7 +660,7 @@ import Testing
     @Test func anInterruptedUploadPicksUpWhereItLeftOff() async throws {
         for index in 1...4 { try write("f\(index).txt", "file \(index)") }
         let sync = try open()
-        pds.failing["com.atproto.space.putRecord"] = 1  // the first file's record fails
+        pds.failing["com.atproto.space.applyWrites"] = 1  // the first file's record fails
         await #expect(throws: XRPCError.self) { try await sync.sync() }
         try await sync.sync()
         #expect(try await driveFiles() == ["f1.txt", "f2.txt", "f3.txt", "f4.txt"])

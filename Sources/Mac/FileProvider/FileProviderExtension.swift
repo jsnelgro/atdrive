@@ -178,10 +178,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                     if tree.child(named: name, in: parent) != nil {
                         name = Self.conflictName(for: name, in: parent, tree: tree)
                     }
-                    // Back under its own ID, so this Mac's item and the drive's stay one thing.
-                    let gone = Node(
-                        id: item.itemIdentifier.rawValue, cid: "",
-                        record: NodeRecord(name: name, parent: parent, kind: .file))
+                    // Back under its own ID, so this Mac's item and the drive's stay one thing. Its
+                    // history goes on from the version this Mac last saw.
+                    var record = NodeRecord(name: name, parent: parent, kind: .file)
+                    record.version = await index.seenNode(item.itemIdentifier.rawValue)?.record.version
+                    let gone = Node(id: item.itemIdentifier.rawValue, cid: "", record: record)
                     let restored = try await drive.upload(
                         edited, as: name, in: parent, replacing: gone, modified: modified,
                         progress: Self.report(to: progress))

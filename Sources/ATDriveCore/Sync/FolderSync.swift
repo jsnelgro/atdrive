@@ -16,14 +16,21 @@ import Foundation
 ///
 /// Two things are never taken for deletions on the drive: records this device can't read (left
 /// alone on both sides, and reported), and a drive that's gone (syncing stops, as it does when
-/// the folder disappears).
+/// the folder disappears). A drive wiped and created again counts as gone: it has another ID
+/// (`DriveSettings.driveID`). Only a folder's first sync creates a drive.
+///
+/// Each pass that fetches changes also settles races between devices (`Drive.settleRaces`), and
+/// once a day it prunes history (`Drive.prune`).
 ///
 /// Not thread-safe: use it from one task.
 public final class FolderSync {
     public let root: String
+    /// Never creates the drive by itself: `sync()` decides that.
     public private(set) var drive: Drive
     /// Files changed more recently than this are left for the next pass (still being written).
     public let settle: TimeInterval
+    /// How often history is pruned.
+    public static let pruneInterval: TimeInterval = 24 * 60 * 60
 
     private let folder: StateFolder
     private let log: @Sendable (SyncEvent) -> Void
@@ -39,6 +46,9 @@ public final class FolderSync {
     /// When `remote` was last saved, and at what revision. Saving rewrites the whole tree, so
     /// it's done at most once a minute (any saved snapshot is a consistent one to resume from).
     private var saved: (at: Date, revision: String?)?
+    /// The revision races were last looked for at: a race needs a new version, so there's
+    /// nothing new to settle until the drive moves on.
+    private var settledAt: String?
 
     public struct Result: Sendable {
         /// How many things were uploaded, downloaded, moved, deleted or renamed.
@@ -63,7 +73,7 @@ public final class FolderSync {
         }
         root = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
         guard LocalFS.isFolder(root) else { throw SyncError.notAFolder(path) }
-        self.drive = drive
+        self.drive = drive.with(createsDrive: false)
         self.settle = settle
         self.log = log
         folder = StateFolder(root: root)
@@ -96,7 +106,7 @@ public final class FolderSync {
         guard drive.owner == state.owner, drive.space == state.space else {
             throw SyncError.otherAccount(folder: root, owner: state.owner)
         }
-        self.drive = drive
+        self.drive = drive.with(createsDrive: false)
     }
 
     /// One pass. `checkRemote: false` skips checking the drive unless something changed here
@@ -113,21 +123,29 @@ public final class FolderSync {
         for path in local.skipped { report(SyncEvent(.skipped, "/" + path, "not a regular file or folder")) }
         var checked = false
         if checkRemote || remote == nil || remoteIsStale || local.differs(from: base) {
-            let updated = try await drive.update(remote)
-            let now = Date()
-            if updated.listedAt != remote?.listedAt
-                || (updated.revision != saved?.revision && now.timeIntervalSince(saved?.at ?? .distantPast) >= 60)
-            {
-                folder.saveSnapshot(updated)
-                saved = (now, updated.revision)
-            }
-            remote = updated
-            remoteIsStale = false
+            try await fetch()
             checked = true
         }
+        try checkDrive()
+        if checked, let revision = remote!.revision {
+            if revision != settledAt {
+                // Changes that lost a race between devices; then the drive as that left it.
+                let settled = try await drive.settleRaces(in: remote!)
+                if !settled.isEmpty {
+                    try await fetch()
+                    for race in settled { report(race) }
+                }
+                settledAt = remote!.revision
+            }
+            await pruneIfDue()
+        }
+        if remote!.revision == nil, !local.entries.isEmpty {
+            // A first sync, with something to put in a drive the account doesn't have yet.
+            state.driveID = try await drive.create().driveID
+            try folder.save(state)
+            remoteIsStale = true
+        }
         let snapshot = remote!
-        // Gone (say the server was wiped) isn't empty: the folder may be the only copy left.
-        if snapshot.revision == nil, !state.items.isEmpty { throw SyncError.driveMissing(root) }
         let view = RemoteView(snapshot.tree, base: base)
         reportUnknown(view, base: base)
         let plan = SyncPlan(base: base.entries, local: local, remote: view.entries, unknown: view.unknown)
@@ -150,6 +168,66 @@ public final class FolderSync {
         }
         if let failure { throw failure }
         return Result(changes: run.changes, checkedRemote: checked, waiting: local.waiting, folders: local.folders)
+    }
+
+    /// Brings the drive as last fetched up to date, and saves it now and then.
+    private func fetch() async throws {
+        let updated = try await drive.update(remote)
+        let now = Date()
+        if updated.listedAt != remote?.listedAt
+            || (updated.revision != saved?.revision && now.timeIntervalSince(saved?.at ?? .distantPast) >= 60)
+        {
+            folder.saveSnapshot(updated)
+            saved = (now, updated.revision)
+        }
+        remote = updated
+        remoteIsStale = false
+    }
+
+    /// Stops if the drive this folder was synced with is gone: missing (say the server was
+    /// wiped), or wiped and created again (it has another ID). Missing isn't empty, and a new
+    /// drive doesn't have what was deleted from this one: the folder may be the only copy left.
+    private func checkDrive() throws {
+        guard let snapshot = remote, snapshot.revision != nil else {
+            if !state.items.isEmpty || state.driveID != nil { throw SyncError.driveMissing(root) }
+            return
+        }
+        let id = snapshot.settings?.driveID
+        if let known = state.driveID {
+            guard id == known else { throw SyncError.driveMissing(root) }
+        } else if let id {
+            state.driveID = id
+            try folder.save(state)
+        }
+    }
+
+    /// Prunes the drive's history if this folder hasn't in the last day.
+    private func pruneIfDue() async {
+        let now = Date()
+        if let last = state.pruned, last <= now, now.timeIntervalSince(last) < Self.pruneInterval { return }
+        state.pruned = now
+        try? folder.save(state)
+        do {
+            if try await drive.prune(remote!, now: now) > 0 { remoteIsStale = true }
+        } catch {
+            report(SyncEvent(.skipped, "/", "couldn't prune the drive's history (\(error)); trying again tomorrow"))
+        }
+    }
+
+    private func report(_ race: Drive.SettledRace) {
+        let tree = remote!.tree
+        let written = tree.nodes[race.written.id].map(tree.path(of:))?.description ?? "item \(race.written.id)"
+        switch race.outcome {
+        case .conflictedCopy:
+            let original = tree.nodes[race.node].map(tree.path(of:))?.description ?? "item \(race.node)"
+            report(SyncEvent(.raced, original, "kept both; the other change is \(written)"))
+        case .restore:
+            report(SyncEvent(.raced, written, "it was deleted while being edited, so it's back, with the edit"))
+        case .contents:
+            report(SyncEvent(.raced, written, "kept both changes"))
+        case .dropped:
+            break
+        }
     }
 
     private func report(_ event: SyncEvent) {
@@ -458,7 +536,12 @@ final class SyncRun {
                     }
                     log(SyncEvent(.uploaded, display(id)))
                 } else {
-                    node = try await drive.move(existing, to: parent, as: entry.name)
+                    do {
+                        node = try await drive.move(existing, to: parent, as: entry.name)
+                    } catch ATDriveError.notFound(_) {
+                        block(id, "it was deleted on the drive meanwhile")  // settled next time
+                        continue
+                    }
                     log(SyncEvent(.movedOnDrive, remote.tree.path(of: existing).description, display(id)))
                 }
             } else if entry.isFolder {

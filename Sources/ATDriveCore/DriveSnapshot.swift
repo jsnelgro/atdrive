@@ -59,12 +59,18 @@ public struct ChangeFeedGap: Error, CustomStringConvertible, Equatable {
     public var description: String
 }
 
-/// The drive as this device last fetched it: every record's CID (`repo`) and the file tree
-/// (`tree`, with the node records it can't read). `Drive.update` keeps it current by applying
-/// the change feed, and lists everything again when that can't be trusted.
+/// The drive as this device last fetched it: every record's CID (`repo`), the file tree
+/// (`tree`, with the node records it can't read), its history (`history`) and its `settings`.
+/// `Drive.update` keeps it current by applying the change feed, and lists everything again when
+/// that can't be trusted.
 public struct DriveSnapshot: Sendable {
     public private(set) var repo: RepoState
     public private(set) var tree: DriveTree
+    /// Every version record: what changed, when, and the drive as it was.
+    public private(set) var history = DriveHistory()
+    /// `nil` if the drive has no settings record (it doesn't exist, or something from before
+    /// there were settings made it).
+    public private(set) var settings: DriveSettings?
     /// When the whole drive was last listed.
     public private(set) var listedAt: Date
     /// Whether that listing happened in this process. A saved snapshot is listed again when
@@ -102,7 +108,13 @@ public struct DriveSnapshot: Sendable {
         var entries: [NodeEntry] = []
         for record in listing {
             repo.set(record.collection, record.rkey, cid: record.cid)
-            if record.collection == Lexicon.node { entries.append(read(record.rkey, record.cid, record.value)) }
+            switch record.collection {
+            case Lexicon.node: entries.append(read(record.rkey, record.cid, record.value))
+            case Lexicon.version: history.set(record.rkey, cid: record.cid, value: record.value)
+            case Lexicon.settings where record.rkey == Lexicon.settingsKey:
+                settings = Self.readSettings(record.value)
+            default: break
+            }
         }
         self.repo = repo
         tree = DriveTree(entries)
@@ -150,6 +162,8 @@ public struct DriveSnapshot: Sendable {
         var repo = self.repo
         var nodes = tree.nodes
         var unreadable = tree.unreadable
+        var history = self.history
+        var settings = self.settings
         for (index, op) in ops.enumerated() {
             let held = repo.cid(op.collection, op.rkey)
             if strict, op.prev != held {
@@ -163,7 +177,16 @@ public struct DriveSnapshot: Sendable {
                 throw ChangeFeedGap(description: "\(op.collection)/\(op.rkey) is at \(cid), but its value is missing")
             }
             // Only each record's latest op matters for its value; the rest were replaced.
-            guard op.collection == Lexicon.node, isLatest else { continue }
+            guard isLatest else { continue }
+            if op.collection == Lexicon.version {
+                history.set(op.rkey, cid: op.cid, value: op.value)
+                continue
+            }
+            if op.collection == Lexicon.settings, op.rkey == Lexicon.settingsKey {
+                settings = op.cid == nil ? nil : Self.readSettings(op.value)
+                continue
+            }
+            guard op.collection == Lexicon.node else { continue }
             nodes[op.rkey] = nil
             unreadable[op.rkey] = nil
             if let cid = op.cid {
@@ -182,12 +205,20 @@ public struct DriveSnapshot: Sendable {
             tree = DriveTree(Array(nodes.values), unreadable: Array(unreadable.values))
         }
         self.repo = repo
+        self.history = history
+        self.settings = settings
         verified = matches
         self.mismatch = matches ? nil : mismatch
     }
 
+    /// The settings record's value, if it's one we can read.
+    private static func readSettings(_ value: JSONValue?) -> DriveSettings? {
+        value.flatMap { try? $0.decode(as: DriveSettings.self) }
+    }
+
     /// Reads the unreadable records again (with `Drive.readNode`), e.g. once a key arrives.
     public mutating func reread(_ read: (String, String, JSONValue?) -> NodeEntry) {
+        if !history.unreadable.isEmpty { history.reread() }
         guard !tree.unreadable.isEmpty else { return }
         var nodes = tree.nodes
         var unreadable: [UnreadableNode] = []
@@ -203,7 +234,7 @@ public struct DriveSnapshot: Sendable {
     // MARK: Saving
 
     /// Bumped whenever what's saved, or how records are read, changes: older saves are ignored.
-    static let savedVersion = 1
+    static let savedVersion = 2
 
     private struct Saved: Codable {
         struct SavedNode: Codable {
@@ -217,6 +248,16 @@ public struct DriveSnapshot: Sendable {
             var reason: UnreadableNode.Reason
             var value: JSONValue?
         }
+        struct SavedVersion: Codable {
+            var id: String
+            var cid: String
+            var record: VersionRecord
+        }
+        struct SavedUnreadableVersion: Codable {
+            var id: String
+            var cid: String
+            var value: JSONValue?
+        }
         var version: Int
         var revision: String
         var data: Data?
@@ -228,6 +269,9 @@ public struct DriveSnapshot: Sendable {
         var setHash: Data?
         var nodes: [SavedNode]
         var unreadable: [SavedUnreadable]
+        var versions: [SavedVersion]
+        var unreadableVersions: [SavedUnreadableVersion]
+        var settings: DriveSettings?
     }
 
     /// The snapshot as JSON, to pick up from after a restart. `nil` if there's no repo.
@@ -239,7 +283,14 @@ public struct DriveSnapshot: Sendable {
             nodes: tree.nodes.values.sorted { $0.id < $1.id }.map { .init(id: $0.id, cid: $0.cid, record: $0.record) },
             unreadable: tree.unreadable.values.sorted { $0.id < $1.id }.map {
                 .init(id: $0.id, cid: $0.cid, reason: $0.reason, value: $0.value)
-            })
+            },
+            versions: history.versions.values.sorted { $0.id < $1.id }.map {
+                .init(id: $0.id, cid: $0.cid, record: $0.record)
+            },
+            unreadableVersions: history.unreadable.values.sorted { $0.id < $1.id }.map {
+                .init(id: $0.id, cid: $0.cid, value: $0.value)
+            },
+            settings: settings)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return try encoder.encode(saved)
@@ -251,8 +302,14 @@ public struct DriveSnapshot: Sendable {
     /// first update, and listed again only if that fails.
     public init?(saved data: Data, drive: Drive) {
         guard let saved = try? JSONDecoder().decode(Saved.self, from: data), saved.version == Self.savedVersion,
-            saved.nodes.count == saved.records[Lexicon.node, default: [:]].count - saved.unreadable.count
+            saved.nodes.count == saved.records[Lexicon.node, default: [:]].count - saved.unreadable.count,
+            saved.versions.count + saved.unreadableVersions.count
+                == saved.records[Lexicon.version, default: [:]].count
         else { return nil }
+        history = DriveHistory(
+            saved.versions.map { Version(id: $0.id, cid: $0.cid, record: $0.record) },
+            unreadable: saved.unreadableVersions.map { .init(id: $0.id, cid: $0.cid, value: $0.value) })
+        settings = saved.settings
         repo = RepoState(
             revision: saved.revision, data: saved.data, records: saved.records,
             hash: saved.setHash.flatMap(LtHash.init(state:)).map { RepoSetHash(setHash: $0) })

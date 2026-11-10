@@ -22,7 +22,7 @@ struct LiveTests {
         // Small chunks so a modest file still spans several blobs.
         let drive = Drive(
             client: XRPCClient(service: session.service, session: manager), owner: session.did,
-            chunkSize: 64 * 1024)
+            chunkSize: 64 * 1024, createsDrive: true)
 
         let folderName = "atdrive-live-test-\(TID.next())"
         let revisionBefore = try await drive.latestRevision()

@@ -14,10 +14,16 @@ import Testing
 /// Like the reference PDS, every write gets a revision (a TID) and is logged with its index
 /// in the commit, its CID and the CID it replaced; `listRepoOps` serves that log with a value
 /// only for ops whose version is still current, and the commit once it reaches the head.
+///
+/// Blobs are garbage-collected as a PDS does: a blob lives while a record references it, and
+/// goes when the last one does; one never referenced goes after a few commits (`blobGrace`). So
+/// history that doesn't keep its chunks loses them, and a test notices.
 final class FakePDS: HTTPTransport, @unchecked Sendable {
     private struct Stored {
         var cid: String
         var json: Data
+        /// The blobs it references.
+        var blobs: Set<String>
     }
     private struct Op {
         var rev: String
@@ -31,6 +37,13 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
     private let lock = NSLock()
     private(set) var spaceExists = false
     private(set) var blobs: [String: Data] = [:]
+    /// Blobs uploaded and not referenced yet → the commit count when they were uploaded.
+    private var unreferencedSince: [String: Int] = [:]
+    private var commitCount = 0
+    /// How many commits a blob nothing references yet survives (an upload in progress).
+    var blobGrace = 10
+    /// Blobs garbage-collected so far.
+    private(set) var collectedBlobs: Set<String> = []
     /// By `collection/rkey`.
     private var records: [String: Stored] = [:]
     private var oplog: [Op] = []
@@ -86,6 +99,7 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
         case "com.atproto.repo.uploadBlob":
             let data = request.httpBody ?? Data()
             let cid = CID.forBlob(data)
+            if blobs[cid] == nil || unreferencedSince[cid] != nil { unreferencedSince[cid] = commitCount }
             blobs[cid] = data
             return json([
                 "blob": [
@@ -97,6 +111,14 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
             guard spaceExists else { return error(400, "SpaceNotFound") }
             let collection = body["collection"] as? String ?? Lexicon.node
             let rkey = body["rkey"] as! String
+            let cid = commit([(collection, rkey, body["record"]!)])
+            return json(["uri": "at://did:plc:test/\(collection)/\(rkey)", "cid": cid.first!])
+
+        case "com.atproto.space.createRecord":
+            guard spaceExists else { return error(400, "SpaceNotFound") }
+            let collection = body["collection"] as! String
+            let rkey = body["rkey"] as? String ?? TID.next()
+            if records["\(collection)/\(rkey)"] != nil { return error(400, "RecordAlreadyExists") }
             let cid = commit([(collection, rkey, body["record"]!)])
             return json(["uri": "at://did:plc:test/\(collection)/\(rkey)", "cid": cid.first!])
 
@@ -129,27 +151,43 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
             guard spaceExists else { return error(400, "SpaceNotFound") }
             // One transaction: checked in full before anything is written.
             var writes: [(collection: String, rkey: String, value: Any?)] = []
+            var types: [String] = []
             var exists = Set(records.keys)
-            for write in body["writes"] as! [[String: Any]] {
+            let requested = body["writes"] as! [[String: Any]]
+            guard requested.count <= 200 else { return error(400, "InvalidRequest") }
+            for write in requested {
                 let collection = write["collection"] as! String
-                let rkey = write["rkey"] as! String
+                let rkey = write["rkey"] as? String ?? TID.next()
                 let key = "\(collection)/\(rkey)"
                 switch write["$type"] as? String {
                 case "com.atproto.space.applyWrites#delete":
                     guard exists.remove(key) != nil else { return error(400, "RecordNotFound") }
                     writes.append((collection, rkey, nil))
+                    types.append("deleteResult")
                 case "com.atproto.space.applyWrites#create":
                     guard exists.insert(key).inserted else { return error(400, "RecordAlreadyExists") }
                     writes.append((collection, rkey, write["value"]!))
+                    types.append("createResult")
                 case "com.atproto.space.applyWrites#update":
                     guard exists.contains(key) else { return error(400, "RecordNotFound") }
                     writes.append((collection, rkey, write["value"]!))
+                    types.append("updateResult")
                 default:
                     return error(400, "InvalidRequest")
                 }
             }
-            commit(writes)
-            return json([:])
+            let cids = commit(writes)
+            return json([
+                "results": zip(zip(writes, types), cids).map { pair, cid -> [String: Any] in
+                    let ((collection, rkey, _), type) = pair
+                    var result: [String: Any] = ["$type": "com.atproto.space.applyWrites#\(type)"]
+                    if let cid {
+                        result["uri"] = "at://did:plc:test/\(collection)/\(rkey)"
+                        result["cid"] = cid
+                    }
+                    return result
+                }
+            ])
 
         case "com.atproto.space.getLatestCommit":
             guard let rev else { return error(400, "RepoNotFound") }
@@ -209,7 +247,7 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
                 // Content-addressed, like real record CIDs: the same record has the same CID.
                 let json = try! JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
                 cid = "bafyrecord" + CID.forBlob(json).dropFirst(7)
-                records[key] = Stored(cid: cid!, json: json)
+                records[key] = Stored(cid: cid!, json: json, blobs: Self.blobReferences(in: value))
             } else {
                 records[key] = nil
             }
@@ -218,8 +256,47 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
             cids.append(cid)
         }
         rev = newRev
+        commitCount += 1
+        collectGarbage()
         return cids
     }
+
+    /// The CIDs of the blobs a record value references (`{"$type": "blob", "ref": {"$link": …}}`).
+    private static func blobReferences(in value: Any) -> Set<String> {
+        var found: Set<String> = []
+        var stack = [value]
+        while let next = stack.popLast() {
+            if let object = next as? [String: Any] {
+                if object["$type"] as? String == "blob",
+                    let link = (object["ref"] as? [String: Any])?["$link"] as? String
+                {
+                    found.insert(link)
+                } else {
+                    stack += object.values
+                }
+            } else if let array = next as? [Any] {
+                stack += array
+            }
+        }
+        return found
+    }
+
+    /// Deletes blobs nothing references: at once if something did, else after `blobGrace`
+    /// commits.
+    private func collectGarbage() {
+        var referenced: Set<String> = []
+        for stored in records.values { referenced.formUnion(stored.blobs) }
+        for cid in Array(blobs.keys) where !referenced.contains(cid) {
+            if let since = unreferencedSince[cid], commitCount - since <= blobGrace { continue }
+            blobs[cid] = nil
+            unreferencedSince[cid] = nil
+            collectedBlobs.insert(cid)
+        }
+        for cid in referenced { unreferencedSince[cid] = nil }
+    }
+
+    /// Whether a blob is stored (it may have been garbage-collected).
+    func hasBlob(_ cid: String) -> Bool { lock.withLock { blobs[cid] != nil } }
 
     private func commitJSON(_ rev: String) -> [String: Any] {
         var data = commitData
@@ -284,6 +361,7 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
             records = [:]
             oplog = []
             rev = TID.next()
+            collectGarbage()
         }
     }
 
@@ -295,6 +373,7 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
             oplog = []
             rev = nil
             blobs = [:]
+            unreferencedSince = [:]
         }
     }
 

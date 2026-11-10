@@ -17,9 +17,10 @@ public enum SyncError: Error, CustomStringConvertible, Equatable {
             "\(folder)/\(SyncIgnore.stateFolder) was removed, so syncing stopped. Run `atdrive sync` again "
                 + "to start over: the folder and the drive are merged, and nothing is deleted"
         case .driveMissing(let folder):
-            "\(folder) was synced with a drive that's gone from the server, so syncing stopped (nothing in "
-                + "the folder was deleted). To put the folder in a new drive, remove "
-                + "\(folder)/\(SyncIgnore.stateFolder) and run `atdrive sync` again"
+            "\(folder) was synced with a drive that's gone from the server (missing, or wiped and created "
+                + "again), so syncing stopped (nothing in the folder was deleted). To start over with the "
+                + "drive as it is now (or a new one), remove \(folder)/\(SyncIgnore.stateFolder) and run "
+                + "`atdrive sync` again: the folder and the drive are merged"
         case .otherAccount(let folder, let owner):
             "\(folder) is synced with another account's drive (\(owner))"
         case .alreadyRunning(let folder):
@@ -41,6 +42,8 @@ public struct SyncEvent: Sendable, CustomStringConvertible {
         case conflict
         /// Two different things with one name: one renamed (`detail` is its new path).
         case renamed
+        /// Changed on two devices at once (`detail` says what was kept).
+        case raced
         /// Left alone for now (`detail` says why); tried again next time.
         case skipped
         /// On the drive, but this device can't read it (`detail` says why). Left as it is, here
@@ -72,6 +75,7 @@ public struct SyncEvent: Sendable, CustomStringConvertible {
         case .deletedHere: "↓ deleted \(path)"
         case .conflict: "! \(path) changed in both places. Kept both: your version is \(detail ?? "")"
         case .renamed: "! two different items were named \(path); one is now \(detail ?? "")"
+        case .raced: "! \(path) was changed on two devices at once: \(detail ?? "")"
         case .skipped: "? skipped \(path): \(detail ?? "")"
         case .unreadable: "? can't read \(path) on the drive: \(detail ?? ""). Left as it is, here and there"
         }
@@ -96,6 +100,11 @@ struct SyncState: Codable {
     /// The drive's owner (DID) and space: a folder is only ever synced with one drive.
     var owner: String
     var space: String
+    /// The drive's ID (`DriveSettings.driveID`), once known. A drive in the same place with
+    /// another ID was wiped and created again: this folder was synced with one that's gone.
+    var driveID: String?
+    /// When this folder last pruned the drive's history (`Drive.prune`).
+    var pruned: Date?
     /// By node ID.
     var items: [String: Item] = [:]
 }
