@@ -11,8 +11,11 @@ struct List: AsyncParsableCommand {
     @Flag(name: .shortAndLong, help: "Show size and modification time.")
     var long = false
 
+    @Option(help: When.help("List it"), transform: When.parse)
+    var at: Date?
+
     func run() async throws {
-        let tree = try await Context.load().drive.tree()
+        let tree = try await Context.load().tree(at: at)
         let path = DrivePath(path)
         let entries: [Node]
         switch try tree.find(path) {
@@ -39,8 +42,11 @@ struct Tree: AsyncParsableCommand {
     @Argument(help: "Folder in the drive.")
     var path = "/"
 
+    @Option(help: When.help("Show it"), transform: When.parse)
+    var at: Date?
+
     func run() async throws {
-        let tree = try await Context.load().drive.tree()
+        let tree = try await Context.load().tree(at: at)
         let path = DrivePath(path)
         let start = try tree.locate(path)
         if let start, !start.isFolder { throw ATDriveError.notAFolder(path.description) }
@@ -62,7 +68,7 @@ struct Tree: AsyncParsableCommand {
                 }
             }
         }
-        print(path.description)
+        print(at.map { "\(path)  (as of \(Output.date($0)))" } ?? path.description)
         walk(start?.id, prefix: "")
         print(
             "\n\(folders) folder\(folders == 1 ? "" : "s"), \(files) file\(files == 1 ? "" : "s"), \(Output.size(bytes))"
@@ -226,13 +232,17 @@ struct Get: AsyncParsableCommand {
     @Flag(name: .shortAndLong, help: "Download folders and everything in them.")
     var recursive = false
 
+    @Option(help: When.help("Download them"), transform: When.parse)
+    var at: Date?
+
     func validate() throws {
         if paths.isEmpty { throw ValidationError("nothing to download") }
     }
 
     func run() async throws {
-        let drive = try await Context.load().drive
-        let tree = try await drive.tree()
+        let context = try await Context.load()
+        let drive = context.drive
+        let tree = try await context.tree(at: at)
         let sources = paths.count == 1 ? paths : Array(paths.dropLast())
         let destination = URL(fileURLWithPath: paths.count == 1 ? "." : paths.last!)
         var isDirectory: ObjCBool = false
@@ -288,10 +298,16 @@ struct Cat: AsyncParsableCommand {
     @Argument(help: "File in the drive.")
     var path: String
 
+    @Option(help: When.help("Print it"), transform: When.parse)
+    var at: Date?
+
     func run() async throws {
-        let drive = try await Context.load().drive
+        let context = try await Context.load()
+        let drive = context.drive
         let path = DrivePath(path)
-        guard let node = try await drive.tree().locate(path) else { throw ATDriveError.isAFolder(path.description) }
+        guard let node = try await context.tree(at: at).locate(path) else {
+            throw ATDriveError.isAFolder(path.description)
+        }
         try await drive.read(node) { FileHandle.standardOutput.write($0) }
     }
 }
@@ -388,7 +404,12 @@ struct Move: AsyncParsableCommand {
 }
 
 struct Remove: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "rm", abstract: "Delete files or folders.")
+    static let configuration = CommandConfiguration(
+        commandName: "rm", abstract: "Delete files or folders (they go to the trash).",
+        discussion: """
+            Deleted things stay in the trash for \(DriveSettings.defaultRetentionDays) days, as long as the drive keeps history. `atdrive trash` lists them, and `atdrive trash restore <path>` brings them back. To delete something for good right away, use `atdrive purge`.
+            """
+    )
 
     @Argument(help: "Paths in the drive.")
     var paths: [String]

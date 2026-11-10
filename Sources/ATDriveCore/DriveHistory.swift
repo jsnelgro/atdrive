@@ -433,6 +433,10 @@ public struct DriveHistory: Sendable {
         public var historyOnly: Int
         public var currentChunks: Int
         public var historyOnlyChunks: Int
+        /// Bytes of the chunks current files use that history uses too: what history costs
+        /// nothing extra for.
+        public var shared: Int
+        public var sharedChunks: Int
 
         public var total: Int { current + historyOnly }
     }
@@ -443,12 +447,15 @@ public struct DriveHistory: Sendable {
             for chunk in node.record.chunks ?? [] { now[chunk.cid] = chunk.size }
         }
         var past: [String: Int] = [:]
+        var shared: [String: Int] = [:]
         for version in versions.values {
-            for chunk in version.record.chunks ?? [] where now[chunk.cid] == nil { past[chunk.cid] = chunk.size }
+            for chunk in version.record.chunks ?? [] {
+                if let size = now[chunk.cid] { shared[chunk.cid] = size } else { past[chunk.cid] = chunk.size }
+            }
         }
         return Usage(
             current: now.values.reduce(0, +), historyOnly: past.values.reduce(0, +), currentChunks: now.count,
-            historyOnlyChunks: past.count)
+            historyOnlyChunks: past.count, shared: shared.values.reduce(0, +), sharedChunks: shared.count)
     }
 
     // MARK: Pruning
