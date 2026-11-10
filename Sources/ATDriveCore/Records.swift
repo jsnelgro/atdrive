@@ -122,13 +122,6 @@ public struct NodeRecord: Codable, Sendable, Equatable {
 
     public var modifiedDate: Date? { modifiedAt.flatMap(Timestamp.parse) }
     public var createdDate: Date? { Timestamp.parse(createdAt) }
-
-    /// Whether two records describe the same thing in the same place (name, folder, kind and
-    /// contents), whichever versions they came from.
-    func sameState(as other: NodeRecord) -> Bool {
-        name == other.name && parent == other.parent && kind == other.kind && sha256 == other.sha256
-            && size == other.size
-    }
 }
 
 /// One change to a file or folder: the `me.jsnelgro.atdrive.version` record. Its record key is a

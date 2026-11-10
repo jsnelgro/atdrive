@@ -57,6 +57,13 @@ import Testing
         #expect(snapshot.repo.hash == RepoState(records: snapshot.repo.records).hash, sourceLocation: sourceLocation)
         #expect(snapshot.tree.nodes == fresh.tree.nodes, sourceLocation: sourceLocation)
         #expect(snapshot.tree.unreadable == fresh.tree.unreadable, sourceLocation: sourceLocation)
+        #expect(snapshot.history.versions == fresh.history.versions, sourceLocation: sourceLocation)
+        #expect(snapshot.history.unreadable == fresh.history.unreadable, sourceLocation: sourceLocation)
+        #expect(snapshot.settings == fresh.settings, sourceLocation: sourceLocation)
+        for node in fresh.history.nodeIDs {
+            #expect(
+                snapshot.history.versions(of: node) == fresh.history.versions(of: node), sourceLocation: sourceLocation)
+        }
         for id in fresh.tree.nodes.keys {
             #expect(snapshot.tree.parent(of: id) == fresh.tree.parent(of: id), sourceLocation: sourceLocation)
             #expect(
@@ -433,9 +440,16 @@ import Testing
                     pds.insertRawRecord(
                         rkey: id, ["$type": Lexicon.node, "name": "z", "kind": "package", "createdAt": "2026"])
                 case 8:
+                    // A version, readable or not, of one of a few nodes.
+                    let node = ids[Int.random(in: 0..<3, using: &random)]
                     pds.insertRawRecord(
-                        rkey: id, collection: "me.jsnelgro.atdrive.version",
-                        ["node": id, "n": Int.random(in: 0..<100, using: &random)])
+                        rkey: id, collection: Lexicon.version,
+                        Bool.random(using: &random)
+                            ? [
+                                "node": node, "change": "deleted",
+                                "device": "d\(Int.random(in: 0..<9, using: &random))",
+                            ]
+                            : ["node": node, "n": Int.random(in: 0..<100, using: &random)])
                 default:
                     if pds.cid(of: id, collection: "me.jsnelgro.atdrive.version") != nil {
                         pds.deleteRawRecord(rkey: id, collection: "me.jsnelgro.atdrive.version")

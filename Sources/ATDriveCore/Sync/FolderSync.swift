@@ -46,6 +46,9 @@ public final class FolderSync {
     /// When `remote` was last saved, and at what revision. Saving rewrites the whole tree, so
     /// it's done at most once a minute (any saved snapshot is a consistent one to resume from).
     private var saved: (at: Date, revision: String?)?
+    /// The revision races were last looked for at: a race needs a new version, so there's
+    /// nothing new to settle until the drive moves on.
+    private var settledAt: String?
 
     public struct Result: Sendable {
         /// How many things were uploaded, downloaded, moved, deleted or renamed.
@@ -124,12 +127,15 @@ public final class FolderSync {
             checked = true
         }
         try checkDrive()
-        if checked, remote!.revision != nil {
-            // Changes that lost a race between devices; then the drive as that left it.
-            let settled = try await drive.settleRaces(in: remote!)
-            if !settled.isEmpty {
-                try await fetch()
-                for race in settled { report(race) }
+        if checked, let revision = remote!.revision {
+            if revision != settledAt {
+                // Changes that lost a race between devices; then the drive as that left it.
+                let settled = try await drive.settleRaces(in: remote!)
+                if !settled.isEmpty {
+                    try await fetch()
+                    for race in settled { report(race) }
+                }
+                settledAt = remote!.revision
             }
             await pruneIfDue()
         }
