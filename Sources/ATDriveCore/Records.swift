@@ -53,8 +53,10 @@ public struct ChunkRef: Codable, Sendable, Hashable {
 
     /// The blob's CID: of the ciphertext.
     public var cid: String { blob.cid }
-    /// Bytes stored: the ciphertext, 16 bytes longer than the plaintext.
-    public var size: Int { blob.size }
+    /// The chunk's contents' size. The blob stored is 16 bytes longer: AES-GCM's tag.
+    public var size: Int { max(blob.size - Self.overhead, 0) }
+
+    static let overhead = 16
 }
 
 /// One file or folder in a drive: the `me.jsnelgro.atdrive.node` record, as it reads once

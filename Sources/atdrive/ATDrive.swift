@@ -17,6 +17,7 @@ struct ATDrive: AsyncParsableCommand {
             List.self, Tree.self, Put.self, Get.self, Cat.self,
             MakeFolder.self, Move.self, Remove.self, Sync.self,
             ShowHistory.self, Restore.self, Trash.self, Purge.self, DiskUsage.self, Prune.self,
+            Devices.self, Unlock.self, NewRecoveryKey.self,
         ]
     )
 }
@@ -27,14 +28,27 @@ struct Context {
     let session: SessionManager
     let drive: Drive
 
+    /// The drive, unlocked with this device's keys. Throws `DriveAccessError` (no drive, or
+    /// this device doesn't have its keys), which says what to run. Nothing here creates a drive:
+    /// only `atdrive login` does, as it shows the recovery key.
     static func load() async throws -> Context {
+        let context = try await locked()
+        try await context.drive.unlock()
+        return context
+    }
+
+    /// The drive, not unlocked yet: for setting up this device's keys. Makes this device's
+    /// identity (its key pair) if it has none.
+    static func locked() async throws -> Context {
         let store = SessionStore()
         guard let saved = try store.load() else { throw ATDriveError.notLoggedIn }
         // Token refreshes are saved as they happen, so the next command starts fresh.
         let session = SessionManager(saved) { updated in try? store.save(updated) }
-        // A command that writes to an account with no drive creates it. (`atdrive sync` decides
-        // for itself: it never creates again a drive it has synced.)
-        return Context(store: store, session: session, drive: await Drive(session: session, createsDrive: true))
+        let devices = store.devices
+        let identity = try devices.loadOrCreate()
+        // What it trusts changes as keys arrive and rotate; saved as it happens.
+        let drive = await Drive(session: session, identity: identity) { try? devices.save($0) }
+        return Context(store: store, session: session, drive: drive)
     }
 }
 

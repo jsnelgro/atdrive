@@ -474,11 +474,11 @@ extension Drive {
         return (try? Keyring(unwrapping: recovery.keyring, with: key)) != nil
     }
 
-    /// Makes a new recovery key and wraps the keyring with it, replacing the old one, which stops
-    /// working. Returns the new key, to show once.
-    public func replaceRecoveryKey() async throws -> RecoveryKey {
+    /// Wraps the keyring with a new recovery key, replacing the old one, which stops working.
+    /// Returns the new key, to show once (or make it first, and show it before it's in effect).
+    @discardableResult
+    public func replaceRecoveryKey(with recoveryKey: RecoveryKey = RecoveryKey()) async throws -> RecoveryKey {
         guard let keyring else { throw DriveAccessError.locked }
-        let recoveryKey = RecoveryKey()
         let record = RecoveryRecord(keyring: try keyring.wrapped(for: recoveryKey))
         do {
             try await client.putSpaceRecord(
