@@ -11,27 +11,56 @@ public final class Drive: Sendable {
     public let space: String
     /// Files are split into blobs of this size.
     public let chunkSize: Int
+    /// Recorded on every change this makes (`VersionRecord.device`).
+    public let device: String
+    /// Where new IDs (and so the times of changes) come from.
+    public let tids: TIDSource
+    /// Whether a write to a drive that doesn't exist creates it. Only for a drive that's new:
+    /// one this device has synced before and is now gone was wiped (say the server was reset),
+    /// and creating it again would leave only what's written next.
+    public let createsDrive: Bool
 
     public typealias Progress = @Sendable (_ bytesDone: Int, _ bytesTotal: Int) -> Void
 
-    public init(
+    public convenience init(
         client: XRPCClient, owner: String, key: String = Lexicon.defaultDriveKey,
-        chunkSize: Int = 4 * 1024 * 1024
+        chunkSize: Int = 4 * 1024 * 1024, device: String = DeviceName.current, tids: TIDSource = .system,
+        createsDrive: Bool = false
+    ) {
+        self.init(
+            client: client, owner: owner,
+            space: XRPCClient.spaceURI(authority: owner, type: Lexicon.driveSpace, key: key), chunkSize: chunkSize,
+            device: device, tids: tids, createsDrive: createsDrive)
+    }
+
+    private init(
+        client: XRPCClient, owner: String, space: String, chunkSize: Int, device: String, tids: TIDSource,
+        createsDrive: Bool
     ) {
         self.client = client
         self.owner = owner
-        self.space = XRPCClient.spaceURI(authority: owner, type: Lexicon.driveSpace, key: key)
+        self.space = space
         self.chunkSize = chunkSize
+        self.device = device
+        self.tids = tids
+        self.createsDrive = createsDrive
     }
 
     /// Opens the logged-in account's drive.
-    public convenience init(session: SessionManager, transport: any HTTPTransport = URLSessionTransport())
-        async
-    {
+    public convenience init(
+        session: SessionManager, transport: any HTTPTransport = URLSessionTransport(), createsDrive: Bool = false
+    ) async {
         let current = await session.session
         self.init(
             client: XRPCClient(service: current.service, session: session, transport: transport),
-            owner: current.did)
+            owner: current.did, createsDrive: createsDrive)
+    }
+
+    /// The same drive, creating it on a write or not (`createsDrive`).
+    public func with(createsDrive: Bool) -> Drive {
+        Drive(
+            client: client, owner: owner, space: space, chunkSize: chunkSize, device: device, tids: tids,
+            createsDrive: createsDrive)
     }
 
     // MARK: Reading
@@ -217,17 +246,46 @@ public final class Drive: Sendable {
 
     // MARK: Writing
 
-    /// Creates the drive's space. Writes do this automatically the first time.
-    public func create() async throws {
+    /// Creates the drive: its space, and its settings with a new drive ID. Returns the drive's
+    /// settings: the ones written here, or the ones already there (another device created it).
+    /// Writes do this by themselves only if `createsDrive`.
+    @discardableResult
+    public func create() async throws -> DriveSettings {
         do {
             _ = try await client.createPersonalSpace(type: Lexicon.driveSpace, key: spaceKey)
         } catch let error as XRPCError where error.error == "SpaceAlreadyExists" {}
+        let settings = DriveSettings()
+        do {
+            try await client.createSpaceRecord(
+                space: space, repo: owner, collection: Lexicon.settings, rkey: Lexicon.settingsKey, record: settings)
+            return settings
+        } catch let error as XRPCError where error.error == "RecordAlreadyExists" {
+            guard let existing = try await self.settings() else {
+                throw ATDriveError.unexpectedResponse("the drive's settings exist, but can't be read")
+            }
+            return existing
+        }
+    }
+
+    /// The drive's settings, or `nil` if it has none (it doesn't exist, or a version of ATDrive
+    /// from before there were settings created it).
+    public func settings() async throws -> DriveSettings? {
+        let page: XRPCClient.SpaceRecordPage<JSONValue>
+        do {
+            page = try await client.listRawSpaceRecords(space: space, repo: owner, collection: Lexicon.settings)
+        } catch let error as XRPCError where Self.isMissing(error) {
+            return nil
+        }
+        return page.records.first { $0.rkey == Lexicon.settingsKey }?.value.flatMap {
+            try? $0.decode(as: DriveSettings.self)
+        }
     }
 
     @discardableResult
     public func createFolder(named name: String, in parent: String?) async throws -> Node {
         try DrivePath.validate(name: name)
-        return try await write(id: TID.next(), NodeRecord(name: name, parent: parent, kind: .folder))
+        let folder = NodeRecord(name: name, parent: parent, kind: .folder)
+        return try await commit(change(.create, node: tids.next(), record: folder, .created, prev: nil))!
     }
 
     /// Uploads a local file as `name` inside `parent`. Pass `replacing` to overwrite an existing
@@ -264,8 +322,21 @@ public final class Drive: Sendable {
             name: name, parent: parent, kind: .file, size: done,
             sha256: hasher.finalize().hexString, chunks: chunks,
             modifiedAt: modified ?? attributes[.modificationDate] as? Date)
-        if let existing { record.createdAt = existing.record.createdAt }
-        return try await write(id: existing?.id ?? TID.next(), record)
+        guard let existing else {
+            return try await commit(
+                change(.create, node: tids.next(), record: record, .created, prev: nil, newContents: true))!
+        }
+        record.createdAt = existing.record.createdAt
+        var edit = change(
+            .update, node: existing.id, record: record, .edited, prev: existing.record.version, newContents: true)
+        do {
+            return try await commit(edit)!
+        } catch let error as XRPCError where error.error == "RecordNotFound" {
+            // Deleted elsewhere meanwhile: an edit outlives a delete (`ConflictRules`), so it's
+            // written back under its own ID. The delete's version lost the race.
+            edit.write = .create
+            return try await commit(edit)!
+        }
     }
 
     /// Whether a local file has the same contents as a file in the drive.
@@ -285,14 +356,20 @@ public final class Drive: Sendable {
         return hasher.finalize().hexString
     }
 
-    /// Renames and/or moves a file or folder. Folders move with everything inside them.
+    /// Renames and/or moves a file or folder. Folders move with everything inside them. Throws
+    /// `notFound` if it was deleted meanwhile: a move doesn't keep something deleted elsewhere
+    /// (`ConflictRules`).
     @discardableResult
     public func move(_ node: Node, to parent: String?, as name: String) async throws -> Node {
         try DrivePath.validate(name: name)
         var record = node.record
         record.parent = parent
         record.name = name
-        return try await write(id: node.id, record)
+        do {
+            return try await commit(change(.update, node: node.id, record: record, .moved, prev: node.record.version))!
+        } catch let error as XRPCError where error.error == "RecordNotFound" {
+            throw ATDriveError.notFound(node.name)
+        }
     }
 
     /// Writes a node back under its own ID, e.g. a folder deleted elsewhere that something is
@@ -300,29 +377,131 @@ public final class Drive: Sendable {
     @discardableResult
     public func restore(_ node: Node) async throws -> Node {
         try DrivePath.validate(name: node.name)
-        return try await write(id: node.id, node.record)
+        var restore = change(.create, node: node.id, record: node.record, .restored, prev: node.record.version)
+        do {
+            return try await commit(restore)!
+        } catch let error as XRPCError where error.error == "RecordAlreadyExists" {
+            restore.write = .update
+            return try await commit(restore)!
+        }
     }
 
-    /// Deletes files and folders. To delete a folder's contents too, include them (see
-    /// `DriveTree.descendants`), deepest first, so an interrupted delete leaves no orphans.
+    /// Deletes files and folders, recording each in history (so they're in the trash). To delete
+    /// a folder's contents too, include them (see `DriveTree.descendants`), deepest first, so an
+    /// interrupted delete leaves no orphans. Anything already deleted elsewhere is skipped.
     public func delete(_ nodes: [Node]) async throws {
-        try await client.deleteSpaceRecords(
-            space: space, repo: owner, collection: Lexicon.node, rkeys: nodes.map(\.id))
+        // All the versions first: one delete happens at one moment (see `DriveHistory.sameDeletion`).
+        let changes = nodes.map { change(.delete, node: $0.id, record: nil, .deleted, prev: $0.record.version) }
+        _ = try await commit(changes)
     }
 
     private var spaceKey: String { String(space.split(separator: "/").last!) }
 
-    private func write(id: String, _ record: NodeRecord) async throws -> Node {
-        func put() async throws -> String {
-            try await client.putSpaceRecord(
-                space: space, repo: owner, collection: Lexicon.node, rkey: id, record: record)
+    // MARK: Writing with history
+
+    /// A change to one node as it's written: the node record (or its deletion), and the version
+    /// that records the change, in the same transaction.
+    struct NodeChange: Sendable {
+        enum Write: Sendable { case create, update, delete }
+
+        var write: Write
+        var node: String
+        /// The node as written, its `version` (and `contentsFrom`) filled in; `nil` for a delete.
+        var record: NodeRecord?
+        var versionID: String
+        var version: VersionRecord
+
+        func writes() throws -> [SpaceWrite] {
+            let nodeWrite: SpaceWrite
+            switch (write, record) {
+            case (.create, let record?):
+                nodeWrite = .create(collection: Lexicon.node, rkey: node, value: try JSONValue(encoding: record))
+            case (.update, let record?):
+                nodeWrite = .update(collection: Lexicon.node, rkey: node, value: try JSONValue(encoding: record))
+            default:
+                nodeWrite = .delete(collection: Lexicon.node, rkey: node)
+            }
+            return [
+                nodeWrite,
+                .create(collection: Lexicon.version, rkey: versionID, value: try JSONValue(encoding: version)),
+            ]
         }
+    }
+
+    /// Stamps a change to `node` with a new version: it becomes `record` (`nil`: deleted), based
+    /// on `prev`. A file's version holds the chunk list if `newContents`; otherwise it points to
+    /// the version that does (`record.contentsFrom`), so a rename or move copies no chunks.
+    func change(
+        _ write: NodeChange.Write, node: String, record: NodeRecord?, _ kind: VersionRecord.Change, prev: String?,
+        newContents: Bool = false
+    ) -> NodeChange {
+        let versionID = tids.next()
+        var stamped = record
+        stamped?.version = versionID
+        if let state = stamped {
+            if state.kind != .file {
+                stamped?.contentsFrom = nil
+            } else if newContents || state.contentsFrom == nil {
+                stamped?.contentsFrom = versionID
+            }
+        }
+        let version = VersionRecord(
+            node: node, change: kind, device: device, prev: prev, state: stamped,
+            holdsContents: stamped?.contentsFrom == versionID)
+        return NodeChange(write: write, node: node, record: stamped, versionID: versionID, version: version)
+    }
+
+    /// Writes one change. Returns the node as written (`nil` for a delete).
+    @discardableResult
+    func commit(_ change: NodeChange) async throws -> Node? {
+        let cids = try await apply(change.writes())
+        return change.record.map { Node(id: change.node, cid: cids[0] ?? "", record: $0) }
+    }
+
+    /// Writes changes in order, 100 to a transaction (each is two writes). A transaction that
+    /// fails because a record already exists, or doesn't exist, is tried again one change at a
+    /// time; the changes that fail that way on their own are left out (another device got
+    /// there first) and returned as `skipped`.
+    func commit(_ changes: [NodeChange]) async throws -> (written: [Node], skipped: [NodeChange]) {
+        var written: [Node] = []
+        var skipped: [NodeChange] = []
+        let perTransaction = XRPCClient.maxWrites / 2
+        for start in stride(from: 0, to: changes.count, by: perTransaction) {
+            let batch = Array(changes[start..<min(start + perTransaction, changes.count)])
+            do {
+                let cids = try await apply(try batch.flatMap { try $0.writes() })
+                for (index, change) in batch.enumerated() {
+                    if let record = change.record {
+                        written.append(Node(id: change.node, cid: cids[index * 2] ?? "", record: record))
+                    }
+                }
+            } catch let error as XRPCError where Self.isRace(error) {
+                for change in batch {
+                    do {
+                        if let node = try await commit(change) { written.append(node) }
+                    } catch let error as XRPCError where Self.isRace(error) {
+                        skipped.append(change)
+                    }
+                }
+            }
+        }
+        return (written, skipped)
+    }
+
+    /// Applies writes as one transaction, creating the drive first if it doesn't exist and
+    /// `createsDrive`.
+    func apply(_ writes: [SpaceWrite]) async throws -> [String?] {
         do {
-            return Node(id: id, cid: try await put(), record: record)
-        } catch let error as XRPCError where error.error == "SpaceNotFound" {
+            return try await client.applySpaceWrites(space: space, repo: owner, writes: writes)
+        } catch let error as XRPCError where error.error == "SpaceNotFound" && createsDrive {
             try await create()
-            return Node(id: id, cid: try await put(), record: record)
+            return try await client.applySpaceWrites(space: space, repo: owner, writes: writes)
         }
+    }
+
+    /// A write that failed because another device changed the same record first.
+    static func isRace(_ error: XRPCError) -> Bool {
+        error.error == "RecordAlreadyExists" || error.error == "RecordNotFound"
     }
 }
 

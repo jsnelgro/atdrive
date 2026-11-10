@@ -1,0 +1,27 @@
+{
+  "lexicon": 1,
+  "id": "me.jsnelgro.atdrive.settings",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "literal:self",
+      "description": "The drive's settings, which every device follows. Written when the drive is created.",
+      "record": {
+        "type": "object",
+        "required": ["retentionDays"],
+        "properties": {
+          "retentionDays": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 30,
+            "description": "How long history (old versions, and the trash) is kept."
+          },
+          "driveID": {
+            "type": "string",
+            "description": "Random, made when the drive is created. A drive with another ID was wiped and created again."
+          }
+        }
+      }
+    }
+  }
+}

@@ -27,7 +27,10 @@ actor DriveIndex {
             throw NSFileProviderError(.notAuthenticated)
         }
         let manager = SessionManager(session) { updated in try? store.save(updated) }
-        let drive = Drive(client: XRPCClient(service: session.service, session: manager), owner: session.did)
+        // `refresh` refuses a drive that's gone after this extension has seen it, so writes
+        // only create one that's new.
+        let drive = Drive(
+            client: XRPCClient(service: session.service, session: manager), owner: session.did, createsDrive: true)
         cachedDrive = drive
         return drive
     }
@@ -35,11 +38,18 @@ actor DriveIndex {
     /// The drive as it is now, with the changes since last time applied.
     func refresh() async throws -> (revision: String, tree: DriveTree) {
         let drive = try drive()
-        let updated = try await drive.update(snapshot)
+        var updated = try await drive.update(snapshot)
         if updated.revision == nil, let current, current.revision != Self.emptyRevision {
             // Gone since we last saw it (say the server was wiped). Showing it as empty would
             // delete everything here, which may be the only copy left.
             throw NSFileProviderError(.serverUnreachable)
+        }
+        // Changes that lost a race between devices, settled as `atdrive sync` does. Only when
+        // something changed: a race needs a new version. A failure is tried again next change.
+        if updated.revision != nil, updated.revision != snapshot?.revision,
+            let settled = try? await drive.settleRaces(in: updated), !settled.isEmpty
+        {
+            updated = try await drive.update(updated)
         }
         snapshot = updated
         let revision = updated.revision ?? Self.emptyRevision

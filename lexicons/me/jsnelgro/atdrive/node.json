@@ -43,6 +43,16 @@
             "type": "string",
             "format": "datetime",
             "description": "Files only: the file's own modification time."
+          },
+          "version": {
+            "type": "string",
+            "format": "tid",
+            "description": "Record key of the node's current version (me.jsnelgro.atdrive.version): the change that left it like this."
+          },
+          "contentsFrom": {
+            "type": "string",
+            "format": "tid",
+            "description": "Files only: record key of the version that holds these chunks in history."
           }
         }
       }

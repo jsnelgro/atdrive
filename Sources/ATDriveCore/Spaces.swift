@@ -93,31 +93,58 @@ extension XRPCClient {
         ).cid
     }
 
-    /// Deletes records in one transaction per 200 (the server's batch limit).
-    public func deleteSpaceRecords(space: String, repo: String, collection: String, rkeys: [String])
-        async throws
-    {
-        struct Delete: Encodable {
-            let type = "com.atproto.space.applyWrites#delete"
-            var collection: String
-            var rkey: String
-            enum CodingKeys: String, CodingKey {
-                case type = "$type"
-                case collection, rkey
-            }
-        }
+    /// Creates a record that must not exist yet: fails with `RecordAlreadyExists` if it does, so
+    /// of several devices creating the same record, exactly one succeeds. Returns its CID.
+    @discardableResult
+    public func createSpaceRecord(
+        space: String, repo: String, collection: String, rkey: String,
+        record: some Encodable & Sendable
+    ) async throws -> String {
+        try await procedure(
+            "com.atproto.space.createRecord",
+            PutRecordInput(space: space, repo: repo, collection: collection, rkey: rkey, record: record),
+            as: PutRecordOutput.self
+        ).cid
+    }
+
+    /// The most writes `applySpaceWrites` takes at once.
+    public static let maxWrites = 200
+
+    /// Applies up to `maxWrites` writes as one transaction: all of them, or (if it throws) none.
+    /// A create fails with `RecordAlreadyExists` if its record exists; an update or delete fails
+    /// with `RecordNotFound` if its record doesn't. Returns each write's new CID (`nil` for a
+    /// delete).
+    @discardableResult
+    public func applySpaceWrites(space: String, repo: String, writes: [SpaceWrite]) async throws -> [String?] {
         struct Input: Encodable {
             var space: String
             var repo: String
-            var writes: [Delete]
+            var validate = false
+            var writes: [SpaceWrite]
         }
-        for start in stride(from: 0, to: rkeys.count, by: 200) {
-            let batch = rkeys[start..<min(start + 200, rkeys.count)]
-            let _: Empty = try await procedure(
-                "com.atproto.space.applyWrites",
-                Input(
-                    space: space, repo: repo,
-                    writes: batch.map { Delete(collection: collection, rkey: $0) }))
+        struct Output: Decodable {
+            struct Result: Decodable { var cid: String? }
+            var results: [Result]?
+        }
+        guard !writes.isEmpty else { return [] }
+        let method = "com.atproto.space.applyWrites"
+        let output = try await procedure(method, Input(space: space, repo: repo, writes: writes), as: Output.self)
+        guard let results = output.results, results.count == writes.count else { throw Self.malformed(method) }
+        return try zip(writes, results).map { write, result in
+            if case .delete = write { return nil }
+            guard let cid = result.cid else { throw Self.malformed(method) }
+            return cid
+        }
+    }
+
+    /// Deletes records, in one transaction per `maxWrites`.
+    public func deleteSpaceRecords(space: String, repo: String, collection: String, rkeys: [String])
+        async throws
+    {
+        for start in stride(from: 0, to: rkeys.count, by: Self.maxWrites) {
+            let batch = rkeys[start..<min(start + Self.maxWrites, rkeys.count)]
+            try await applySpaceWrites(
+                space: space, repo: repo, writes: batch.map { .delete(collection: collection, rkey: $0) })
         }
     }
 
@@ -211,6 +238,49 @@ private struct PutRecordInput<Record: Encodable>: Encodable {
     var rkey: String
     var validate = false
     var record: Record
+}
+
+/// One write in an `applyWrites` transaction.
+public enum SpaceWrite: Sendable, Equatable, Encodable {
+    /// Fails if the record exists.
+    case create(collection: String, rkey: String, value: JSONValue)
+    /// Fails if the record doesn't exist.
+    case update(collection: String, rkey: String, value: JSONValue)
+    /// Fails if the record doesn't exist.
+    case delete(collection: String, rkey: String)
+
+    public var collection: String {
+        switch self {
+        case .create(let collection, _, _), .update(let collection, _, _), .delete(let collection, _): collection
+        }
+    }
+
+    public var rkey: String {
+        switch self {
+        case .create(_, let rkey, _), .update(_, let rkey, _), .delete(_, let rkey): rkey
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "$type"
+        case collection, rkey, value
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(collection, forKey: .collection)
+        try container.encode(rkey, forKey: .rkey)
+        switch self {
+        case .create(_, _, let value):
+            try container.encode("com.atproto.space.applyWrites#create", forKey: .type)
+            try container.encode(value, forKey: .value)
+        case .update(_, _, let value):
+            try container.encode("com.atproto.space.applyWrites#update", forKey: .type)
+            try container.encode(value, forKey: .value)
+        case .delete:
+            try container.encode("com.atproto.space.applyWrites#delete", forKey: .type)
+        }
+    }
 }
 
 /// One write in a repo's change feed (`listRepoOps`), in any collection.
