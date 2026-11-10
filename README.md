@@ -271,10 +271,22 @@ device settles it the same way. The Mac app and `atdrive sync` share these rules
   hash, times, and the keys to its chunks) is encrypted with AES-GCM under the drive's key, and
   bound to that record, so the PDS can't move it to another one. Only the references to the
   file's chunks stay readable, so the PDS keeps them.
-- **File contents are stored as encrypted blobs** in 4 MiB chunks. A chunk's key comes from its
-  contents and the drive key (as in Tahoe-LAFS and borg), so identical chunks are stored once,
-  and without the drive key nobody can tell what they hold. Each chunk is checked against its
-  content ID (CID) and decrypted, and each downloaded file is checked against its SHA-256.
+- **File contents are stored as encrypted blobs,** in chunks of about 1 MiB (256 KiB to 4 MiB).
+  Where a chunk ends depends on the bytes around it (content-defined chunking, FastCDC), so an
+  edit or an insert changes the chunk or two around it, not every chunk after it. Where the cuts
+  go is keyed by the drive, so chunk sizes don't give away which files you have.
+- **Only what changed moves.** A chunk's key comes from its contents and the drive key (as in
+  Tahoe-LAFS and borg), so identical chunks encrypt to identical blobs, which are stored once;
+  without the drive key nobody can tell what they hold.
+  - **Uploads** skip the chunks the drive already has: a new version costs what changed, and a
+    copy of a file costs nothing.
+  - **Downloads** use what the copy you have already holds (the synced file, or the file
+    `atdrive get` replaces), and fetch only the rest.
+  - Four chunks move at once. Each is checked against its content ID (CID) and decrypted, and
+    each downloaded file against its SHA-256. A file changes on the drive only once all of its
+    chunks are there, so an interrupted upload leaves the version before.
+- **Big files:** a record holds the chunk list of about 2 GB. A longer one continues in
+  `me.jsnelgro.atdrive.chunks` records that belong to the file's version, and go when it does.
 - **Keys:** the drive key is random, made when the drive is created. Each device has its own key
   pair, and its own record in the drive (`me.jsnelgro.atdrive.device`) with the drive's keys
   wrapped for it; one more wraps them for the recovery key. A device takes keys only from itself,
@@ -330,16 +342,15 @@ See [PLAN.md](PLAN.md) for the roadmap and design notes.
 - **`put`, `mv` and `rm` have no conflict detection: the last write wins.** The spaces alpha has
   no compare-and-swap for writes. What was overwritten stays in history, though, and `atdrive sync`
   and the Mac app bring a lost edit back as a conflicted copy.
-- **`atdrive sync` sends whole files,** even when only part of one changed. While a big one
+- **Files transfer one at a time.** Each moves a few chunks at once, but while a big one
   transfers, other changes wait.
+- **On the Mac, a file that changed elsewhere is downloaded whole.** Uploads from the Mac skip
+  what the drive has, but the extension doesn't yet get Finder's old copy to reuse.
 - **`atdrive sync` on a Mac** works, but two names that differ only in case (`Notes.txt` and
   `notes.txt`) clash on Mac disks. The app doesn't have this problem.
 - **History and the trash are only in the command line.** Things deleted in Finder or in a
   synced folder still go to the trash, and `atdrive trash restore` brings them back.
 - **Symlinks and aliases aren't stored.**
-- **Transfers are sequential.**
-- **A single file is capped at about 20 GB,** because its chunk list (and its chunks' keys) has to
-  fit in one 1 MiB record.
 - **Approving and removing devices is only in the command line.** The Mac app can join a drive
   (by approval or the recovery key) and create one, but not approve or remove other devices yet.
 - **Removing a device doesn't sign it out of your account.** Revoke its session in your

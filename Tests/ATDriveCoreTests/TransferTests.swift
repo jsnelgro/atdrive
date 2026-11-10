@@ -125,6 +125,22 @@ import Testing
         #expect(try await contents(again) == data)
     }
 
+    /// A file of zeros is the same chunk over and over, then whatever's left. Each goes up once,
+    /// and comes down once per run.
+    @Test func aRunOfTheSameChunkMovesOnce() async throws {
+        let zeros = Data(count: 200_000)
+        pds.resetCounts()
+        let node = try await laptop.upload(try file(zeros), as: "zeros.bin", in: nil)
+        let chunks = try #require(node.record.chunks)
+        let distinct = Set(chunks.map(\.cid)).count
+        let runs = chunks.indices.filter { $0 == 0 || chunks[$0].id != chunks[$0 - 1].id }.count
+        #expect(chunks.count > 5 && distinct <= 2 && runs == distinct)
+        #expect(pds.uploads == distinct)
+        pds.resetCounts()
+        #expect(try await contents(node) == zeros)
+        #expect(pds.downloads == runs)
+    }
+
     /// Keys rotate when a device is removed. Chunks are cut and named with the first key, so
     /// the same contents come out as the same chunks, which the drive already has.
     @Test func chunksStayTheSameAfterKeysRotate() async throws {

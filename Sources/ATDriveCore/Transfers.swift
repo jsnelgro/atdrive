@@ -143,7 +143,9 @@ extension Drive {
     /// deciding to reuse it and writing the record, when another device prunes or purges the
     /// last record that had it.
     static func isMissingBlob(_ error: Error) -> Bool {
-        (error as? XRPCError)?.error == "BlobNotFound"
+        guard let error = error as? XRPCError else { return false }
+        return error.error == "BlobNotFound"
+            || error.message?.localizedCaseInsensitiveContains("could not find blob") == true
     }
 
     /// Progress that only ever moves forward, though what reports it may start over (an upload
@@ -177,15 +179,19 @@ extension Drive {
 
     /// Hands a file's chunks to `write` in order: those `local` has from it, the rest fetched,
     /// `transfers.parallel` at a time. Fetched chunks wait, at most that many, until their turn.
+    /// A run of the same chunk (in a file full of zeros, say) is fetched once.
     func readChunks(
         _ chunks: [ChunkRef], of name: String, local: LocalChunks?, write: (Data) throws -> Void
     ) async throws {
         let parallel = transfers.parallel
-        let fetching = chunks.indices.filter { local?.has(chunks[$0].id) != true }
+        let isLocal = chunks.map { local?.has($0.id) == true }
+        let repeatsLast = chunks.indices.map { $0 > 0 && chunks[$0].id == chunks[$0 - 1].id }
+        let fetching = chunks.indices.filter { !isLocal[$0] && !repeatsLast[$0] }
         try await withThrowingTaskGroup(of: (Int, Data).self) { group in
             var launched = 0
             var inFlight = 0
             var ready: [Int: Data] = [:]
+            var last: Data?
             for (index, chunk) in chunks.enumerated() {
                 while launched < fetching.count, inFlight + ready.count < parallel {
                     let next = fetching[launched]
@@ -194,23 +200,28 @@ extension Drive {
                     launched += 1
                     inFlight += 1
                 }
-                if let local, local.has(chunk.id) {
-                    // Read back, and checked again: the local file may have changed since.
-                    if let data = try local.read(chunk.id) {
-                        try write(data)
+                let data: Data
+                if repeatsLast[index] {
+                    if let last { data = last } else { data = try await fetch(chunk, number: index + 1, of: name) }
+                } else if isLocal[index], let local {
+                    // Read back and checked again: the local file may have changed since.
+                    if let read = try local.read(chunk.id) {
+                        data = read
                     } else {
-                        try write(try await fetch(chunk, number: index + 1, of: name))
+                        data = try await fetch(chunk, number: index + 1, of: name)
                     }
-                    continue
-                }
-                while ready[index] == nil {
-                    guard let (fetched, data) = try await group.next() else {
-                        throw ATDriveError.integrity("chunk \(index + 1) of \(name) was never fetched")
+                } else {
+                    while ready[index] == nil {
+                        guard let (fetched, data) = try await group.next() else {
+                            throw ATDriveError.integrity("chunk \(index + 1) of \(name) was never fetched")
+                        }
+                        inFlight -= 1
+                        ready[fetched] = data
                     }
-                    inFlight -= 1
-                    ready[fetched] = data
+                    data = ready.removeValue(forKey: index)!
                 }
-                try write(ready.removeValue(forKey: index)!)
+                try write(data)
+                last = index + 1 < chunks.count && repeatsLast[index + 1] ? data : nil
             }
         }
     }
