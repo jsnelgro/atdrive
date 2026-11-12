@@ -1,0 +1,33 @@
+{
+  "lexicon": 1,
+  "id": "me.jsnelgro.atdrive.key",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "any",
+      "description": "The drive key, wrapped for one passkey. The first one's record key is 'first'.",
+      "record": {
+        "type": "object",
+        "required": ["kind", "credentialID", "keyID", "wrapped", "createdAt"],
+        "properties": {
+          "kind": { "type": "string", "knownValues": ["passkey"] },
+          "credentialID": {
+            "type": "string",
+            "maxLength": 2048,
+            "description": "The passkey's WebAuthn credential ID, base64url."
+          },
+          "keyID": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "Public ID of the drive key inside."
+          },
+          "wrapped": {
+            "type": "bytes",
+            "description": "The 32-byte drive key, AES-256-GCM ([format 0x01][nonce 12][ciphertext][tag 16]) under HKDF-SHA256(the passkey's PRF output for SHA-256(\"atdrive drive key v1\\n\" + DID), info \"atdrive passkey wrap v1\"), with '<space URI>/me.jsnelgro.atdrive.key/<credentialID>' as associated data."
+          },
+          "createdAt": { "type": "string", "format": "datetime" }
+        }
+      }
+    }
+  }
+}

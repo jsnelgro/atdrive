@@ -14,6 +14,7 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
     private let lock = NSLock()
     private(set) var spaceExists = false
     private(set) var blobs: [String: Data] = [:]
+    /// Keyed by "<collection>/<rkey>".
     private var records: [String: (cid: String, json: Data)] = [:]
     private var recordVersion = 0
     private(set) var calls: [String] = []
@@ -24,7 +25,22 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
     /// Fail the next calls to these methods (e.g. `com.atproto.space.getBlob`) with a 500.
     var failing: [String: Int] = [:]
 
-    var recordCount: Int { lock.withLock { records.count } }
+    /// Node records (files and folders).
+    var recordCount: Int { lock.withLock { records.keys.filter { $0.hasPrefix(Lexicon.node + "/") }.count } }
+
+    /// A record as stored, or `nil`.
+    func rawRecord(_ collection: String, _ rkey: String) -> [String: Any]? {
+        lock.withLock {
+            records["\(collection)/\(rkey)"].flatMap {
+                try? JSONSerialization.jsonObject(with: $0.json) as? [String: Any]
+            }
+        }
+    }
+
+    /// Every record and blob as stored, as one string, to check nothing private is readable.
+    var everythingStored: Data {
+        lock.withLock { records.values.map(\.json).reduce(Data(), +) + blobs.values.reduce(Data(), +) }
+    }
 
     /// Called with each method name before it's handled (e.g. to change something mid-sync).
     var onRequest: (@Sendable (String) -> Void)?
@@ -65,24 +81,30 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
                 ]
             ])
 
-        case "com.atproto.space.putRecord":
+        case "com.atproto.space.putRecord", "com.atproto.space.createRecord":
             guard spaceExists else { return error(400, "SpaceNotFound") }
             let rkey = body["rkey"] as! String
+            let key = "\(body["collection"] as! String)/\(rkey)"
+            if method.hasSuffix("createRecord"), records[key] != nil { return error(400, "RecordAlreadyExists") }
             recordVersion += 1
             let cid = "bafyrecord\(recordVersion)"
-            records[rkey] = (cid, try! JSONSerialization.data(withJSONObject: body["record"]!))
+            records[key] = (cid, try! JSONSerialization.data(withJSONObject: body["record"]!))
             return json(["uri": "at://did:plc:test/x/\(rkey)", "cid": cid])
 
         case "com.atproto.space.listRecords":
             guard spaceExists else { return error(400, "SpaceNotFound") }
+            let collection = query["collection"] ?? ""
             let cursor = query["cursor"]
-            let keys = records.keys.sorted().filter { key in cursor.map { key > $0 } ?? true }
+            let keys = records.keys.filter { $0.hasPrefix(collection + "/") }
+                .map { String($0.dropFirst(collection.count + 1)) }
+                .sorted().filter { key in cursor.map { key > $0 } ?? true }
             let page = Array(keys.prefix(pageSize))
             var output: [String: Any] = [
-                "records": page.map { key in
-                    [
-                        "collection": Lexicon.node, "rkey": key, "cid": records[key]!.cid,
-                        "value": try! JSONSerialization.jsonObject(with: records[key]!.json),
+                "records": page.map { rkey in
+                    let record = records["\(collection)/\(rkey)"]!
+                    return [
+                        "collection": collection, "rkey": rkey, "cid": record.cid,
+                        "value": try! JSONSerialization.jsonObject(with: record.json),
                     ]
                 }
             ]
@@ -96,7 +118,7 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
 
         case "com.atproto.space.applyWrites":
             for write in body["writes"] as! [[String: Any]] {
-                records[write["rkey"] as! String] = nil
+                records["\(write["collection"] as! String)/\(write["rkey"] as! String)"] = nil
             }
             recordVersion += 1
             return json([:])
@@ -111,11 +133,22 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
     }
 
     /// Stores a record exactly as given, bypassing `Drive`, to set up odd states.
-    func insertRawRecord(rkey: String, _ record: [String: Any]) {
+    func insertRawRecord(_ collection: String = Lexicon.node, rkey: String, _ record: [String: Any]) {
         lock.withLock {
             spaceExists = true
             recordVersion += 1
-            records[rkey] = ("bafyrecord\(recordVersion)", try! JSONSerialization.data(withJSONObject: record))
+            records["\(collection)/\(rkey)"] = (
+                "bafyrecord\(recordVersion)", try! JSONSerialization.data(withJSONObject: record)
+            )
+        }
+    }
+
+    /// Stores a blob exactly as given (e.g. an unencrypted one, as older versions wrote).
+    func insertRawBlob(_ data: Data) -> String {
+        lock.withLock {
+            let cid = CID.forBlob(data)
+            blobs[cid] = data
+            return cid
         }
     }
 

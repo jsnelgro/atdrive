@@ -14,6 +14,9 @@ public enum ATDriveError: Error, CustomStringConvertible, Equatable {
     case invalidMove(String)
     case integrity(String)
     case unexpectedResponse(String)
+    /// This device doesn't have the drive's key yet (it's added when you sign in).
+    case locked
+    case encryption(String)
 
     public var description: String {
         switch self {
@@ -30,6 +33,8 @@ public enum ATDriveError: Error, CustomStringConvertible, Equatable {
         case .invalidMove(let why): why
         case .integrity(let why): "integrity check failed: \(why)"
         case .unexpectedResponse(let why): "unexpected server response: \(why)"
+        case .locked: "this device can't open your drive yet; sign in again (`atdrive login <handle>`)"
+        case .encryption(let why): why
         }
     }
 }

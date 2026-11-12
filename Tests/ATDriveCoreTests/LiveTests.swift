@@ -1,3 +1,4 @@
+import Crypto
 import Foundation
 import Testing
 
@@ -12,7 +13,9 @@ import Testing
 ///     ATDRIVE_LIVE_HANDLE=you.example.com ATDRIVE_LIVE_PASSWORD=xxxx-xxxx-xxxx-xxxx \
 ///         scripts/test.sh --filter LiveTests
 ///
-/// Everything happens inside a uniquely named folder that is deleted at the end.
+/// It uses a drive of its own (space key `live-test`), encrypted with a key made from the
+/// password, so it never touches your real drive. Everything happens inside a uniquely named
+/// folder that is deleted at the end.
 @Suite(.enabled(if: liveCredentials() != nil, "set ATDRIVE_LIVE_HANDLE and ATDRIVE_LIVE_PASSWORD"))
 struct LiveTests {
     @Test func roundTrip() async throws {
@@ -22,7 +25,8 @@ struct LiveTests {
         // Small chunks so a modest file still spans several blobs.
         let drive = Drive(
             client: XRPCClient(service: session.service, session: manager), owner: session.did,
-            chunkSize: 64 * 1024)
+            driveKey: try DriveKey(rawValue: Data(SHA256.hash(data: Data("atdrive live test \(password)".utf8)))),
+            key: "live-test", chunkSize: 64 * 1024)
 
         let folderName = "atdrive-live-test-\(TID.next())"
         let revisionBefore = try await drive.latestRevision()

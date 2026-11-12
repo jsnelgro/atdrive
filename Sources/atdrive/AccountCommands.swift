@@ -6,14 +6,16 @@ struct Login: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Sign in through your account's sign-in page in the browser.",
         discussion: """
-            Opens your PDS's own sign-in page; ATDrive never sees your password. After you
-            approve access, the browser hands control back to this command.
+            Opens your PDS's own sign-in page; ATDrive never sees your password. Then your
+            passkey unlocks your drive, which is encrypted so your PDS can't read it. The first
+            time, you make the passkey; it syncs to your other devices like any other.
 
-            Signing in on a remote machine (over SSH, or without a desktop): open the printed
-            link in a browser on any device, approve, then paste the address the browser ends
-            up on (it starts with http://127.0.0.1 and won't load) back here.
+            Signing in on a remote machine (over SSH, or without a desktop): open each printed
+            link in a browser on any device, then paste the address the browser ends up on (it
+            starts with http://127.0.0.1 and won't load) back here.
 
-            For scripts, --app-password signs in with an app password instead.
+            For scripts, --app-password signs in with an app password instead (the drive is
+            still unlocked with your passkey).
             """
     )
 
@@ -27,39 +29,65 @@ struct Login: AsyncParsableCommand {
     var passwordStdin = false
 
     func run() async throws {
+        // Also accepted on a desktop, in case the browser turns out to be elsewhere.
+        let paste = isatty(STDIN_FILENO) != 0 ? readPastedAddress : nil
         let session: Session
         if appPassword || passwordStdin || ProcessInfo.processInfo.environment["ATDRIVE_APP_PASSWORD"] != nil {
-            session = try await Auth.login(
+            let signedIn = try await Auth.login(
                 identifier: handle, password: try readPassword(), resolver: IdentityResolver())
+            session = try await SignIn.unlock(signedIn, open: Self.show, paste: paste)
         } else {
-            let local = hasLocalBrowser
-            let interactive = isatty(STDIN_FILENO) != 0
-            session = try await OAuthLogin.signIn(
-                identifier: handle,
-                open: { url in
-                    if local {
-                        write(
-                            "Opening your browser to sign in. If it doesn't open, go to:\n\n  \(url.absoluteString)\n\n"
-                        )
-                        openInBrowser(url)
-                    } else {
-                        write(
-                            """
-                            Open this link in a browser on any device to sign in:
-
-                              \(url.absoluteString)
-
-                            After you approve, the browser goes to a page that won't load (its address
-                            starts with http://127.0.0.1). Copy that address and paste it here:
-
-                            """)
-                    }
-                },
-                // Also accepted on a desktop, in case the browser turns out to be elsewhere.
-                pastedRedirect: interactive ? readPastedAddress : nil)
+            session = try await SignIn.run(identifier: handle, open: Self.show, paste: paste)
         }
-        try SessionStore().save(session)
+        let store = SessionStore()
+        try store.save(session)
         print("Logged in as @\(session.handle) (\(session.did)) on \(session.service.host ?? "\(session.service)")")
+
+        // Drives from before encryption: encrypt what's there now.
+        let manager = SessionManager(session) { updated in try? store.save(updated) }
+        let encrypted = try await Drive(session: manager).encryptOlderItems { done, total in
+            Output.status("Encrypting your drive: \(done) of \(total) items")
+        }
+        Output.clearStatus()
+        if encrypted > 0 { print("Encrypted \(encrypted) item(s) saved before ATDrive encrypted drives.") }
+    }
+
+    @Sendable private static func show(_ url: URL, _ step: SignIn.Step) async throws {
+        let local = hasLocalBrowser
+        switch step {
+        case .signIn where local:
+            write("Opening your browser to sign in. If it doesn't open, go to:\n\n  \(url.absoluteString)\n\n")
+            openInBrowser(url)
+        case .signIn:
+            write(
+                """
+                Open this link in a browser on any device to sign in:
+
+                  \(url.absoluteString)
+
+                After you approve, the browser goes to a page that won't load (its address
+                starts with http://127.0.0.1). Copy that address and paste it here:
+
+                """)
+        case .unlock(alreadyOpen: true):
+            write("Signed in. Now unlock your drive with your passkey, in the browser.\n")
+        case .unlock(alreadyOpen: false) where local:
+            write(
+                "Opening your browser to unlock your drive with your passkey. If it doesn't open, go to:\n\n  \(url.absoluteString)\n\n"
+            )
+            openInBrowser(url)
+        case .unlock(alreadyOpen: false):
+            write(
+                """
+
+                Now open this link in a browser to unlock your drive with your passkey:
+
+                  \(url.absoluteString)
+
+                Then, as before, paste the address the browser ends up on here:
+
+                """)
+        }
     }
 
     private func readPassword() throws -> String {
@@ -101,12 +129,14 @@ struct WhoAmI: AsyncParsableCommand {
         commandName: "whoami", abstract: "Show the logged-in account and where its drive lives.")
 
     func run() async throws {
-        let context = try await Context.load()
-        let session = await context.session.session
+        guard let session = try SessionStore().load() else { throw ATDriveError.notLoggedIn }
         print("handle: @\(session.handle)")
         print("did:    \(session.did)")
         print("pds:    \(session.service.absoluteString)")
-        print("drive:  \(context.drive.space)")
+        print(
+            "drive:  \(XRPCClient.spaceURI(authority: session.did, type: Lexicon.driveSpace, key: Lexicon.defaultDriveKey))"
+        )
+        print("locked: \(session.driveKey == nil ? "yes (sign in again to unlock it)" : "no")")
     }
 }
 
@@ -137,12 +167,16 @@ private var hasLocalBrowser: Bool {
     #endif
 }
 
-/// Reads lines until one is the sign-in address from the browser.
-@Sendable private func readPastedAddress() async throws -> String {
+/// Reads lines until one is the address from the browser, for a step of signing in.
+@Sendable private func readPastedAddress(for step: SignIn.Step) async throws -> String {
     try await withCheckedThrowingContinuation { continuation in
         DispatchQueue.global().async {
             while let line = readLine() {
-                if (try? OAuthLogin.redirectParameters(fromPasted: line)) != nil {
+                let valid =
+                    step == .signIn
+                    ? (try? OAuthLogin.redirectParameters(fromPasted: line)) != nil
+                    : PasskeyRequest.answer(fromPasted: line) != nil
+                if valid {
                     return continuation.resume(returning: line)
                 }
                 if !line.trimmingCharacters(in: .whitespaces).isEmpty {

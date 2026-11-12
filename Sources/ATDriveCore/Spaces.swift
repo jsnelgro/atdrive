@@ -25,6 +25,14 @@ extension XRPCClient {
         ).uri
     }
 
+    /// Creates a drive's space (`at://<did>/space/<type>/<key>`), if it doesn't exist yet.
+    func createDriveSpace(_ space: String) async throws {
+        let parts = space.split(separator: "/")
+        do {
+            _ = try await createPersonalSpace(type: String(parts[parts.count - 2]), key: String(parts.last!))
+        } catch let error as XRPCError where error.error == "SpaceAlreadyExists" {}
+    }
+
     public struct SpaceRecordPage<Value: Decodable & Sendable>: Sendable {
         public struct Record: Sendable {
             public var rkey: String
@@ -59,6 +67,20 @@ extension XRPCClient {
     ) async throws -> String {
         try await procedure(
             "com.atproto.space.putRecord",
+            PutRecordInput(space: space, repo: repo, collection: collection, rkey: rkey, record: record),
+            as: PutRecordOutput.self
+        ).cid
+    }
+
+    /// Creates a record that must not exist yet: fails with `RecordAlreadyExists` if it does, so
+    /// of several devices creating the same record, exactly one succeeds. Returns its CID.
+    @discardableResult
+    public func createSpaceRecord(
+        space: String, repo: String, collection: String, rkey: String,
+        record: some Encodable & Sendable
+    ) async throws -> String {
+        try await procedure(
+            "com.atproto.space.createRecord",
             PutRecordInput(space: space, repo: repo, collection: collection, rkey: rkey, record: record),
             as: PutRecordOutput.self
         ).cid

@@ -11,7 +11,7 @@ enum FileProviderErrors {
             return error
         case let error as ATDriveError:
             switch error {
-            case .notLoggedIn, .sessionEnded, .loginFailed: return NSFileProviderError(.notAuthenticated)
+            case .notLoggedIn, .sessionEnded, .loginFailed, .locked: return NSFileProviderError(.notAuthenticated)
             case .notFound: return NSFileProviderError(.noSuchItem)
             case .alreadyExists: return NSFileProviderError(.filenameCollision)
             case .invalidName: return CocoaError(.fileWriteInvalidFileName)

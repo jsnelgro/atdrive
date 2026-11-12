@@ -20,11 +20,15 @@ actor DriveIndex {
     /// The logged-in account's drive. Read lazily, so logging in after the extension starts works.
     func drive() throws -> Drive {
         if let cachedDrive { return cachedDrive }
-        guard let store = AppGroup.sessionStore(), let session = try store.load() else {
+        guard let store = AppGroup.sessionStore(), let session = try store.load(),
+            let driveKey = session.driveKey
+        else {
             throw NSFileProviderError(.notAuthenticated)
         }
         let manager = SessionManager(session) { updated in try? store.save(updated) }
-        let drive = Drive(client: XRPCClient(service: session.service, session: manager), owner: session.did)
+        let drive = Drive(
+            client: XRPCClient(service: session.service, session: manager), owner: session.did,
+            driveKey: try DriveKey(rawValue: driveKey))
         cachedDrive = drive
         return drive
     }

@@ -35,8 +35,14 @@ final class AppModel {
             return
         }
         if let session = try? store.load() {
-            state = .signedIn(handle: session.handle)
-            Task { await addToFinder(handle: session.handle) }
+            if session.driveKey != nil {
+                state = .signedIn(handle: session.handle)
+                Task { await addToFinder(handle: session.handle) }
+            } else {
+                // Saved before drives were encrypted.
+                handle = session.handle
+                message = "Sign in again to unlock your drive."
+            }
         }
         polling = Task { [weak self, pollInterval] in
             while !Task.isCancelled {
@@ -46,8 +52,9 @@ final class AppModel {
         }
     }
 
-    /// Opens the account's own sign-in page in the browser (OAuth), and finishes when the user
-    /// approves there. ATDrive never sees the password.
+    /// Opens the account's own sign-in page in the browser (OAuth), then the passkey page that
+    /// unlocks the drive, and finishes when the user has done both. ATDrive never sees the
+    /// password, and the PDS never sees the drive's key.
     func signIn() {
         guard let store = AppGroup.sessionStore(), state == .signedOut else { return }
         message = nil
@@ -55,10 +62,15 @@ final class AppModel {
         let handle = handle
         signingIn = Task {
             do {
-                let session = try await OAuthLogin.signIn(identifier: handle) { url in
+                let session = try await SignIn.run(identifier: handle) { url, step in
+                    // After the sign-in page, the browser goes on to the unlock page by itself.
+                    guard step != .unlock(alreadyOpen: true) else { return }
                     await MainActor.run { _ = NSWorkspace.shared.open(url) }
                 }
                 try store.save(session)
+                // Drives from before encryption: encrypt what's there now.
+                let manager = SessionManager(session) { updated in try? store.save(updated) }
+                try await Drive(session: manager).encryptOlderItems()
                 state = .signedIn(handle: session.handle)
                 await addToFinder(handle: session.handle)
             } catch is CancellationError {

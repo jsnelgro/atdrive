@@ -54,12 +54,28 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
   - **How it works:** see *Folder sync* below.
   - **Later:** a FUSE mount, for drives too big to keep a full copy of (files fetched on demand).
     Uploading only the changed chunks of an edited file. Several transfers at once.
+- [x] **Encryption at rest, unlocked with a passkey.** See *Encryption* below.
+  - **Tested** with unit tests against `FakePDS` (including a full sign-in in the browser and by
+    pasted addresses), and the unlock page in Chromium with a virtual passkey that supports PRF.
+  - **Not yet exercised:** a real passkey provider (iCloud Keychain, Google Password Manager,
+    1Password), the hosted page, the Mac app's sign-in, and the live alpha PDS.
 - [ ] **Phase 4, iOS:** the same extension code with an iOS host app.
+- [ ] **Next, in this order.** Each is its own PR, and each adds as few commands as possible:
+  1. **Incremental sync:** follow the spaces change feed (`listRepoOps`) instead of re-listing the
+     drive. Invisible to users. PR #7 has a version of this to take from.
+  2. **A second way in:** add another passkey from a device that's unlocked, and an optional
+     recovery key to print, offered in settings rather than at setup.
+  3. **History,** if it's still wanted after 1 and 2. Keep it to the Dropbox/iCloud model: `rm`
+     moves to a 30-day "recently deleted", `restore` brings back a deleted item or an earlier
+     version, and old versions are cleaned up automatically. No `prune`, `purge` or `trash empty`
+     commands. Until then, the synced folder is ordinary files, so Time Machine or restic give
+     history.
 - [ ] **Later:**
   - Publish the lexicons and narrow the OAuth scope (see below).
   - Shared folders (`memberspace`).
-  - Client-side encryption.
   - Parallel transfers.
+  - Native passkeys in the Mac app (`ASAuthorizationPlatformPublicKeyCredentialProvider` with PRF,
+    which needs an associated domain), instead of the browser page.
 
 ## Folder sync
 
@@ -110,15 +126,68 @@ keeps exactly what `keptWhenDeleting` keeps.
 - **One drive = one space:** `at://<did>/space/me.jsnelgro.atdrive.drive/default`, under the
   `personalspace` policy. It's created on the first write.
 - **One record per file or folder:** `me.jsnelgro.atdrive.node`. The rkey is a TID and is
-  permanent. Fields:
+  permanent. Readable fields: `keyID`, and `chunks: [blob]` for files. Everything else is in
+  `sealed` (see *Encryption*):
   - `parent`: rkey, absent for the top level
   - `name`, `kind`, `createdAt`
-  - files only: `size`, `sha256`, `modifiedAt`, `chunks: [blob]`
-- **File contents:** 4 MiB chunks, uploaded with `com.atproto.repo.uploadBlob` and read back with
-  `com.atproto.space.getBlob`. Every chunk is verified against its CID, and the whole file
-  against its SHA-256.
+  - files only: `size`, `sha256`, `modifiedAt`, and the chunks' CIDs
+- **The drive key, wrapped:** `me.jsnelgro.atdrive.key`, one record per passkey (the first is
+  rkey `first`).
+- **File contents:** 4 MiB chunks, each encrypted, uploaded with `com.atproto.repo.uploadBlob` and
+  read back with `com.atproto.space.getBlob`. Every chunk is verified against its CID, and the
+  whole file against its SHA-256.
 - **Damaged trees:** a node whose parent was deleted, and a cycle created by concurrent moves,
   are both shown at the top level, so nothing is ever hidden.
+
+## Encryption
+
+**Goal:** whoever runs the PDS can't read the drive, and nobody has to manage a key.
+
+**Why a passkey.** Signing in to the PDS can't be what unlocks the drive: anything the PDS lets
+you fetch, its operator can fetch too. So the drive key needs a secret the PDS never sees, and a
+passkey is one that people already have, that syncs between their devices on its own, and that
+providers already back up. WebAuthn's PRF extension turns a passkey into 32 secret bytes, the
+same every time.
+
+- **Keys:**
+  - **The drive key:** 32 random bytes, made on the first sign-in. HKDF-SHA256 derives a records
+    key and a contents key from it.
+  - **On the PDS**, it's only stored wrapped: AES-256-GCM under HKDF(the passkey's PRF output). The
+    PRF input is SHA-256("atdrive drive key v1\n" + DID). These must never change.
+  - **On each device**, it's saved with the session (`Session.driveKey`), so the sync service and
+    the Finder extension don't need the passkey.
+- **What's sealed:** each node record's name, folder, kind, size, hash, times and chunk CIDs (bound
+  to its space, collection and rkey, so the PDS can't move it to another record). Every chunk is
+  encrypted too, with a random nonce. The format is `[0x01][nonce 12][ciphertext][tag 16]`.
+- **What the PDS still sees:** record counts, chunk counts and sizes (so roughly file sizes),
+  creation times (TIDs), and when writes happen. It can delete or roll back records, but can't
+  read or forge them.
+- **Signing in** (`SignIn`, `DriveUnlock`):
+  1. OAuth, as before. The browser comes back to the app on 127.0.0.1.
+  2. The app looks at the drive: no key record means "create", otherwise "unlock" with the
+     passkeys that have one. It answers the browser's request with a redirect to the unlock page.
+  3. The unlock page (`web/unlock/`, static, no network requests of its own) runs the passkey
+     ceremony and redirects back to 127.0.0.1 with the PRF output, sealed to a one-time P-256 key
+     the app put in the page's URL fragment (ECDH, HKDF, AES-GCM, bound to `state`). So it's
+     unreadable in browser history and in a pasted address.
+  4. The app creates the drive key and writes its key record (create-if-absent, so two devices
+     setting up at once can't make two keys), or unwraps it.
+  - **Remote machines** paste the address the browser ends up on, as for OAuth, at each step.
+  - **The page only returns to a loopback address,** so a link can't send the secret elsewhere.
+- **Guards:**
+  - A record this device can't decrypt (another key, tampered, or a newer format) makes listing
+    the drive fail, rather than leaving the item out: sync and Finder would take a missing item as
+    deleted and delete their copy.
+  - A new key is never made for a drive that has encrypted items, even if its key record is gone.
+- **Drives from before encryption:** signing in encrypts them in place (`Drive.encryptOlderItems`):
+  each item's chunks are uploaded again encrypted, and its record is sealed, one item at a time.
+- **Trust in the page:** its JavaScript sees the PRF output, so it must come from a host we
+  control (`https://atdrive.jsnelgro.me/unlock/`, served from `web/`). Passkeys belong to that host
+  name, so it can't change without making new passkeys.
+- **Open:**
+  - One passkey per drive (step 2 of *Next* in *Status*).
+  - Removing a device doesn't change the key; it just deletes its session. A device that had
+    the key keeps it.
 
 ## Protocol notes (alpha, as of 2026-11-05)
 
@@ -140,5 +209,5 @@ keeps exactly what `keptWhenDeleting` keeps.
     3. Switch `OAuthLogin.scope` to `narrowScope`.
   - **Public OAuth clients get two-week sessions** on Bluesky's PDS, so you sign in again after
     that.
-  - Spaces are **not** end-to-end encrypted.
+  - Spaces are **not** end-to-end encrypted. ATDrive encrypts on the device (see *Encryption*).
 - **No compare-and-swap** on space writes, so conflict detection has to happen on the client.

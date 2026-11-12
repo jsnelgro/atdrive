@@ -13,10 +13,11 @@ import Testing
 
     init() throws {
         let transport = pds
+        let driveKey = DriveKey.random()
         func device() -> Drive {
             Drive(
                 client: XRPCClient(service: URL(string: "https://pds.test")!, transport: transport),
-                owner: "did:plc:test", chunkSize: 4)
+                owner: "did:plc:test", driveKey: driveKey, chunkSize: 4)
         }
         drive = device()
         other = device()
@@ -462,7 +463,8 @@ import Testing
     @Test func refusesAnotherAccountsFolder() async throws {
         _ = try open()
         let stranger = Drive(
-            client: XRPCClient(service: URL(string: "https://pds.test")!, transport: pds), owner: "did:plc:other")
+            client: XRPCClient(service: URL(string: "https://pds.test")!, transport: pds), owner: "did:plc:other",
+            driveKey: DriveKey.random())
         #expect(throws: SyncError.otherAccount(folder: folder.resolvingSymlinksInPath().path, owner: "did:plc:test")) {
             try FolderSync(folder: folder, drive: stranger)
         }

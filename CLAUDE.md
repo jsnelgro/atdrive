@@ -24,6 +24,9 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
   - `OAuth.swift`, `DPoP.swift`, `LoopbackServer.swift`: atproto OAuth sign-in (PAR + PKCE +
     DPoP, loopback client ID, browser redirect caught on 127.0.0.1). The default. App-password
     login (`Auth.login`) is kept for scripts and tests.
+  - `SignIn.swift`, `DriveUnlock.swift`: sign-in from start to finish: OAuth, then the passkey that
+    unlocks the drive (WebAuthn PRF, on the page in `web/unlock/`). `Crypto/DriveKey.swift`: the
+    drive key and what it seals. Everything on the PDS is encrypted; see PLAN.md, "Encryption".
   - `Identity.swift`: handle → DID → PDS. Never hardcode a PDS or account.
   - `Spaces.swift`: **every** `com.atproto.space.*` call. The alpha API changes weekly, so keep it
     contained here.
@@ -52,6 +55,8 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
 - `Tests/ATDriveCoreTests`: Swift Testing. `FakePDS` is an in-memory transport for drive-logic
   tests.
 - `lexicons/`: schemas for our NSIDs. Update them together with `Records.swift`.
+- `web/unlock/`: the static passkey page (plain HTML and JavaScript, no build). Its sealing format
+  must match `PasskeyRequest`; `EncryptionTests` checks a value it produced.
 
 ## Conventions
 

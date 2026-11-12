@@ -7,7 +7,7 @@
       "key": "any",
       "name": "ATDrive",
       "description": "A drive of files and folders. The default drive's key is \"default\".",
-      "collections": ["me.jsnelgro.atdrive.node"]
+      "collections": ["me.jsnelgro.atdrive.node", "me.jsnelgro.atdrive.key"]
     }
   }
 }

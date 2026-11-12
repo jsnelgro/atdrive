@@ -31,7 +31,7 @@ struct Context {
         guard let saved = try store.load() else { throw ATDriveError.notLoggedIn }
         // Token refreshes are saved as they happen, so the next command starts fresh.
         let session = SessionManager(saved) { updated in try? store.save(updated) }
-        return Context(store: store, session: session, drive: await Drive(session: session))
+        return Context(store: store, session: session, drive: try await Drive(session: session))
     }
 }
 

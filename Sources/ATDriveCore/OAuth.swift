@@ -19,7 +19,8 @@ import Foundation
 public enum OAuthLogin {
     /// What ATDrive asks for. Override with `ATDRIVE_OAUTH_SCOPE`.
     ///
-    /// - Writes: only ATDrive's node records (and creating spaces).
+    /// - Writes: only ATDrive's records (files and folders, and the drive's wrapped key), and
+    ///   creating spaces.
     /// - Reads: spaces your account owns.
     /// - Blob uploads: needed for file contents.
     ///
@@ -29,47 +30,17 @@ public enum OAuthLogin {
     /// `_lexicon.atdrive.jsnelgro.me`, plus the schema records), switch to `narrowScope`.
     public static func scope(environment: [String: String] = ProcessInfo.processInfo.environment) -> String {
         if let configured = environment["ATDRIVE_OAUTH_SCOPE"], !configured.isEmpty { return configured }
-        return "atproto space:*?collection=\(Lexicon.node)&manage=create blob:*/*"
+        return "atproto space:*?\(collections)&manage=create blob:*/*"
     }
 
     /// The scope to use once ATDrive's lexicons are published: access to ATDrive's spaces only.
-    public static let narrowScope =
-        "atproto space:\(Lexicon.driveSpace)?collection=\(Lexicon.node)&manage=create blob:*/*"
+    public static let narrowScope = "atproto space:\(Lexicon.driveSpace)?\(collections)&manage=create blob:*/*"
+
+    private static let collections = "collection=\(Lexicon.node)&collection=\(Lexicon.key)"
 
     public static func clientID(environment: [String: String] = ProcessInfo.processInfo.environment) -> String {
         if let configured = environment["ATDRIVE_OAUTH_CLIENT_ID"], !configured.isEmpty { return configured }
         return "http://localhost?scope=\(FormEncoding.escape(scope(environment: environment)))"
-    }
-
-    /// The whole sign-in: `open` should show the URL in a browser. Returns once the user has
-    /// approved access there (or throws if they declined, it timed out, or the task was cancelled).
-    ///
-    /// When the browser is on another device (signing in on a remote server over SSH), its
-    /// redirect to 127.0.0.1 can't reach this machine; the page fails to load, but its address
-    /// holds the result. Pass `pastedRedirect` to accept that address from the user as well:
-    /// whichever arrives first wins. (The code in it is useless without this process's PKCE
-    /// verifier and DPoP key, so pasting it is safe.)
-    public static func signIn(
-        identifier: String, resolver: IdentityResolver = IdentityResolver(),
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        transport: any HTTPTransport = URLSessionTransport(), timeout: TimeInterval = 600,
-        open: @Sendable (URL) async throws -> Void,
-        pastedRedirect: (@Sendable () async throws -> String)? = nil
-    ) async throws -> Session {
-        let listener = try LoopbackServer()
-        let pending = try await prepare(
-            identifier: identifier, redirectURI: "http://127.0.0.1:\(listener.port)/", resolver: resolver,
-            environment: environment, transport: transport)
-        try await open(pending.authorizationURL)
-        let params: [String: String]
-        if let pastedRedirect {
-            params = try await Race<[String: String]>().first(
-                { try await listener.waitForRedirect(timeout: timeout) },
-                orUnlessItFails: { try redirectParameters(fromPasted: try await pastedRedirect()) })
-        } else {
-            params = try await listener.waitForRedirect(timeout: timeout)
-        }
-        return try await pending.complete(with: params, transport: transport)
     }
 
     /// The sign-in result from an address the user copied out of their browser
@@ -317,7 +288,7 @@ enum FormEncoding {
 
 /// Waits on two ways of getting the same result and takes the first. The first operation's
 /// failure (e.g. a timeout) ends the wait; the second's is ignored (e.g. stdin closed).
-private final class Race<Value: Sendable>: @unchecked Sendable {
+final class Race<Value: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Value, Error>?
     private var tasks: [Task<Void, Never>] = []

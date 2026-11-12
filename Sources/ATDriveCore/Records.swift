@@ -122,3 +122,170 @@ enum Timestamp {
         (try? withFraction.parse(string)) ?? (try? withoutFraction.parse(string))
     }
 }
+
+/// A node record as it's stored on the PDS: everything but the blob refs is sealed with the
+/// drive key (`DriveKey.seal`), so the PDS can't read names, folders, sizes or hashes.
+///
+///     {"$type": "me.jsnelgro.atdrive.node", "keyID": "…",
+///      "sealed": {"$bytes": "…"}, "chunks": [{"$type": "blob", …}, …]}
+///
+/// `chunks` stays readable because the PDS keeps a blob only while a record references it. The
+/// sealed part lists the same chunks' CIDs, so they can't be swapped for another file's.
+/// `NodeRecord` stays the in-memory type: `Drive` seals on the way out and opens on the way in.
+struct SealedNode: Codable, Sendable {
+    /// `DriveKey.id` of the key it was sealed with.
+    var keyID: String
+    var sealed: Data
+    var chunks: [BlobRef]?
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "$type"
+        case keyID, sealed, chunks
+    }
+
+    init(keyID: String, sealed: Data, chunks: [BlobRef]?) {
+        self.keyID = keyID
+        self.sealed = sealed
+        self.chunks = chunks
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        keyID = try container.decode(String.self, forKey: .keyID)
+        sealed = try container.decode(ATBytes.self, forKey: .sealed).data
+        chunks = try container.decodeIfPresent([BlobRef].self, forKey: .chunks)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(Lexicon.node, forKey: .type)
+        try container.encode(keyID, forKey: .keyID)
+        try container.encode(ATBytes(sealed), forKey: .sealed)
+        try container.encodeIfPresent(chunks, forKey: .chunks)
+    }
+
+    /// The sealed fields: all of `NodeRecord`, with the chunks as CIDs.
+    struct Payload: Codable {
+        var name: String
+        var parent: String?
+        var kind: NodeRecord.Kind
+        var size: Int?
+        var sha256: String?
+        var chunks: [String]?
+        var createdAt: String
+        var modifiedAt: String?
+    }
+
+    init(_ record: NodeRecord, key: DriveKey, context: String) {
+        let payload = Payload(
+            name: record.name, parent: record.parent, kind: record.kind, size: record.size,
+            sha256: record.sha256, chunks: record.chunks?.map(\.cid), createdAt: record.createdAt,
+            modifiedAt: record.modifiedAt)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        self.init(
+            keyID: key.id, sealed: key.seal(try! encoder.encode(payload), context: context), chunks: record.chunks)
+    }
+
+    func open(with key: DriveKey, context: String) throws -> NodeRecord {
+        guard keyID == key.id else {
+            throw ATDriveError.encryption("encrypted with a different key than this device's")
+        }
+        let payload = try JSONDecoder().decode(Payload.self, from: try key.open(sealed, context: context))
+        guard payload.chunks ?? [] == (chunks ?? []).map(\.cid) else {
+            throw ATDriveError.encryption("its chunks don't match its sealed list")
+        }
+        var record = NodeRecord(
+            name: payload.name, parent: payload.parent, kind: payload.kind, size: payload.size,
+            sha256: payload.sha256, chunks: chunks)
+        record.createdAt = payload.createdAt
+        record.modifiedAt = payload.modifiedAt
+        return record
+    }
+}
+
+/// A node record as listed: sealed, or plaintext from before drives were encrypted (`Drive`
+/// encrypts those when you sign in; see `Drive.encryptOlderItems`).
+enum StoredNode: Decodable, Sendable {
+    case sealed(SealedNode)
+    case plaintext(NodeRecord)
+
+    init(from decoder: Decoder) throws {
+        if let sealed = try? SealedNode(from: decoder) {
+            self = .sealed(sealed)
+        } else {
+            self = .plaintext(try NodeRecord(from: decoder))
+        }
+    }
+}
+
+/// The drive key, wrapped for one passkey: the `me.jsnelgro.atdrive.key` record.
+///
+/// The wrapping key comes from the passkey's PRF output (see `DriveUnlock`), which only the
+/// passkey can produce, so the PDS stores this without being able to open it.
+struct KeyRecord: Codable, Sendable {
+    static let passkey = "passkey"
+
+    /// How it's wrapped. Only "passkey" so far.
+    var kind: String
+    /// The passkey's credential ID, base64url.
+    var credentialID: String
+    /// `DriveKey.id` of the key inside.
+    var keyID: String
+    var wrapped: Data
+    var createdAt: String
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "$type"
+        case kind, credentialID, keyID, wrapped, createdAt
+    }
+
+    init(kind: String, credentialID: String, keyID: String, wrapped: Data, createdAt: Date = Date()) {
+        self.kind = kind
+        self.credentialID = credentialID
+        self.keyID = keyID
+        self.wrapped = wrapped
+        self.createdAt = Timestamp.format(createdAt)
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try container.decode(String.self, forKey: .kind)
+        credentialID = try container.decode(String.self, forKey: .credentialID)
+        keyID = try container.decode(String.self, forKey: .keyID)
+        wrapped = try container.decode(ATBytes.self, forKey: .wrapped).data
+        createdAt = try container.decode(String.self, forKey: .createdAt)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(Lexicon.key, forKey: .type)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(credentialID, forKey: .credentialID)
+        try container.encode(keyID, forKey: .keyID)
+        try container.encode(ATBytes(wrapped), forKey: .wrapped)
+        try container.encode(createdAt, forKey: .createdAt)
+    }
+}
+
+/// atproto `bytes` in JSON: `{"$bytes": "<base64, no padding>"}`.
+struct ATBytes: Codable {
+    var data: Data
+    init(_ data: Data) { self.data = data }
+
+    private enum CodingKeys: String, CodingKey { case bytes = "$bytes" }
+
+    init(from decoder: Decoder) throws {
+        var base64 = try decoder.container(keyedBy: CodingKeys.self).decode(String.self, forKey: .bytes)
+        base64 += String(repeating: "=", count: (4 - base64.count % 4) % 4)
+        guard let data = Data(base64Encoded: base64) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "bad $bytes"))
+        }
+        self.data = data
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(data.base64EncodedString().replacingOccurrences(of: "=", with: ""), forKey: .bytes)
+    }
+}

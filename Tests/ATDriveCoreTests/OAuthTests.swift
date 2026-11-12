@@ -76,20 +76,6 @@ import Testing
         }
     }
 
-    @Test func signInWithAPastedAddress() async throws {
-        let server = FakeAuthorizationServer()
-        let resolver = IdentityResolver(environment: ["ATDRIVE_PLC_URL": "https://plc.test"], transport: server)
-        // As on a remote machine: the browser never reaches our listener; the user pastes instead.
-        let session = try await OAuthLogin.signIn(
-            identifier: "did:plc:alice", resolver: resolver, environment: [:], transport: server, timeout: 30,
-            open: { _ in },
-            pastedRedirect: {
-                "http://127.0.0.1:9/?iss=https%3A%2F%2Fpds.test&state=\(server.lastPAR["state"]!)&code=the-code"
-            })
-        #expect(session.did == "did:plc:alice")
-        #expect(session.accessJwt == "access-1")
-    }
-
     @Test func fullSignInAgainstAFakeServer() async throws {
         let server = FakeAuthorizationServer()
         let resolver = IdentityResolver(environment: ["ATDRIVE_PLC_URL": "https://plc.test"], transport: server)

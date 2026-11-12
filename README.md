@@ -18,10 +18,11 @@ Finder like iCloud Drive or Dropbox: files download when you open them and uploa
 On Linux (a desktop, or a server you SSH into), a folder like `~/atdrive` stays in sync with it.
 On both there's also a command-line tool.
 
-> **Alpha. Don't store anything sensitive or irreplaceable.**
+> **Alpha. Don't store anything irreplaceable.**
 > - Spaces are an alpha protocol, and Bluesky's hosted alpha PDS may be wiped without warning.
-> - Spaces control *who can access* data, but they **don't encrypt it**. Whoever runs your PDS
->   can read your files.
+> - Your drive is **encrypted on your devices**, so whoever runs your PDS can't read your files or
+>   their names. Your passkey is the only way to open it: lose every copy of the passkey and the
+>   drive can't be opened again (see [Encryption](#encryption)).
 
 ## The Mac app (Finder)
 
@@ -36,7 +37,8 @@ scripts/run-app.sh
 That builds `ATDrive.app`, installs it to `~/Applications`, and launches it.
 
 1. Click the drive icon in the menu bar, enter your handle, and approve ATDrive on your account's
-   sign-in page in the browser.
+   sign-in page in the browser. The browser then asks for your passkey to unlock your drive (the
+   first time, it makes one).
 2. **ATDrive** appears in Finder's sidebar under Locations.
 3. Drag files in, open them, rename them, delete them. Changes made elsewhere (another Mac, the
    CLI) show up within about 30 seconds.
@@ -127,9 +129,11 @@ atdrive rm -r /archive/taxes
 Paths in the drive always start from the top (`/photos/cat.jpg`).
 
 **Signing in.** ATDrive uses atproto OAuth: you sign in on your own PDS's page in the browser,
-and ATDrive never sees your password.
-- **What it gets:** tokens that are tied to a key only it holds, saved in
+and ATDrive never sees your password. The browser then goes on to a page that asks for your
+passkey, which unlocks your drive (see [Encryption](#encryption)).
+- **What it gets:** tokens that are tied to a key only it holds, and your drive's key, saved in
   `~/.config/atdrive/session.json` (mode 600) for the CLI, or in the app's container on the Mac.
+  `atdrive logout` deletes both.
 - **What it asks for:**
   - writes only to ATDrive's own records;
   - creating its space;
@@ -140,11 +144,32 @@ and ATDrive never sees your password.
   backend. After that, sign in again.
 
 **Signing in on a remote machine** (over SSH, or a server without a desktop) uses the same
-command. `atdrive login` prints a link to open in a browser on any device. After you approve, the
-browser lands on a page that won't load, at an address starting with `http://127.0.0.1`. Paste that
-address back into the terminal and you're signed in.
+command. `atdrive login` prints a link to open in a browser on any device, your phone included.
+After you approve, the browser lands on a page that won't load, at an address starting with
+`http://127.0.0.1`. Paste that address back into the terminal. Then it does the same for your
+passkey: open the second link, use your passkey, and paste the address back again.
 
-For scripts, `atdrive login --app-password <handle>` signs in with an app password instead.
+For scripts, `atdrive login --app-password <handle>` signs in with an app password instead. The
+drive is still unlocked with your passkey, in the browser.
+
+## Encryption
+
+Your drive is encrypted before anything leaves your device. Your PDS stores only what it can't
+read: whoever runs it can't see your files, their names, or which folder they're in.
+
+There are no keys to manage. The first time you sign in, your browser makes a **passkey** for
+ATDrive, and your drive's key is locked with it. Passkeys sync like passwords (iCloud Keychain,
+Google Password Manager, 1Password, …), so on your other devices signing in is just Face ID,
+Touch ID or your phone. On a computer that doesn't have your passkey, most browsers can use the
+one on your phone instead (they show a QR code).
+
+- **Keep your passkey.** It's the only way to open your drive. If you lose every copy of it,
+  nobody can read your files again: not you, and not whoever runs your PDS. Deleting it from your
+  password manager does that too.
+- **What the PDS still sees:** how many files and folders there are, roughly how big each file is,
+  and when things are created and changed. It can't read or change your files without it showing,
+  but it can delete them.
+- **Drives from before encryption** are encrypted the next time you sign in.
 
 ## Conflicts
 
@@ -173,6 +198,11 @@ device settles it the same way. The Mac app and `atdrive sync` share these rules
   small update, however much a folder contains.
 - **File contents are stored as blobs** in 4 MiB chunks. Each chunk is checked against its content
   ID (CID), and each downloaded file is checked against its SHA-256.
+- **Encryption:** each record's name, folder, size and hash are sealed with AES-256-GCM, and so is
+  every chunk, under keys derived from your drive's key. The drive key is stored on the PDS only
+  wrapped by your passkey (`me.jsnelgro.atdrive.key`), using the WebAuthn PRF extension. The
+  passkey prompt runs on a small static page ([`web/unlock/`](web/unlock)), because apps can't use a
+  website's passkeys; it hands the result back to ATDrive on 127.0.0.1, sealed to a one-time key.
 - **Nothing about your account is hardcoded.** Your handle resolves to your DID, and your DID
   resolves to your PDS, the same way every atproto app does it. Optional overrides:
 
@@ -181,6 +211,7 @@ device settles it the same way. The Mac app and `atdrive sync` share these rules
   | `ATDRIVE_CONFIG_DIR` | `~/.config/atdrive` (or `$XDG_CONFIG_HOME/atdrive`) |
   | `ATDRIVE_PLC_URL` | `https://plc.directory` |
   | `ATDRIVE_HANDLE_RESOLVER` | `https://public.api.bsky.app` (used when a handle has no `/.well-known/atproto-did`) |
+  | `ATDRIVE_UNLOCK_PAGE` | `https://atdrive.jsnelgro.me/unlock/` (the passkey page; passkeys belong to its host name) |
 
 ## Development
 
@@ -205,7 +236,13 @@ ATDRIVE_LIVE_HANDLE=you.spaces-alpha.bsky.network ATDRIVE_LIVE_PASSWORD=xxxx-xxx
 - `OAuthLiveTests` needs no password. It starts a real OAuth sign-in and checks the server accepts
   it, up to the point where a person would approve it.
 - `LiveTests` runs a full upload/download round trip using an app password, and cleans up after
-  itself.
+  itself. It uses a separate drive (`live-test`) with a key made from the password, so it needs
+  no passkey and doesn't touch your real drive.
+
+The unlock page is static: serve [`web/`](web) at the address in `ATDRIVE_UNLOCK_PAGE`. Passkeys
+are tied to its host name, so changing the host later means making new ones. To try it locally,
+serve `web/` on `http://localhost:<port>` and point `ATDRIVE_UNLOCK_PAGE` at
+`http://localhost:<port>/unlock/`.
 
 Mac app logs (app and extension):
 
@@ -228,6 +265,8 @@ See [PLAN.md](PLAN.md) for the roadmap and design notes.
 - **`atdrive sync` on a Mac** works, but two names that differ only in case (`Notes.txt` and
   `notes.txt`) clash on Mac disks. The app doesn't have this problem.
 - **No trash on the drive.** Deleting in Finder or in a synced folder deletes from the drive.
+- **One passkey per drive.** Adding a second passkey, or a recovery key to print and keep, comes
+  later (see PLAN.md).
 - **Symlinks and aliases aren't stored.**
 - **Transfers are sequential.**
 - **A single file is capped at about 30 GB,** because its chunk list has to fit in one 1 MiB

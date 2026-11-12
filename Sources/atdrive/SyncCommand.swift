@@ -118,7 +118,10 @@ struct Sync: AsyncParsableCommand {
     private static func waitForSignIn(after expired: Session? = nil) async throws -> Context {
         var said = expired != nil
         while true {
-            if let saved = try? SessionStore().load(), saved != expired { return try await Context.load() }
+            // A session saved before drives were encrypted has no drive key: wait for a new sign-in.
+            if let saved = try? SessionStore().load(), saved != expired, saved.driveKey != nil {
+                return try await Context.load()
+            }
             if !said {
                 SyncLog.write("Not signed in. Run `atdrive login <handle>`; syncing starts once you have.")
                 said = true

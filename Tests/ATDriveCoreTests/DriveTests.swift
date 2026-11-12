@@ -11,7 +11,7 @@ import Testing
     init() throws {
         drive = Drive(
             client: XRPCClient(service: URL(string: "https://pds.test")!, transport: pds),
-            owner: "did:plc:test", chunkSize: 4)
+            owner: "did:plc:test", driveKey: DriveKey.random(), chunkSize: 4)
         directory = try temporaryDirectory()
     }
 
@@ -98,16 +98,18 @@ import Testing
     }
 
     @Test func oddRecordsAreSkippedNotFatal() async throws {
-        pds.insertRawRecord(
-            rkey: "3aaaaaaaaaaa2",
-            ["$type": Lexicon.node, "name": "future", "kind": "symlink", "createdAt": "2026-01-01T00:00:00Z"])
-        pds.insertRawRecord(
-            rkey: "3aaaaaaaaaaa3",
-            ["$type": Lexicon.node, "name": "ok", "kind": "folder", "createdAt": "2026-01-01T00:00:00Z"])
-        pds.insertRawRecord(
-            rkey: "3aaaaaaaaaaa4",
-            ["$type": Lexicon.node, "name": "..", "kind": "file", "createdAt": "2026-01-01T00:00:00Z"])
+        // Not a node record at all.
+        pds.insertRawRecord(rkey: "3aaaaaaaaaaa2", ["$type": Lexicon.node, "something": "else"])
+        // A name that could escape a local folder.
+        try insertSealed(rkey: "3aaaaaaaaaaa3", NodeRecord(name: "ok", parent: nil, kind: .folder))
+        try insertSealed(rkey: "3aaaaaaaaaaa4", NodeRecord(name: "..", parent: nil, kind: .file))
         #expect(try await drive.tree().children(of: nil).map(\.name) == ["ok"])
+    }
+
+    func insertSealed(rkey: String, _ record: NodeRecord) throws {
+        let sealed = SealedNode(record, key: drive.driveKey, context: "\(drive.space)/\(Lexicon.node)/\(rkey)")
+        let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(sealed)) as! [String: Any]
+        pds.insertRawRecord(rkey: rkey, json)
     }
 
     @Test func rejectsInvalidNames() async throws {

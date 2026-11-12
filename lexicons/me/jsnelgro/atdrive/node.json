@@ -5,45 +5,56 @@
     "main": {
       "type": "record",
       "key": "tid",
-      "description": "A file or folder in a drive. The record key is its permanent ID: renames and moves update the record, never the key.",
+      "description": "A file or folder in a drive. The record key is its permanent ID: renames and moves update the record, never the key. Everything but the blob refs is sealed with the drive key, so the PDS can't read it.",
       "record": {
         "type": "object",
-        "required": ["name", "kind", "createdAt"],
+        "required": ["keyID", "sealed"],
         "properties": {
-          "name": {
+          "keyID": {
             "type": "string",
-            "maxLength": 255,
-            "description": "File or folder name. Not empty, not '.' or '..', no '/'."
+            "maxLength": 64,
+            "description": "Public ID of the drive key it was sealed with."
           },
-          "parent": {
-            "type": "string",
-            "format": "record-key",
-            "description": "Record key of the folder this is in. Absent for the top level."
-          },
-          "kind": {
-            "type": "string",
-            "knownValues": ["file", "folder"]
-          },
-          "size": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Files only: size in bytes."
-          },
-          "sha256": {
-            "type": "string",
-            "description": "Files only: hex SHA-256 of the whole file."
+          "sealed": {
+            "type": "bytes",
+            "description": "AES-256-GCM ([format 0x01][nonce 12][ciphertext][tag 16]) of the JSON #payload, under a key derived from the drive key, with '<space URI>/me.jsnelgro.atdrive.node/<rkey>' as associated data."
           },
           "chunks": {
             "type": "array",
             "items": { "type": "blob" },
-            "description": "Files only: the contents, split into blobs. Concatenated in order, they are the file."
-          },
-          "createdAt": { "type": "string", "format": "datetime" },
-          "modifiedAt": {
-            "type": "string",
-            "format": "datetime",
-            "description": "Files only: the file's own modification time."
+            "description": "Files only: the contents, split into chunks, each encrypted (same format as 'sealed', under a key derived from the drive key). Decrypted and concatenated in order, they are the file. Readable so the PDS keeps the blobs."
           }
+        }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "description": "What 'sealed' holds.",
+      "required": ["name", "kind", "createdAt"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 255,
+          "description": "File or folder name. Not empty, not '.' or '..', no '/'."
+        },
+        "parent": {
+          "type": "string",
+          "format": "record-key",
+          "description": "Record key of the folder this is in. Absent for the top level."
+        },
+        "kind": { "type": "string", "knownValues": ["file", "folder"] },
+        "size": { "type": "integer", "minimum": 0, "description": "Files only: size in bytes." },
+        "sha256": { "type": "string", "description": "Files only: hex SHA-256 of the whole file." },
+        "chunks": {
+          "type": "array",
+          "items": { "type": "string", "format": "cid" },
+          "description": "Files only: the CIDs of the record's 'chunks', in order, so they can't be swapped."
+        },
+        "createdAt": { "type": "string", "format": "datetime" },
+        "modifiedAt": {
+          "type": "string",
+          "format": "datetime",
+          "description": "Files only: the file's own modification time."
         }
       }
     }

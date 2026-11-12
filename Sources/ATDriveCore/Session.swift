@@ -19,6 +19,8 @@ public struct Session: Codable, Sendable, Equatable {
     public var refreshJwt: String
     /// Set for OAuth sessions.
     public var oauth: OAuthInfo?
+    /// The drive's key (`DriveKey`), once this device has unlocked the drive. Sign-in adds it.
+    public var driveKey: Data?
 
     public init(
         did: String, handle: String, service: URL, accessJwt: String, refreshJwt: String, oauth: OAuthInfo? = nil
@@ -164,7 +166,7 @@ struct SessionTokens: Decodable {
 
 public enum Auth {
     /// Logs in with a handle (or DID) and an app password, for places without a browser
-    /// (servers, scripts, tests). Everywhere else, use `OAuthLogin.signIn`.
+    /// (servers, scripts, tests). Everywhere else, use `SignIn.run`.
     public static func login(
         identifier: String, password: String, resolver: IdentityResolver,
         transport: any HTTPTransport = URLSessionTransport()
