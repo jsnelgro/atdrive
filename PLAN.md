@@ -460,9 +460,10 @@ Checked against the sharing plan (#26, #27) and the web milestone while reworkin
 - **Memberships are one sealed record each.** Member records for shares (#22) should take the
   same shape: one record per member, sealed with the share's current key, re-sealed on rotation.
 - **Turning a share's encryption off** publishes that share's keys, not the drive's.
-- **Turning the home drive's encryption off** publishes the home keys, and with them what's
-  sealed in the home drive: the keyrings of encrypted shares (in mounts) and the account's
-  sharing key. The sharing plan (#27) and #19 say what happens to each first.
+- **Switching a drive's encryption, either way, ends its sharing.** Turning it off publishes the
+  home keys, and with them what's sealed in the home drive: the keyrings of encrypted shares (in
+  mounts) and the account's sharing key. Rather than handle each case, a switch stops all
+  sharing first, and the user shares again afterwards (the sharing plan, #27).
 - **A web client** needs no cryptography for a plain drive, which is the default, and only
   WebCrypto for an encrypted one. See `docs/FORMAT.md`, *A web client*.
 - **Not done here:** node IDs as (space, rkey), mounts, credentials for other accounts' spaces.
