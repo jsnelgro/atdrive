@@ -314,7 +314,8 @@ public struct DriveHistory: Sendable {
         let earliest = since.map(TID.lowest(at:))
         var found: [String: (deletion: Version, before: Version, record: NodeRecord)] = [:]
         for node in byNode.keys where current.nodes[node] == nil {
-            guard let lineage = lineages.of(node), lineage.head.record.isDeletion, lineage.line.count > 1,
+            // Moved into a share (`shared`) isn't deleted: it's in the drive, in the mount.
+            guard let lineage = lineages.of(node), lineage.head.record.change == .deleted, lineage.line.count > 1,
                 earliest.map({ lineage.head.id >= $0 }) ?? true, let record = record(at: lineage.line[1])
             else { continue }
             found[node] = (lineage.head, lineage.line[1], record)

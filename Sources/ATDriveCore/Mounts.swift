@@ -198,7 +198,7 @@ public final class JoinedDrive: Sendable {
     public let home: Drive
     /// How other accounts' spaces are read; `nil`: they can't be (they're held).
     public let access: SpaceAccess?
-    private let opened = Locked<[String: Opened]>([:])
+    let opened = Locked<[String: Opened]>([:])
     /// The last snapshot `update` made: where writes find the nodes they move or delete.
     private let latest = Locked<JoinedSnapshot?>(nil)
 

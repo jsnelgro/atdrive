@@ -40,10 +40,12 @@ struct EncryptionOn: AsyncParsableCommand {
     var yes = false
 
     func run() async throws {
-        let drive = try await Context.locked(makingIdentity: true).drive
+        let context = try await Context.locked(makingIdentity: true)
+        let drive = context.drive
         let mode = try await drive.open()
         var adopt = false
         if mode == .plain {
+            guard try await SharingNotice.endSharing(context.joined, yes: yes) else { return }
             let status = try await drive.conversionEstimate(to: .encrypted)
             print(
                 """
@@ -107,6 +109,7 @@ struct EncryptionOff: AsyncParsableCommand {
                   - The drive's devices and its recovery key are forgotten. Any device signed in to
                     your account can use the drive.
                 """)
+            guard try await SharingNotice.endSharing(Context.load().joined, yes: yes) else { return }
             guard yes || Prompt.confirm("Turn encryption off?") else { return }
             try await drive.disableEncryption()
             print("✓ The drive isn't encrypted any more.")
@@ -158,5 +161,29 @@ enum EncryptionReport {
             print("✓ Everything in the drive is stored \(status.mode == .encrypted ? "encrypted" : "unencrypted").")
         }
         if status.pending > 0 || status.unsealed > 0 || status.unreadable > 0 { show(status) }
+    }
+}
+
+/// Switching the drive's encryption ends its sharing (PLAN.md, "Encrypted and plain shares").
+enum SharingNotice {
+    /// Says what stops being shared, asks, and ends it. False if the user said no.
+    static func endSharing(_ joined: JoinedDrive, yes: Bool) async throws -> Bool {
+        let snapshot = try await joined.update(nil)
+        guard !snapshot.mounts.isEmpty else { return true }
+        let shares = try await joined.ownShares(in: snapshot)
+        let others = snapshot.mounts.filter { $0.value.readOnly }.compactMap { snapshot.tree.nodes[$0.key] }
+        print("Switching encryption ends sharing. Share again afterwards.")
+        for share in shares {
+            let with = share.members.map(\.did)
+            var who = with.isEmpty ? "nobody yet" : with.joined(separator: ", ")
+            if share.hasLink { who += with.isEmpty ? " (but its link is on)" : ", and its link" }
+            print("  - \(share.path): stops being shared (with \(who)); its files stay where they are")
+        }
+        for mount in others {
+            print("  - \(snapshot.tree.path(of: mount)): shared with you; removed from your drive (open its link again later)")
+        }
+        guard yes || Prompt.confirm("Stop sharing these?") else { return false }
+        for path in try await joined.endSharing() { print("✓ \(path): no longer shared") }
+        return true
     }
 }
