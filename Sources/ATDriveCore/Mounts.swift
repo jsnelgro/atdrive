@@ -167,12 +167,22 @@ public struct JoinedSnapshot: Sendable {
         return Self.join(homePast, past)
     }
 
-    /// The home tree with each readable mount's tree inside its mount node.
+    /// The home tree with each mount's tree inside its mount node. A held mount keeps what it
+    /// had (read-only, it can't be changed anyway); one that was never read is an unreadable
+    /// record, so nothing that came from it is taken for deleted, here or by the Mac.
     static func join(_ home: DriveTree, _ mounts: [String: MountState]) -> DriveTree {
         var nodes = Array(home.nodes.values)
         var unreadable = Array(home.unreadable.values)
-        for (id, state) in mounts.sorted(by: { $0.key < $1.key }) where home.nodes[id] != nil && state.problem == nil {
-            guard let tree = state.snapshot?.tree else { continue }
+        for (id, state) in mounts.sorted(by: { $0.key < $1.key }) where home.nodes[id] != nil {
+            if state.problem?.isDeletion == true { continue }
+            guard let tree = state.snapshot?.tree else {
+                if state.isHeld, let mount = home.nodes[id] {
+                    nodes.removeAll { $0.id == id }
+                    unreadable.append(
+                        UnreadableNode(id: id, cid: mount.cid, reason: .unavailable, value: nil))
+                }
+                continue
+            }
             for node in tree.nodes.values {
                 var record = node.record
                 record.parent = tree.parent(of: node.id).map { NodeID.join(id, $0) } ?? id

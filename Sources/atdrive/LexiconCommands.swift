@@ -40,13 +40,15 @@ struct LexiconsPublish: AsyncParsableCommand {
             open: { url in print("Sign in as \(handle) to publish:\n\n  \(url.absoluteString)\n") })
         let client = XRPCClient(service: session.service, session: SessionManager(session))
         for (id, value) in schemas.sorted(by: { $0.id < $1.id }) {
-            try await client.putPublicRecord(repo: session.did, collection: "com.atproto.lexicon.schema", rkey: id, record: value)
+            try await client.putPublicRecord(
+                repo: session.did, collection: "com.atproto.lexicon.schema", rkey: id, record: value)
             print("✓ \(id)")
         }
         await Auth.logout(session)
-        let authorities = Set(schemas.map { id, _ in
-            id.split(separator: ".").dropLast().reversed().joined(separator: ".")
-        })
+        let authorities = Set(
+            schemas.map { id, _ in
+                id.split(separator: ".").dropLast().reversed().joined(separator: ".")
+            })
         print("\nNow add this DNS record\(authorities.count == 1 ? "" : "s") (TXT):")
         for authority in authorities.sorted() { print("  _lexicon.\(authority)  \"did=\(session.did)\"") }
     }

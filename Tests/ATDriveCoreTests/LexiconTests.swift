@@ -16,7 +16,8 @@ import Testing
             ids.insert(try #require(value["id"]?.string))
         }
         let records = [
-            Lexicon.node, Lexicon.version, Lexicon.chunks, Lexicon.settings, Lexicon.device, Lexicon.member, Lexicon.link,
+            Lexicon.node, Lexicon.version, Lexicon.chunks, Lexicon.settings, Lexicon.device, Lexicon.member,
+            Lexicon.link,
             Lexicon.contact,
         ]
         #expect(ids.isSuperset(of: records + [Lexicon.driveSpace, Lexicon.shareKey]))

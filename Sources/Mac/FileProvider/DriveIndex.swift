@@ -44,6 +44,7 @@ actor DriveIndex {
         }
         let joined = JoinedDrive(
             home: drive, access: SpaceAccess(ownClient: drive.client, resolver: IdentityResolver()))
+        Item.account = session.did
         cachedDrive = joined
         return joined
     }

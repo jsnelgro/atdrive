@@ -37,6 +37,8 @@ public struct UnreadableNode: Sendable, Equatable {
         case notSealed
         /// A file whose chunk list continues in `chunks` records, and one of them isn't there.
         case incomplete
+        /// A shared folder that can't be read right now (`MountProblem`).
+        case unavailable
 
         public var description: String {
             switch self {
@@ -48,6 +50,7 @@ public struct UnreadableNode: Sendable, Equatable {
                 "it isn't encrypted with the drive's keys, though the drive is: a device that hadn't noticed "
                     + "wrote it, or the server did (`atdrive encryption on` can encrypt and keep it)"
             case .incomplete: "part of its list of contents is missing from the server"
+            case .unavailable: "it's a shared folder that can't be read right now"
             }
         }
     }

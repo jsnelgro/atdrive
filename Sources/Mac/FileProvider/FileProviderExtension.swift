@@ -11,7 +11,7 @@ import os
 /// The system keeps the local copies; this class only moves data between them and the drive.
 /// Every callback starts a task, does its work through `Drive`, and calls the completion handler.
 @objc(ATDriveFileProviderExtension)
-final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
+final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, NSFileProviderCustomAction {
     private let domain: NSFileProviderDomain
     private let index = DriveIndex()
     private let logger = Logger(subsystem: Log.subsystem, category: "extension")
@@ -370,5 +370,30 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     private func fail(_ operation: String, _ error: Error) -> Error {
         logger.error("\(operation, privacy: .public) failed: \(String(describing: error), privacy: .public)")
         return FileProviderErrors.map(error)
+    }
+
+    // MARK: Sharing actions
+
+    /// Finder's Share…, Copy Link and Stop Sharing (`NSExtensionFileProviderActions`): handed to
+    /// the menu-bar app, which can show windows (`SharingRequest`).
+    func performAction(
+        identifier actionIdentifier: NSFileProviderExtensionActionIdentifier,
+        onItemsWithIdentifiers itemIdentifiers: [NSFileProviderItemIdentifier],
+        completionHandler: @escaping (Error?) -> Void
+    ) -> Progress {
+        let progress = Progress(totalUnitCount: 1)
+        defer { progress.completedUnitCount = 1 }
+        let name = actionIdentifier.rawValue.split(separator: ".").last.map(String.init) ?? ""
+        guard let action = SharingRequest.Action(rawValue: name), let item = itemIdentifiers.first else {
+            completionHandler(CocoaError(.featureUnsupported))
+            return progress
+        }
+        do {
+            try SharingRequest(action: action, item: item.rawValue).post()
+            completionHandler(nil)
+        } catch {
+            completionHandler(fail("sharing action", error))
+        }
+        return progress
     }
 }

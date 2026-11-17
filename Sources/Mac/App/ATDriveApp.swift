@@ -6,11 +6,14 @@ import SwiftUI
 /// under Locations; this is just for signing in and a few shortcuts.
 @main
 struct ATDriveApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var model: AppModel
 
     init() {
         let model = AppModel()
         model.start()
+        SharingCoordinator.shared.makeDrive = { [weak model] in await model?.joinedDrive() }
+        SharingCoordinator.shared.start()
         _model = State(initialValue: model)
     }
 
@@ -181,6 +184,7 @@ struct MenuContent: View {
             Label("@\(handle)", systemImage: "person.crop.circle").font(.headline)
             Button("Show in Finder") { Task { await model.showInFinder() } }
             Button("Check for Changes") { Task { await model.syncNow() } }
+            Button("Add Shared Link…") { SharingCoordinator.shared.askForLink() }
             Button("Sign Out") { Task { await model.signOut() } }
                 .disabled(model.busy)
         }

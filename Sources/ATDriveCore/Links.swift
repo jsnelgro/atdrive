@@ -208,7 +208,7 @@ extension JoinedDrive {
     /// Mounts of other people's shares in this drive.
     public func sharedWithMe(in snapshot: JoinedSnapshot) -> [(mount: Node, state: MountState)] {
         snapshot.mounts.filter(\.value.readOnly).compactMap { id, state in
-            snapshot.tree.nodes[id].map { ($0, state) }
+            snapshot.home.tree.nodes[id].map { ($0, state) }
         }.sorted { $0.mount.name < $1.mount.name }
     }
 }

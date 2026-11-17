@@ -23,6 +23,17 @@
 	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>ATDrive share link</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>atdrive</string>
+			</array>
+		</dict>
+	</array>
 	<key>ATDriveAppGroup</key>
 	<string>__APP_GROUP__</string>
 </dict>

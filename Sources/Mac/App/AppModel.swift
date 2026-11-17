@@ -50,6 +50,7 @@ final class AppModel {
     @ObservationIgnored private var approval: Task<Void, Never>?
     /// The drive, as this Mac (`DeviceIdentity`), while its keys are being set up.
     @ObservationIgnored private var drive: Drive?
+    @ObservationIgnored private var joined: JoinedDrive?
     private let logger = Logger(subsystem: Log.subsystem, category: "app")
 
     /// How often to check the drive for changes made elsewhere.
@@ -113,6 +114,7 @@ final class AppModel {
         waitingForApproval = false
         arrived = nil
         drive = nil
+        joined = nil
         do {
             // Keeps a copy of any edits that hadn't finished uploading.
             if let preserved = try await NSFileProviderManager.remove(
@@ -255,6 +257,17 @@ final class AppModel {
         message = nil
         state = .signedIn(handle: handle)
         await addToFinder(handle: handle)
+    }
+
+    /// The drive with what's mounted in it, opened, for sharing: `nil` until signed in.
+    func joinedDrive() async -> JoinedDrive? {
+        guard case .signedIn = state else { return nil }
+        if let joined { return joined }
+        guard let drive = await makeDrive(), (try? await drive.open()) != nil else { return nil }
+        let joined = JoinedDrive(
+            home: drive, access: SpaceAccess(ownClient: drive.client, resolver: IdentityResolver()))
+        self.joined = joined
+        return joined
     }
 
     /// The drive as this Mac: its identity is made the first time, in the App Group container, so
