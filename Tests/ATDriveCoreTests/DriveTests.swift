@@ -26,7 +26,7 @@ import Testing
         #expect(pds.spaceExists)
     }
 
-    /// Only `create` makes a drive: it has a recovery key to show. A write doesn't.
+    /// Only `create` makes a drive: whether it's encrypted is someone's decision. A write doesn't.
     @Test func writesDontCreateADrive() async throws {
         let empty = FakePDS()
         let device = empty.device(keyring: Keyring(DriveKey()))

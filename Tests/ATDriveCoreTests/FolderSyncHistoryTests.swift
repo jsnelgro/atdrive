@@ -42,7 +42,7 @@ extension FolderSyncTests {
         try await expectSettled(fresh)
     }
 
-    /// Creating a drive shows its recovery key, so only `atdrive login` does: never sync.
+    /// Creating a drive decides whether it's encrypted, so only `atdrive login` does: never sync.
     @Test func syncNeverCreatesTheDrive() async throws {
         pds.wipe()
         let sync = try open()

@@ -5,14 +5,37 @@
     "main": {
       "type": "record",
       "key": "literal:self",
-      "description": "The drive's settings, which every device follows. Written when the drive is created, and when a device is approved or removed. Sealed, so the PDS can't change them. The sealed payload is {retentionDays (default 30), driveID, roster: [{id, name, publicKey}]}: how long history is kept; a random ID (a drive with another one was wiped and created again); and the devices approved to hold the drive's keys, whose public keys keyrings are wrapped for and accepted from.",
+      "description": "The drive's settings, which every device follows. How this record is stored is what says whether the drive is encrypted: sealed (only the sealed field) on an encrypted drive, plain on one that isn't. Written when the drive is created, when encryption is turned on or off, and when a device is removed.",
       "record": {
         "type": "object",
-        "required": ["sealed"],
         "properties": {
+          "retentionDays": {
+            "type": "integer",
+            "description": "How long history is kept. 30 if absent."
+          },
+          "driveID": {
+            "type": "string",
+            "description": "Random, made with the drive. A drive with another ID was wiped and created again."
+          },
+          "generation": {
+            "type": "integer",
+            "description": "Counts the changes to this record. On an encrypted drive, a device refuses settings older than ones it has read."
+          },
+          "converting": {
+            "type": "boolean",
+            "description": "Encrypted drives: records that aren't sealed with the drive's keys are still read, while what was there before encryption was turned on is being encrypted."
+          },
+          "retiredKeys": {
+            "type": "array",
+            "items": {
+              "type": "bytes"
+            },
+            "description": "The drive's keys from when it was last encrypted, published when encryption was turned off: what's still sealed with them stays readable, and a device that held them can tell the drive's own devices turned encryption off."
+          },
           "sealed": {
             "type": "ref",
-            "ref": "me.jsnelgro.atdrive.defs#sealedValue"
+            "ref": "me.jsnelgro.atdrive.defs#sealedValue",
+            "description": "On an encrypted drive: every other field, sealed."
           }
         }
       }

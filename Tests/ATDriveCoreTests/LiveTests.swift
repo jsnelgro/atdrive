@@ -62,9 +62,10 @@ struct LiveTests {
     }
 }
 
-/// The live account's drive, unlocked by a new test device: it creates the drive if the account
-/// has none (and drops its recovery key), or unlocks it with `ATDRIVE_LIVE_RECOVERY_KEY`. Each
-/// run that unlocks leaves a device record behind (`atdrive devices remove` clears them).
+/// The live account's drive, opened by a new test device: it creates the drive if the account
+/// has none (plain, or encrypted with `ATDRIVE_TEST_MODE=encrypted`, dropping its recovery key),
+/// opens a plain one, or unlocks an encrypted one with `ATDRIVE_LIVE_RECOVERY_KEY`. Each run
+/// that unlocks leaves a device record behind (`atdrive devices remove` clears them).
 func openLiveDrive(session: Session, manager: SessionManager, transfers: TransferOptions = .standard) async throws
     -> Drive
 {
@@ -72,11 +73,12 @@ func openLiveDrive(session: Session, manager: SessionManager, transfers: Transfe
         client: XRPCClient(service: session.service, session: manager), owner: session.did, transfers: transfers,
         identity: DeviceIdentity(name: "atdrive live test"))
     do {
-        _ = try await drive.create()
+        _ = try await drive.create(encrypted: TestMode.encrypted)
     } catch DriveAccessError.driveExists {
+        if (try? await drive.open()) == .plain { return drive }
         let text = try #require(
             ProcessInfo.processInfo.environment["ATDRIVE_LIVE_RECOVERY_KEY"],
-            "the account has a drive: set ATDRIVE_LIVE_RECOVERY_KEY to its recovery key")
+            "the account's drive is encrypted: set ATDRIVE_LIVE_RECOVERY_KEY to its recovery key")
         try await drive.unlock(recoveryKey: try RecoveryKey(parsing: text))
     }
     return drive

@@ -5,20 +5,81 @@
     "main": {
       "type": "record",
       "key": "tid",
-      "description": "A file or folder in a drive. The record key is its permanent ID: renames and moves update the record, never the key. All but the chunks' blob refs is sealed. The sealed payload is {name, parent?, kind ('file' or 'folder'), size?, sha256?, chunkIDs?, createdAt, modifiedAt?, version?, contentsFrom?, continuations?}: parent is the folder's record key; sha256 is of the whole file, in hex; chunkIDs decrypt the chunks, in the same order; version is the record key of the node's current version; contentsFrom, of the version that holds these chunks. A chunk list too long for one record is in that version's me.jsnelgro.atdrive.chunks records instead: continuations says how many, and the record holds neither chunks nor chunkIDs.",
+      "description": "A file or folder in a drive. The record key is its permanent ID: renames and moves update the record, never the key. Stored plain on a drive that isn't encrypted: the fields below, as they are. Stored sealed on an encrypted drive: only chunks (the blob refs, which the PDS needs to keep the blobs) and sealed, which holds every other field. A reader tells the two apart by whether sealed is there, and a drive being converted holds both.",
       "record": {
         "type": "object",
-        "required": ["sealed"],
         "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "parent": {
+            "type": "string",
+            "description": "The folder's record key. Absent at the top level."
+          },
+          "kind": {
+            "type": "string",
+            "knownValues": [
+              "file",
+              "folder"
+            ]
+          },
+          "size": {
+            "type": "integer",
+            "description": "Files: the size in bytes."
+          },
+          "sha256": {
+            "type": "string",
+            "description": "Files: SHA-256 of the whole file, in hex."
+          },
           "chunks": {
             "type": "array",
-            "items": { "type": "blob" },
-            "description": "Files only: the contents, in encrypted chunks, in order. Readable so the PDS keeps the blobs while the record references them. Absent when they're in chunks records (continuations)."
+            "items": {
+              "type": "blob"
+            },
+            "description": "Files: the contents, in chunks, in order: the file's bytes on a plain drive, ciphertext on an encrypted one. Absent when they're in chunks records (continuations)."
+          },
+          "chunkIDs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The IDs that decrypt the chunks, in the same order (32 bytes each, base64 without padding). Absent when the chunks are plain. In a plain record they're readable, so the chunks are too: that only happens after encryption was turned off."
+          },
+          "chunkKey": {
+            "type": "string",
+            "maxLength": 16,
+            "description": "The key ID of the drive key the chunk IDs were made with."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime"
+          },
+          "modifiedAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "Files: the file's own modification time."
+          },
+          "version": {
+            "type": "string",
+            "description": "The record key of the node's current version."
+          },
+          "contentsFrom": {
+            "type": "string",
+            "description": "Files: the record key of the version that holds these chunks."
+          },
+          "continuations": {
+            "type": "integer",
+            "description": "Files: how many me.jsnelgro.atdrive.chunks records hold the chunk list, when it's too long for one record. The record then has neither chunks nor chunkIDs."
+          },
+          "continuationsFrom": {
+            "type": "integer",
+            "description": "The number of the first of those records, when it isn't 1."
           },
           "sealed": {
             "type": "ref",
             "ref": "me.jsnelgro.atdrive.defs#sealedValue",
-            "description": "Everything else, sealed for this collection and record key."
+            "description": "On an encrypted drive: every other field, as a JSON object, sealed for this space, collection and record key. The record then has only this and chunks."
           }
         }
       }

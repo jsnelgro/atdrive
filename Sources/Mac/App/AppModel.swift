@@ -5,20 +5,23 @@ import FileProvider
 import Observation
 import os
 
-/// The menu-bar app's state. The app itself is small: it signs you in, gets this Mac the drive's
-/// keys (the drive is encrypted), tells macOS about the drive (a File Provider "domain"), and
-/// nudges the extension to check for changes. All file transfers happen in the extension.
+/// The menu-bar app's state. The app itself is small: it signs you in, opens the drive (getting
+/// this Mac its keys, if the drive is encrypted), tells macOS about the drive (a File Provider
+/// "domain"), and nudges the extension to check for changes. All file transfers happen in the
+/// extension.
 @MainActor @Observable
 final class AppModel {
     enum State: Equatable {
         case signedOut
         /// Waiting for the user to approve access in the browser.
         case signingIn
-        /// Signed in; opening the drive with this Mac's keys.
+        /// Signed in; opening the drive (with this Mac's keys, if it's encrypted).
         case openingDrive(handle: String)
-        /// A drive just created: its recovery key, shown until the user says they've saved it.
+        /// An encrypted drive just created: its recovery key, shown until the user says they've
+        /// saved it.
         case showingRecoveryKey(handle: String, key: String)
-        /// A drive this Mac has no keys for: approval from another device, or the recovery key.
+        /// An encrypted drive this Mac has no keys for: approval from another device, or the
+        /// recovery key.
         case needsKeys(handle: String)
         case signedIn(handle: String)
     }
@@ -131,9 +134,10 @@ final class AppModel {
 
     // MARK: The drive's keys
 
-    /// Opens the drive with this Mac's keys. With no drive yet, creates it and shows its recovery
-    /// key; for a drive this Mac has no keys for, asks how to get them. Only this, never the
-    /// extension, creates a drive: it has a recovery key to show.
+    /// Opens the drive. With no drive yet, creates one: not encrypted, which is the default
+    /// (`atdrive encryption on` turns encryption on, and shows the recovery key). For an
+    /// encrypted drive this Mac has no keys for, asks how to get them. Only this, never the
+    /// extension, creates a drive.
     private func openDrive(handle: String) async {
         guard let drive = await makeDrive() else {
             message = "Couldn't read this Mac's keys from the App Group container."
@@ -142,12 +146,15 @@ final class AppModel {
         }
         self.drive = drive
         do {
-            try await drive.unlock()
+            try await drive.open()
             await finishOpening(handle: handle)
         } catch DriveAccessError.noDrive {
             do {
-                let key = try await drive.create()
-                state = .showingRecoveryKey(handle: handle, key: key.formatted)
+                if let key = try await drive.create() {
+                    state = .showingRecoveryKey(handle: handle, key: key.formatted)
+                } else {
+                    await finishOpening(handle: handle)
+                }
             } catch DriveAccessError.driveExists {
                 state = .needsKeys(handle: handle)  // another device made it a moment ago
             } catch {
