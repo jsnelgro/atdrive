@@ -6,6 +6,14 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
 
 ## Commands
 
+- **No `swift` on PATH (Linux sandbox)?** Run `scripts/setup-swift.sh`, then source the file it
+  names (`. ~/.swift/env.sh`). Don't hunt for another way to install Swift. It installs the
+  newest release of the series CI uses (6.4) from `download.swift.org`. If that host isn't
+  reachable (the sandbox's network allowlist), it falls back to Swift 6.0.3 from Ubuntu's
+  package archive and holds swift-crypto at 4.x in a local-only change that git ignores.
+  Everything builds and the tests pass that way, but CI is the real check, and
+  `scripts/setup-swift.sh --undo` must run before a real change to `Package.swift`. Swift
+  Testing on 6.0 can't take `try` inside `#expect(...)`: compute the value first.
 - `scripts/test.sh`: unit tests (`--filter Name` to run some), run twice: the drive-logic suites
   on a plain drive, then on an encrypted one (`ATDRIVE_TEST_MODE=plain` or `=encrypted` runs one;
   `TestMode` in `FakePDS.swift`). Anything about how the drive behaves has to pass on both. They
