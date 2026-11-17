@@ -2,7 +2,8 @@ import Crypto
 import Foundation
 
 /// This device, as drives know it: an ID (the key of its device record), a name, and a Curve25519
-/// key pair that the drive's keyring is wrapped for. And what it trusts (`trust`).
+/// key pair that an encrypted drive's keyring is wrapped for. And what it trusts in each drive it
+/// has held the keys of (`trust`). A drive that isn't encrypted needs none of it.
 ///
 /// It's kept where the session is (`DeviceStore`: `device.json` beside `session.json`, or the
 /// Mac's App Group container), never in the drive. The private key never leaves the device. The
@@ -14,14 +15,16 @@ public struct DeviceIdentity: Codable, Sendable, Equatable, CustomStringConverti
     /// Shown in device lists and pairing prompts, and recorded on every change it makes.
     public var name: String
     private let privateKeyData: Bytes
-    public var trust: DeviceTrust
+    /// What this device trusts, by drive (its space's URI). Trust in one says nothing about
+    /// another.
+    public var trust: [String: DeviceTrust]
 
     /// A new device: a new ID and key pair.
     public init(name: String = DeviceName.current) {
         id = TID.next()
         self.name = name
         privateKeyData = Bytes(Curve25519.KeyAgreement.PrivateKey().rawRepresentation)
-        trust = DeviceTrust()
+        trust = [:]
     }
 
     public var privateKey: Curve25519.KeyAgreement.PrivateKey {
@@ -45,7 +48,7 @@ public struct DeviceIdentity: Codable, Sendable, Equatable, CustomStringConverti
         id = try container.decode(String.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
         privateKeyData = try container.decode(Bytes.self, forKey: .privateKeyData)
-        trust = try container.decodeIfPresent(DeviceTrust.self, forKey: .trust) ?? DeviceTrust()
+        trust = try container.decodeIfPresent([String: DeviceTrust].self, forKey: .trust) ?? [:]
         guard (try? Curve25519.KeyAgreement.PrivateKey(rawRepresentation: privateKeyData.data)) != nil else {
             throw DecodingError.dataCorruptedError(
                 forKey: .privateKeyData, in: container, debugDescription: "not a Curve25519 private key")
@@ -57,33 +60,40 @@ public struct DeviceIdentity: Codable, Sendable, Equatable, CustomStringConverti
 }
 
 /// What a device trusts in one drive, to decide whether to take a keyring wrapped for it
-/// (`KeyTrust`). Only public things: no keys.
+/// (`KeyTrust`), and whether to believe the drive stopped being encrypted (`Drive.open`). Only
+/// public things: no keys. A device that has never held a drive's keys has none.
 public struct DeviceTrust: Codable, Sendable, Equatable {
-    /// The drive (its space URI) this is about. Trust in one drive says nothing about another.
-    public var space: String?
     /// The public key of the device that approved this one, once the user compared their pairing
     /// code. It's trusted for this device's first keyring; after that, as any device in the
     /// roster is.
     public var approver: Bytes?
     /// The fingerprints (`DriveKey.fingerprint`) of every drive key this device has accepted. A
-    /// keyring it's handed later must hold all of them.
+    /// keyring it's handed later must hold all of them, and so must the keys published when
+    /// encryption is turned off.
     public var knownKeys: [String]
+    /// The newest settings this device has read (`DriveSettings.generation`). Older ones served
+    /// later are an old copy played back, and are refused.
+    public var settingsGeneration: Int?
 
-    public init(space: String? = nil, approver: Bytes? = nil, knownKeys: [String] = []) {
-        self.space = space
+    public init(approver: Bytes? = nil, knownKeys: [String] = [], settingsGeneration: Int? = nil) {
         self.approver = approver
         self.knownKeys = knownKeys
+        self.settingsGeneration = settingsGeneration
     }
 
-    /// What this says about `space`: nothing, if it's about another drive.
-    func about(_ space: String) -> DeviceTrust {
-        self.space == space ? self : DeviceTrust(space: space)
-    }
-
-    /// Having accepted `keyring` for `space`.
-    func accepting(_ keyring: Keyring, in space: String) -> DeviceTrust {
-        var trust = about(space)
+    /// Having accepted `keyring`.
+    func accepting(_ keyring: Keyring) -> DeviceTrust {
+        var trust = self
         trust.knownKeys = keyring.keys.map(\.fingerprint)
         return trust
+    }
+
+    private enum CodingKeys: String, CodingKey { case approver, knownKeys, settingsGeneration }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        approver = try container.decodeIfPresent(Bytes.self, forKey: .approver)
+        knownKeys = try container.decodeIfPresent([String].self, forKey: .knownKeys) ?? []
+        settingsGeneration = try container.decodeIfPresent(Int.self, forKey: .settingsGeneration)
     }
 }

@@ -19,7 +19,7 @@ extension FolderSyncTests {
 
         // Wiped, and then another device made a new drive in the same place (with new keys).
         pds.wipe()
-        _ = try await other.create()
+        _ = try await other.create(encrypted: TestMode.encrypted)
         try await other.createFolder(named: "new", in: nil)
         #expect(try await drive.settings()?.driveID != id)
         await #expect(throws: SyncError.driveMissing(sync.root)) { try await sync.sync() }
@@ -27,7 +27,7 @@ extension FolderSyncTests {
         #expect(try await driveFiles() == ["new/"])  // and nothing from here went into it
 
         // Starting over (once this device has the new drive's keys) merges the folder into it.
-        drive.use(try #require(other.keyring))
+        if let keyring = other.keyring { drive.use(keyring) }
         try FileManager.default.removeItem(at: folder.appendingPathComponent(".atdrive"))
         let fresh = try open()
         try await fresh.sync()

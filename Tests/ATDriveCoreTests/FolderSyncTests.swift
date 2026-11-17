@@ -13,7 +13,7 @@ import Testing
 
     init() async throws {
         drive = pds.device("here")
-        _ = try await drive.create()  // `atdrive login` does this: syncing never creates a drive
+        _ = try await drive.create(encrypted: TestMode.encrypted)  // `atdrive login` does this: syncing never creates a drive
         other = pds.device("elsewhere", keyring: drive.keyring)
         folder = try temporaryDirectory().appendingPathComponent("drive")
     }

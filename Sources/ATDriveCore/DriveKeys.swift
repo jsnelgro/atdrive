@@ -1,13 +1,41 @@
 import Crypto
 import Foundation
 
-/// The drive's keys on this device (`Drive.keys`).
+/// Whether a drive is encrypted. It's a property of the drive, read from how its settings
+/// record is stored (`Drive.open`), and it can change (`Drive.enableEncryption`,
+/// `Drive.disableEncryption`).
+public enum DriveMode: String, Sendable, Equatable, Codable {
+    /// Records and file contents are stored as they are: whoever runs the PDS can read them. No
+    /// keys, no devices to approve, nothing to lose. The default.
+    case plain
+    /// Records are sealed and file contents encrypted with keys only the drive's devices hold.
+    case encrypted
+}
+
+/// What this device knows of the drive's mode and keys (`Drive.keys`).
 struct DriveKeys: Sendable {
+    /// `nil` until the drive is opened (or created): it can't be written to before.
+    var mode: DriveMode?
+    /// An encrypted drive's keyring; `nil` while this device doesn't have it.
     var keyring: Keyring?
+    /// Keys the drive used to have, published in its settings: they open what's still sealed
+    /// with them, and seal nothing.
+    var retired: Keyring?
+    /// An encrypted drive that's still encrypting what was there before
+    /// (`DriveSettings.converting`).
+    var converting = false
     var identity: DeviceIdentity?
-    /// The CID of this device's record when its keyring was last unwrapped (or that was tried):
-    /// when the record changes, `refreshKeys` unwraps it again.
+    /// The CIDs of this device's record and of the settings record when the drive was last
+    /// opened (or that was tried): when either changes, `refreshKeys` opens it again.
     var deviceRecord: String?
+    var settingsRecord: String?
+    /// Why the last try to open the drive again failed, if it did.
+    var problem: DriveAccessError?
+
+    /// Whether records that aren't sealed with the drive's current keys are read. Always on a
+    /// plain drive; on an encrypted one only while it's converting, since the PDS could have
+    /// written them.
+    var acceptsUnsealed: Bool { mode != .encrypted || converting }
 }
 
 /// A value shared between tasks, behind a lock.
@@ -41,6 +69,16 @@ public enum DriveAccessError: Error, Equatable, CustomStringConvertible {
     case keyringMissingKeys
     /// Writing needs the drive's keys, and this device hasn't unlocked the drive.
     case locked
+    /// The drive hasn't been opened, so it isn't known yet whether it's encrypted.
+    case notOpened
+    /// The drive's settings say it isn't encrypted any more, but they don't hold the keys this
+    /// device had. Its own devices publish them when they turn encryption off; the PDS can't.
+    case encryptionRemoved
+    /// The drive's settings are older than ones this device has read: an old copy.
+    case settingsRolledBack
+    /// Turning encryption on, on a drive that's encrypted; or off, on one that isn't.
+    case alreadyEncrypted
+    case notEncrypted
     /// Creating a drive, when the account has one (another device made it first).
     case driveExists
     /// That recovery key doesn't open the drive's recovery record.
@@ -73,6 +111,20 @@ public enum DriveAccessError: Error, Equatable, CustomStringConvertible {
                 + "recovery key"
         case .locked:
             "this device doesn't have the drive's keys (run `atdrive login`)"
+        case .notOpened:
+            "the drive hasn't been opened yet"
+        case .encryptionRemoved:
+            "the drive's settings say it's no longer encrypted, but they don't prove that one of your "
+                + "devices turned encryption off: the server may have changed them. Nothing was written. If "
+                + "you did turn it off, run `atdrive login` to accept that"
+        case .settingsRolledBack:
+            "the server returned an older copy of the drive's settings than this device has seen. Nothing "
+                + "was written"
+        case .alreadyEncrypted:
+            "the drive is already encrypted"
+        case .notEncrypted:
+            "the drive isn't encrypted, so it has no keys, devices to approve, or recovery key "
+                + "(`atdrive encryption on` turns encryption on)"
         case .driveExists:
             "this account already has a drive"
         case .wrongRecoveryKey:
@@ -103,8 +155,8 @@ public struct DeviceInfo: Sendable, Equatable, Identifiable {
     public var name: String
     /// Its raw public key: the one a pairing code is computed from, and the keyring wrapped for.
     public var publicKey: Bytes
-    /// It holds the drive's keys: it's in the roster. Without the keys to read the roster, its
-    /// record says so, which proves nothing.
+    /// It holds the drive's keys: its record's `member` opens with the drive's current key.
+    /// Without the keys to check that, its record says so, which proves nothing.
     public var approved: Bool
     public var isThisDevice: Bool
 
@@ -146,9 +198,10 @@ struct KeyRecords {
 ///   the keyring);
 /// - for its first keyring, wrapped by the device that approved it, whose pairing code the user
 ///   compared (`DeviceTrust.approver`);
-/// - after that, wrapped by a device in the drive's roster. The roster is read with the keyring
-///   itself, which proves nothing alone, so that keyring must also hold every key this device
-///   accepted before (`DeviceTrust.knownKeys`): only a device given the keys can make one.
+/// - after that, wrapped by a device in the drive's roster (`Drive.roster`). The roster is read
+///   with the keyring itself, which proves nothing alone, so that keyring must also hold every
+///   key this device accepted before (`DeviceTrust.knownKeys`): only a device given the keys can
+///   make one.
 ///
 /// And never one that lacks a key it accepted before, whoever wrapped it: that's an old keyring
 /// played back, which would have it seal new records with a key a removed device holds.
@@ -163,7 +216,7 @@ enum KeyTrust {
         _ wrapped: WrappedKeyring, keyring: Keyring, device: DeviceIdentity, space: String,
         roster: (Keyring) -> [RosterEntry]?
     ) -> Decision {
-        let trust = device.trust.about(space)
+        let trust = device.trust[space] ?? DeviceTrust()
         let held = Set(keyring.keys.map(\.fingerprint))
         guard trust.knownKeys.allSatisfy(held.contains) else { return .missingKnownKey }
         let sender = wrapped.sender.data
@@ -176,110 +229,281 @@ enum KeyTrust {
 extension DeviceIdentity {
     /// This device as the roster lists it.
     var rosterEntry: RosterEntry { RosterEntry(id: id, name: name, publicKey: publicKeyBytes) }
-
-    /// Its device record, holding `keyring` wrapped by itself.
-    func record(holding keyring: Keyring) throws -> DeviceRecord {
-        DeviceRecord(
-            name: name, publicKey: publicKeyBytes, keyring: try keyring.wrapped(for: publicKey, from: privateKey))
-    }
 }
 
-/// The drive's keys and devices: creating a drive, opening it on a device, approving and removing
-/// devices, and the recovery key. See PLAN.md, "Step 3: encryption".
+/// The drive's mode, keys and devices: creating a drive, opening it on a device, approving and
+/// removing devices, and the recovery key. Turning encryption on and off is in
+/// `Encryption.swift`. See PLAN.md, "Encryption".
 extension Drive {
     // MARK: Creating
 
-    /// Creates the drive, encrypted: a new drive key, this device's record (the keyring wrapped by
-    /// itself), the keyring wrapped with a new recovery key, and the settings, sealed, with this
-    /// device in the roster. All in one transaction, and the drive is unlocked afterwards.
+    /// Creates the drive. Plain by default: its settings, and nothing else.
     ///
-    /// Returns the recovery key, to show once. With every device lost, it's the only way back in,
-    /// so only places that can show it create a drive (`atdrive login`, the Mac app's first
-    /// sign-in), never a background sync. Throws `DriveAccessError.driveExists` if the account has
-    /// a drive already.
-    public func create() async throws -> RecoveryKey {
-        guard let me = identity else { throw DriveAccessError.notApproved(pending: false) }
+    /// Encrypted: a new drive key, this device's record (the keyring wrapped by itself, and its
+    /// membership), the keyring wrapped with a new recovery key, and the settings, sealed. All in
+    /// one transaction, and the drive is unlocked afterwards. It returns the recovery key, to
+    /// show once. With every device lost, it's the only way back in, so only places that can show
+    /// it create an encrypted drive (`atdrive login --encrypted`, the Mac app's first sign-in),
+    /// never a background sync.
+    ///
+    /// Throws `DriveAccessError.driveExists` if the account has a drive already.
+    @discardableResult
+    public func create(encrypted: Bool = false) async throws -> RecoveryKey? {
         do {
             _ = try await client.createPersonalSpace(type: Lexicon.driveSpace, key: spaceKey)
         } catch let error as XRPCError where error.error == "SpaceAlreadyExists" {}
-        let keyring = Keyring(DriveKey())
-        let recoveryKey = RecoveryKey()
-        let settings = DriveSettings(roster: [me.rosterEntry])
-        let writes: [SpaceWrite] = [
+        let settings = DriveSettings()
+        var writes: [SpaceWrite] = []
+        var keys: (keyring: Keyring, recovery: RecoveryKey, me: DeviceIdentity)?
+        if encrypted {
+            guard let me = identity else { throw DriveAccessError.notApproved(pending: false) }
+            let keyring = Keyring(DriveKey())
+            let recoveryKey = RecoveryKey()
+            keys = (keyring, recoveryKey, me)
+            writes = try keyWrites(keyring: keyring, recoveryKey: recoveryKey, me: me, existing: nil)
+        }
+        writes.insert(
             .create(
-                collection: Lexicon.settings, rkey: Lexicon.settingsKey, value: try stored(settings, with: keyring)),
-            .create(
-                collection: Lexicon.device, rkey: Lexicon.recoveryKey,
-                value: try JSONValue(encoding: RecoveryRecord(keyring: try keyring.wrapped(for: recoveryKey)))),
-            .create(
-                collection: Lexicon.device, rkey: me.id, value: try JSONValue(encoding: me.record(holding: keyring))),
-        ]
+                collection: Lexicon.settings, rkey: Lexicon.settingsKey,
+                value: try stored(settings, with: keys?.keyring)), at: 0)
         let cids: [String?]
         do {
             cids = try await client.applySpaceWrites(space: space, repo: owner, writes: writes)
         } catch let error as XRPCError where error.error == "RecordAlreadyExists" {
             throw DriveAccessError.driveExists
         }
-        accept(keyring, as: me, deviceRecord: cids[2])
-        return recoveryKey
+        if let keys {
+            accept(keys.keyring, as: keys.me, settings: settings, deviceRecord: cids[2], settingsRecord: cids[0])
+        } else {
+            becomePlain(settings, settingsRecord: cids[0])
+        }
+        return keys?.recovery
+    }
+
+    /// The writes that give an encrypted drive its key records: the keyring wrapped with the
+    /// recovery key, then this device's record. `existing` are the drive's key records, if it
+    /// has had any: the ones left from before are replaced or deleted.
+    func keyWrites(keyring: Keyring, recoveryKey: RecoveryKey, me: DeviceIdentity, existing: KeyRecords?) throws
+        -> [SpaceWrite]
+    {
+        let recovery = try JSONValue(
+            encoding: RecoveryRecord(keyring: try keyring.wrapped(for: recoveryKey, space: space)))
+        let mine = try JSONValue(encoding: try deviceRecord(for: me.rosterEntry, keyring: keyring, from: me))
+        var writes: [SpaceWrite] = [
+            existing?.recovery == nil
+                ? .create(collection: Lexicon.device, rkey: Lexicon.recoveryKey, value: recovery)
+                : .update(collection: Lexicon.device, rkey: Lexicon.recoveryKey, value: recovery),
+            existing?.devices[me.id] == nil
+                ? .create(collection: Lexicon.device, rkey: me.id, value: mine)
+                : .update(collection: Lexicon.device, rkey: me.id, value: mine),
+        ]
+        for id in (existing?.devices.keys.sorted() ?? []) where id != me.id {
+            writes.append(.delete(collection: Lexicon.device, rkey: id))
+        }
+        return writes
+    }
+
+    /// A device's record holding `keyring`, wrapped for it by `sender`, and its membership sealed
+    /// with the keyring's current key.
+    func deviceRecord(
+        for member: RosterEntry, keyring: Keyring, from sender: DeviceIdentity, existing: DeviceRecord? = nil
+    ) throws -> DeviceRecord {
+        let publicKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: member.publicKey.data)
+        var record = existing ?? DeviceRecord(name: member.name, publicKey: member.publicKey)
+        record.name = member.name
+        record.publicKey = member.publicKey
+        record.keyring = try keyring.wrapped(for: publicKey, from: sender.privateKey, space: space)
+        record.member = try keyring.seal(member, space: space, collection: Lexicon.device, rkey: member.id)
+        if member.id != sender.id { record.approvedBy = sender.id }
+        return record
+    }
+
+    /// The devices approved to hold the drive's keys, as `keyring` proves them: those whose
+    /// record's `member` opens with its current key, for that record, and names the record's own
+    /// public key. The PDS can't add one, change one, or bring back one from before the keys last
+    /// changed (removing a device changes them). It can drop one, which only locks a device out.
+    func roster(_ records: KeyRecords, keyring: Keyring) -> [RosterEntry] {
+        records.devices.values.compactMap { entry -> RosterEntry? in
+            guard let sealed = entry.record.member, sealed.keyID == keyring.current.id,
+                let member = try? keyring.current.open(
+                    sealed, as: RosterEntry.self, space: space, collection: Lexicon.device, rkey: entry.id),
+                member.id == entry.id, member.publicKey == entry.record.publicKey
+            else { return nil }
+            return member
+        }.sorted { $0.id < $1.id }
     }
 
     // MARK: Opening
 
-    /// Opens the drive's keys on this device: unwraps the keyring from its device record and, if
-    /// it trusts who wrapped it (`KeyTrust`), uses it from now on. What it trusts is updated and
-    /// saved. Throws `DriveAccessError` if there's no drive, this device hasn't been approved, or
-    /// the keyring isn't one it can trust (it's ignored then).
+    /// Opens the drive on this device: reads whether it's encrypted and, if it is, unwraps the
+    /// keyring from this device's record. From then on the drive can be written to, in the form
+    /// it's in. Returns the mode.
+    ///
+    /// The mode is how the settings record is stored. Sealed: the drive is encrypted, and this
+    /// throws `DriveAccessError` if this device hasn't been approved, or its keyring isn't one it
+    /// can trust (`KeyTrust`). Plain: the drive isn't encrypted. If this device held the drive's
+    /// keys, it believes that only if the settings publish them (`DriveSettings.retiredKeys`):
+    /// the drive's devices do that when they turn encryption off, and the PDS, which never had
+    /// the keys, can't. Otherwise this throws `encryptionRemoved`, and nothing changes.
     @discardableResult
-    public func unlock() async throws -> Keyring {
-        guard let me = identity else { throw DriveAccessError.notApproved(pending: false) }
+    public func open() async throws -> DriveMode {
         guard let records = try await keyRecords() else { throw DriveAccessError.noDrive }
+        do {
+            if SealedRecord.isSealed(records.settings.value) {
+                try unlock(records)
+                return .encrypted
+            }
+            guard let settings = settings(stored: records.settings.value, keyring: nil) else {
+                throw DriveAccessError.damaged("settings")
+            }
+            if let trust = identity?.trust[space], !trust.knownKeys.isEmpty {
+                let published = Set(settings.retiredKeyring?.keys.map(\.fingerprint) ?? [])
+                guard trust.knownKeys.allSatisfy(published.contains) else { throw DriveAccessError.encryptionRemoved }
+            }
+            becomePlain(settings, settingsRecord: records.settings.cid)
+            return .plain
+        } catch let error as DriveAccessError {
+            keys.update {
+                $0.problem = error
+                $0.settingsRecord = records.settings.cid
+                // A drive that became encrypted is encrypted even if this device can't unlock it:
+                // it must stop writing plain records.
+                if $0.mode != .encrypted, SealedRecord.isSealed(records.settings.value) {
+                    $0.mode = .encrypted
+                    $0.keyring = nil
+                    $0.retired = nil
+                    $0.converting = false
+                }
+            }
+            throw error
+        }
+    }
+
+    /// Unwraps the keyring from this device's record and, if it trusts who wrapped it and the
+    /// keyring opens the drive's settings, uses it from now on.
+    private func unlock(_ records: KeyRecords) throws {
+        guard let me = identity else { throw DriveAccessError.notApproved(pending: false) }
         guard let entry = records.devices[me.id], entry.record.publicKey == me.publicKeyBytes else {
             throw DriveAccessError.notApproved(pending: false)
         }
         guard let wrapped = entry.record.keyring else { throw DriveAccessError.notApproved(pending: true) }
-        guard let keyring = try? Keyring(unwrapping: wrapped, with: me.privateKey) else {
+        guard let keyring = try? Keyring(unwrapping: wrapped, with: me.privateKey, space: space) else {
             throw DriveAccessError.untrustedKeyring(sender: records.name(of: wrapped.sender))
         }
-        let roster = { (keyring: Keyring) in self.readSettings(records.settings.value, with: keyring)?.roster }
+        let roster = { (keyring: Keyring) in self.roster(records, keyring: keyring) }
         switch KeyTrust.check(wrapped, keyring: keyring, device: me, space: space, roster: roster) {
         case .accept: break
         case .missingKnownKey: throw DriveAccessError.keyringMissingKeys
         case .unknownSender: throw DriveAccessError.untrustedKeyring(sender: records.name(of: wrapped.sender))
         }
-        accept(keyring, as: me, deviceRecord: entry.cid)
-        return keyring
+        // A keyring that doesn't open the settings isn't this drive's (any more).
+        guard let settings = settings(stored: records.settings.value, keyring: keyring) else {
+            throw DriveAccessError.untrustedKeyring(sender: records.name(of: wrapped.sender))
+        }
+        if let seen = me.trust[space]?.settingsGeneration, settings.generation < seen {
+            throw DriveAccessError.settingsRolledBack
+        }
+        accept(keyring, as: me, settings: settings, deviceRecord: entry.cid, settingsRecord: records.settings.cid)
     }
 
-    /// After an update: if this device's record changed since its keyring was unwrapped (another
-    /// device rotated the keyring, say), unwraps it again. Returns whether the keyring changed. If
-    /// that fails, the keyring stays as it was: what's sealed with a key it lacks stays
-    /// unreadable, and is left alone.
+    /// After an update: if the settings record or this device's record changed since the drive
+    /// was opened (encryption turned on or off, or another device changed the keys), opens it
+    /// again. Returns whether how records are read changed. If opening fails, things stay as
+    /// they were (`accessProblem` says why): what can't be read stays unreadable, and is left
+    /// alone.
     func refreshKeys(seeing snapshot: DriveSnapshot) async -> Bool {
         let before = keys.value
-        guard let identity = before.identity, snapshot.revision != nil else { return false }
-        let cid = snapshot.repo.cid(Lexicon.device, identity.id)
-        guard cid != before.deviceRecord else { return false }
+        // Only a drive that was opened follows changes: one told its mode or keys outright
+        // (tests do that) keeps them.
+        guard before.mode != nil, before.settingsRecord != nil, snapshot.revision != nil else { return false }
+        let settings = snapshot.repo.cid(Lexicon.settings, Lexicon.settingsKey)
+        let device = before.identity.flatMap { snapshot.repo.cid(Lexicon.device, $0.id) }
+        guard settings != before.settingsRecord || device != before.deviceRecord else { return false }
         do {
-            try await unlock()
+            try await open()
         } catch {
-            keys.update { $0.deviceRecord = cid }
+            keys.update {
+                $0.deviceRecord = device
+                $0.settingsRecord = settings
+            }
         }
-        return keyring != before.keyring
+        let after = keys.value
+        return after.mode != before.mode || after.keyring != before.keyring || after.retired != before.retired
+            || after.converting != before.converting
     }
+
+    /// Believes the drive stopped being encrypted although its settings don't prove it
+    /// (`DriveAccessError.encryptionRemoved`): forgets what this device trusted about its keys,
+    /// and opens it again. The user's call, since it's what a PDS stripping the encryption would
+    /// look like.
+    public func acceptEncryptionRemoved() async throws {
+        if var me = identity, me.trust[space] != nil {
+            me.trust[space] = nil
+            keys.update { $0.identity = me }
+            saveIdentity?(me)
+        }
+        try await open()
+    }
+
+    /// Why this device couldn't follow a change to the drive's mode or keys, if it couldn't: it
+    /// goes on as before, and this is worth telling the user.
+    public var accessProblem: DriveAccessError? { keys.value.problem }
 
     /// Uses `keyring` from now on, as if unlocked with it. For tests, whose devices share one.
     func use(_ keyring: Keyring) {
-        keys.update { $0.keyring = keyring }
+        keys.update {
+            $0.mode = .encrypted
+            $0.keyring = keyring
+        }
     }
 
-    /// Uses `keyring` from now on, as unwrapped from this device's record at `deviceRecord`, and
-    /// remembers its keys (saving the identity if that changed what it trusts).
-    private func accept(_ keyring: Keyring, as identity: DeviceIdentity, deviceRecord: String?) {
+    /// Uses `keyring` from now on, as unwrapped from this device's record at `deviceRecord`, on
+    /// an encrypted drive with these settings, and remembers its keys (saving the identity if
+    /// that changed what it trusts).
+    func accept(
+        _ keyring: Keyring, as identity: DeviceIdentity, settings: DriveSettings, deviceRecord: String?,
+        settingsRecord: String?
+    ) {
         var updated = identity
-        updated.trust = identity.trust.accepting(keyring, in: space)
-        keys.update { $0 = DriveKeys(keyring: keyring, identity: updated, deviceRecord: deviceRecord) }
+        var trust = (identity.trust[space] ?? DeviceTrust()).accepting(keyring)
+        trust.settingsGeneration = max(trust.settingsGeneration ?? 0, settings.generation)
+        updated.trust[space] = trust
+        keys.update {
+            $0 = DriveKeys(
+                mode: .encrypted, keyring: keyring, retired: settings.converting ? settings.retiredKeyring : nil,
+                converting: settings.converting, identity: updated, deviceRecord: deviceRecord,
+                settingsRecord: settingsRecord)
+        }
         if updated != identity { saveIdentity?(updated) }
+    }
+
+    /// Treats the drive as plain from now on: no keyring, and nothing this device trusted about
+    /// its keys (if it's encrypted again, that starts over).
+    func becomePlain(_ settings: DriveSettings, settingsRecord: String?) {
+        var identity = self.identity
+        let hadTrust = identity?.trust[space] != nil
+        identity?.trust[space] = nil
+        keys.update {
+            $0 = DriveKeys(
+                mode: .plain, retired: settings.retiredKeyring, identity: identity, settingsRecord: settingsRecord)
+        }
+        if hadTrust, let identity { saveIdentity?(identity) }
+    }
+
+    /// The drive's key records, on an encrypted drive this device has the keys of, read just now.
+    private func unlockedRecords() async throws -> (me: DeviceIdentity, keyring: Keyring, records: KeyRecords) {
+        guard try await open() == .encrypted else { throw DriveAccessError.notEncrypted }
+        guard let me = identity else { throw DriveAccessError.notApproved(pending: false) }
+        guard let keyring else { throw DriveAccessError.locked }
+        guard let records = try await keyRecords() else { throw DriveAccessError.noDrive }
+        return (me, keyring, records)
+    }
+
+    /// The key records of a drive that's encrypted, whether or not this device has its keys.
+    private func encryptedRecords() async throws -> KeyRecords {
+        guard let records = try await keyRecords() else { throw DriveAccessError.noDrive }
+        guard SealedRecord.isSealed(records.settings.value) else { throw DriveAccessError.notEncrypted }
+        return records
     }
 
     // MARK: Joining
@@ -289,7 +513,7 @@ extension Drive {
     /// drive starts over.
     public func requestAccess() async throws {
         guard var me = identity else { throw DriveAccessError.notApproved(pending: false) }
-        guard try await settingsRecord() != nil else { throw DriveAccessError.noDrive }
+        _ = try await encryptedRecords()
         let record = DeviceRecord(name: me.name, publicKey: me.publicKeyBytes)
         do {
             try await client.putSpaceRecord(
@@ -297,8 +521,8 @@ extension Drive {
         } catch let error as XRPCError where Self.isMissing(error) {
             throw DriveAccessError.noDrive
         }
-        me.trust = DeviceTrust(space: space)
-        keys.update { $0 = DriveKeys(keyring: nil, identity: me, deviceRecord: nil) }
+        me.trust[space] = nil
+        keys.update { $0 = DriveKeys(mode: .encrypted, identity: me) }
         saveIdentity?(me)
     }
 
@@ -312,13 +536,13 @@ extension Drive {
     /// `DriveAccessError.untrustedKeyring`.
     public func arrivedKeyring() async throws -> ArrivedKeyring? {
         guard let me = identity else { throw DriveAccessError.notApproved(pending: false) }
-        guard let records = try await keyRecords() else { throw DriveAccessError.noDrive }
+        let records = try await encryptedRecords()
         guard let entry = records.devices[me.id], entry.record.publicKey == me.publicKeyBytes else {
             throw DriveAccessError.notApproved(pending: false)
         }
         guard let wrapped = entry.record.keyring else { return nil }
-        guard let keyring = try? Keyring(unwrapping: wrapped, with: me.privateKey),
-            let sender = readSettings(records.settings.value, with: keyring)?.member(wrapped.sender.data),
+        guard let keyring = try? Keyring(unwrapping: wrapped, with: me.privateKey, space: space),
+            let sender = roster(records, keyring: keyring).first(where: { $0.publicKey == wrapped.sender }),
             let senderKey = try? wrapped.senderKey
         else { throw DriveAccessError.untrustedKeyring(sender: records.name(of: wrapped.sender)) }
         return ArrivedKeyring(
@@ -330,97 +554,83 @@ extension Drive {
     /// its first keyring, and the drive is unlocked with it.
     public func accept(_ arrived: ArrivedKeyring) async throws {
         guard var me = identity else { throw DriveAccessError.notApproved(pending: false) }
-        me.trust = DeviceTrust(space: space, approver: arrived.sender.publicKey)
+        me.trust[space] = DeviceTrust(approver: arrived.sender.publicKey)
         keys.update { $0.identity = me }
         saveIdentity?(me)
-        try await unlock()
+        try await open()
     }
 
     /// Sets this device up with the recovery key: unwraps the keyring from the recovery record,
-    /// writes this device's record with the keyring wrapped by itself, and adds it to the roster.
+    /// and writes this device's record with the keyring wrapped by itself, and its membership.
     /// Throws `DriveAccessError.wrongRecoveryKey` if the key doesn't open the recovery record.
     public func unlock(recoveryKey: RecoveryKey) async throws {
         guard let me = identity else { throw DriveAccessError.notApproved(pending: false) }
-        guard let records = try await keyRecords() else { throw DriveAccessError.noDrive }
+        let records = try await encryptedRecords()
         guard let recovery = records.recovery else { throw DriveAccessError.damaged("recovery record") }
-        guard let keyring = try? Keyring(unwrapping: recovery.keyring, with: recoveryKey) else {
+        guard let keyring = try? Keyring(unwrapping: recovery.keyring, with: recoveryKey, space: space) else {
             throw DriveAccessError.wrongRecoveryKey
         }
-        guard var settings = readSettings(records.settings.value, with: keyring) else {
+        guard let settings = settings(stored: records.settings.value, keyring: keyring) else {
             throw DriveAccessError.damaged("settings")
         }
-        settings.roster.removeAll { $0.id == me.id }
-        settings.roster.append(me.rosterEntry)
-        let record = try JSONValue(encoding: me.record(holding: keyring))
+        let record = try JSONValue(encoding: try deviceRecord(for: me.rosterEntry, keyring: keyring, from: me))
         let cids = try await apply([
             records.devices[me.id] == nil
                 ? .create(collection: Lexicon.device, rkey: me.id, value: record)
-                : .update(collection: Lexicon.device, rkey: me.id, value: record),
-            .update(
-                collection: Lexicon.settings, rkey: Lexicon.settingsKey, value: try stored(settings, with: keyring)),
+                : .update(collection: Lexicon.device, rkey: me.id, value: record)
         ])
         // The recovery key is the last word: what this device trusted before doesn't matter.
         var fresh = me
-        fresh.trust = DeviceTrust(space: space)
-        accept(keyring, as: fresh, deviceRecord: cids[0])
+        fresh.trust[space] = nil
+        accept(keyring, as: fresh, settings: settings, deviceRecord: cids[0], settingsRecord: records.settings.cid)
     }
 
     // MARK: Devices
 
     /// The drive's devices: those in its roster, and those asking to join. Approved means in the
-    /// roster when this device can read it; until then, it's only what each record says.
+    /// roster when this device can read it; until then, it's only what each record says. Throws
+    /// `DriveAccessError.notEncrypted` on a plain drive, which has none.
     public func devices() async throws -> [DeviceInfo] {
-        guard let records = try await keyRecords() else { throw DriveAccessError.noDrive }
+        let records = try await encryptedRecords()
         let me = identity?.id
-        let roster = keyring.flatMap { readSettings(records.settings.value, with: $0) }?.roster
-        var devices = records.devices.values.map { entry in
-            let member = roster?.first { $0.id == entry.id && $0.publicKey == entry.record.publicKey }
+        let roster = keyring.map { self.roster(records, keyring: $0) }
+        return records.devices.values.map { entry in
+            let member = roster?.first { $0.id == entry.id }
             return DeviceInfo(
                 id: entry.id, name: member?.name ?? entry.record.name, publicKey: entry.record.publicKey,
                 approved: roster == nil ? entry.record.keyring != nil : member != nil, isThisDevice: entry.id == me)
-        }
-        for member in roster ?? [] where records.devices[member.id] == nil {
-            devices.append(
-                DeviceInfo(
-                    id: member.id, name: member.name, publicKey: member.publicKey, approved: true,
-                    isThisDevice: member.id == me))
-        }
-        return devices.sorted { ($0.approved ? 0 : 1, $0.name, $0.id) < ($1.approved ? 0 : 1, $1.name, $1.id) }
+        }.sorted { ($0.approved ? 0 : 1, $0.name, $0.id) < ($1.approved ? 0 : 1, $1.name, $1.id) }
     }
 
     /// Gives a waiting device the drive's keys: wraps the keyring for its public key, from this
-    /// device, and adds it to the roster.
+    /// device, and seals its membership, in its own record. Nothing else is written, so two
+    /// devices approving different devices at once both succeed.
     ///
     /// Pass the device as listed when its pairing code was shown and the user confirmed it
     /// matches: its key is the one compared, so it's the one used, whatever the record says now.
     public func approve(_ device: DeviceInfo) async throws {
-        guard let me = identity else { throw DriveAccessError.notApproved(pending: false) }
-        guard let keyring else { throw DriveAccessError.locked }
-        guard let records = try await keyRecords() else { throw DriveAccessError.noDrive }
-        guard var settings = readSettings(records.settings.value) else { throw DriveAccessError.damaged("settings") }
-        let publicKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: device.publicKey.data)
-        settings.roster.removeAll { $0.id == device.id }
-        settings.roster.append(RosterEntry(id: device.id, name: device.name, publicKey: device.publicKey))
+        let (me, keyring, records) = try await unlockedRecords()
         let existing = records.devices[device.id]
-        var record = existing?.record ?? DeviceRecord(name: device.name, publicKey: device.publicKey)
-        record.publicKey = device.publicKey
-        record.keyring = try keyring.wrapped(for: publicKey, from: me.privateKey)
-        record.approvedBy = me.id
-        let value = try JSONValue(encoding: record)
+        let member = RosterEntry(id: device.id, name: device.name, publicKey: device.publicKey)
+        let value = try JSONValue(
+            encoding: try deviceRecord(for: member, keyring: keyring, from: me, existing: existing?.record))
         try await apply([
             existing == nil
                 ? .create(collection: Lexicon.device, rkey: device.id, value: value)
-                : .update(collection: Lexicon.device, rkey: device.id, value: value),
-            .update(
-                collection: Lexicon.settings, rkey: Lexicon.settingsKey, value: try stored(settings, with: keyring)),
+                : .update(collection: Lexicon.device, rkey: device.id, value: value)
         ])
     }
 
-    /// Removes a device: deletes its record and takes it off the roster. If it held the drive's
-    /// keys, the drive gets a new key for new records (`Keyring.rotate`), and the keyring is
-    /// wrapped again, from this device, for every device left in the roster and for
-    /// `recoveryKey`: the current one, or a new one to replace it (wrapping for the recovery key
-    /// needs the key itself). All in one transaction. Returns whether the keyring was rotated.
+    /// Removes a device: deletes its record. If it held the drive's keys, the drive gets a new
+    /// key for new records (`Keyring.rotate`), and the keyring is wrapped again, from this
+    /// device, for every device left in the roster (with its membership sealed with the new key,
+    /// so the removed device's is void) and for `recoveryKey`: the current one, or a new one to
+    /// replace it (wrapping for the recovery key needs the key itself). The settings are sealed
+    /// again too. All in one transaction. Returns whether the keyring was rotated.
+    ///
+    /// A device approved at the same moment by another device isn't in the roster this one read,
+    /// so it's left with the old keys: it can read what was there, shows as not approved, and has
+    /// to be approved again. That fails safe, rather than losing the removal.
     ///
     /// The removed device keeps what it had: the old keys, so what was sealed with them, and the
     /// first key, which names chunks. Until it's signed out of the account, it can still write,
@@ -428,12 +638,13 @@ extension Drive {
     /// devices take a keyring from it once they've seen the removal.
     @discardableResult
     public func remove(_ id: String, recoveryKey: RecoveryKey?) async throws -> Bool {
-        guard let me = identity else { throw DriveAccessError.notApproved(pending: false) }
-        guard let keyring else { throw DriveAccessError.locked }
+        let (me, keyring, records) = try await unlockedRecords()
         guard id != me.id else { throw DriveAccessError.cannotRemoveThisDevice }
-        guard let records = try await keyRecords() else { throw DriveAccessError.noDrive }
-        guard var settings = readSettings(records.settings.value) else { throw DriveAccessError.damaged("settings") }
-        let heldKeys = settings.roster.contains { $0.id == id } || records.devices[id]?.record.keyring != nil
+        guard var settings = settings(stored: records.settings.value, keyring: keyring) else {
+            throw DriveAccessError.damaged("settings")
+        }
+        var members = roster(records, keyring: keyring)
+        let heldKeys = members.contains { $0.id == id } || records.devices[id]?.record.keyring != nil
         guard heldKeys else {
             guard records.devices[id] != nil else { throw DriveAccessError.noSuchDevice(id) }
             try await apply([.delete(collection: Lexicon.device, rkey: id)])
@@ -442,35 +653,35 @@ extension Drive {
         guard let recoveryKey else { throw DriveAccessError.recoveryKeyNeeded }
         var rotated = keyring
         rotated.rotate()
-        settings.roster.removeAll { $0.id == id }
-        if !settings.roster.contains(where: { $0.id == me.id }) { settings.roster.append(me.rosterEntry) }
+        members.removeAll { $0.id == id }
+        if !members.contains(where: { $0.id == me.id }) { members.append(me.rosterEntry) }
+        settings.generation += 1
 
         var writes: [SpaceWrite] = []
         if records.devices[id] != nil { writes.append(.delete(collection: Lexicon.device, rkey: id)) }
         var mine = 0
-        for member in settings.roster {
-            let publicKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: member.publicKey.data)
+        for member in members {
             let existing = records.devices[member.id]
-            var record = existing?.record ?? DeviceRecord(name: member.name, publicKey: member.publicKey)
-            record.publicKey = member.publicKey
-            record.keyring = try rotated.wrapped(for: publicKey, from: me.privateKey)
-            let value = try JSONValue(encoding: record)
+            let value = try JSONValue(
+                encoding: try deviceRecord(for: member, keyring: rotated, from: me, existing: existing?.record))
             if member.id == me.id { mine = writes.count }
             writes.append(
                 existing == nil
                     ? .create(collection: Lexicon.device, rkey: member.id, value: value)
                     : .update(collection: Lexicon.device, rkey: member.id, value: value))
         }
-        let recovery = try JSONValue(encoding: RecoveryRecord(keyring: try rotated.wrapped(for: recoveryKey)))
+        let recovery = try JSONValue(
+            encoding: RecoveryRecord(keyring: try rotated.wrapped(for: recoveryKey, space: space)))
         writes.append(
             records.recovery == nil
                 ? .create(collection: Lexicon.device, rkey: Lexicon.recoveryKey, value: recovery)
                 : .update(collection: Lexicon.device, rkey: Lexicon.recoveryKey, value: recovery))
+        let settingsWrite = writes.count
         writes.append(
             .update(collection: Lexicon.settings, rkey: Lexicon.settingsKey, value: try stored(settings, with: rotated))
         )
         let cids = try await apply(writes)
-        accept(rotated, as: me, deviceRecord: cids[mine])
+        accept(rotated, as: me, settings: settings, deviceRecord: cids[mine], settingsRecord: cids[settingsWrite])
         return true
     }
 
@@ -478,17 +689,17 @@ extension Drive {
 
     /// Whether `key` is the drive's recovery key: it opens the recovery record.
     public func isRecoveryKey(_ key: RecoveryKey) async throws -> Bool {
-        guard let records = try await keyRecords() else { throw DriveAccessError.noDrive }
+        let records = try await encryptedRecords()
         guard let recovery = records.recovery else { return false }
-        return (try? Keyring(unwrapping: recovery.keyring, with: key)) != nil
+        return (try? Keyring(unwrapping: recovery.keyring, with: key, space: space)) != nil
     }
 
     /// Wraps the keyring with a new recovery key, replacing the old one, which stops working.
     /// Returns the new key, to show once (or make it first, and show it before it's in effect).
     @discardableResult
     public func replaceRecoveryKey(with recoveryKey: RecoveryKey = RecoveryKey()) async throws -> RecoveryKey {
-        guard let keyring else { throw DriveAccessError.locked }
-        let record = RecoveryRecord(keyring: try keyring.wrapped(for: recoveryKey))
+        let (_, keyring, _) = try await unlockedRecords()
+        let record = RecoveryRecord(keyring: try keyring.wrapped(for: recoveryKey, space: space))
         do {
             try await client.putSpaceRecord(
                 space: space, repo: owner, collection: Lexicon.device, rkey: Lexicon.recoveryKey, record: record)

@@ -128,6 +128,15 @@ public final class FolderSync {
             checked = true
         }
         try checkDrive()
+        // The drive's mode or keys changed and this device couldn't follow: encryption was turned
+        // on and it has no keys yet, or the settings can't be believed. Syncing on would write
+        // in the wrong form, or treat what it can't read as gone, so it waits.
+        if let problem = drive.accessProblem,
+            problem == .encryptionRemoved || problem == .settingsRolledBack
+                || (drive.mode == .encrypted && drive.keyring == nil)
+        {
+            throw problem
+        }
         if checked, let revision = remote!.revision {
             if revision != settledAt {
                 // Changes that lost a race between devices; then the drive as that left it.
@@ -142,7 +151,7 @@ public final class FolderSync {
         }
         if remote!.revision == nil, !local.entries.isEmpty {
             // A first sync, with something to put in a drive the account doesn't have yet. Only
-            // `atdrive login` creates one: it has a recovery key to show.
+            // `atdrive login` creates one: a background sync shouldn't decide how.
             throw DriveAccessError.noDrive
         }
         let snapshot = remote!

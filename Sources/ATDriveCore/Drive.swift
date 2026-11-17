@@ -7,10 +7,14 @@ import Foundation
 /// Every write also records a version of what it changed, in the same transaction: that's the
 /// drive's history (`DriveHistory`; restoring, purging and pruning are in `History.swift`).
 ///
-/// Drives are encrypted, and only encrypted. Records are sealed and file contents encrypted with
-/// the drive's keyring (`SealedRecords.swift`), which a device unwraps from its own device record
-/// when it opens the drive (`unlock`, in `DriveKeys.swift`). Until then everything in it reads as
-/// unreadable, and writes fail.
+/// A drive is plain or encrypted (`DriveMode`), and that can change (`Encryption.swift`). A device
+/// finds out which when it opens the drive (`open`, in `DriveKeys.swift`); until then nothing can
+/// be written. On an encrypted drive, records are sealed and file contents encrypted with the
+/// drive's keyring (`StoredRecords.swift`), which the device unwraps from its own device record;
+/// without it, everything sealed reads as unreadable, and writes fail.
+///
+/// One `Drive` is one space. A drive made of several spaces (shared folders mounted in it) is
+/// several of these, each with its own mode, keys, history and change feed.
 public final class Drive: Sendable {
     public let client: XRPCClient
     /// DID of the account that owns the drive (and, for now, the only one writing to it).
@@ -24,26 +28,29 @@ public final class Drive: Sendable {
     public let device: String
     /// Where new IDs (and so the times of changes) come from.
     public let tids: TIDSource
-    /// The drive's keys on this device, and this device. Both can change while the drive is open:
-    /// unlocking it, or another device rotating the keyring (`refreshKeys`).
+    /// The drive's mode and keys on this device, and this device. They can change while the drive
+    /// is open: encryption turned on or off, or another device rotating the keyring
+    /// (`refreshKeys`).
     let keys: Locked<DriveKeys>
     /// Saves this device's identity when what it trusts changes (`DeviceTrust`).
     let saveIdentity: (@Sendable (DeviceIdentity) -> Void)?
 
     public typealias Progress = @Sendable (_ bytesDone: Int, _ bytesTotal: Int) -> Void
 
-    /// `identity` is this device, to unlock the drive with (`unlock`) and to save when what it
-    /// trusts changes (`saveIdentity`). `keyring`, if given, unlocks it straight away.
+    /// `identity` is this device, to open an encrypted drive with (`open`) and to save when what
+    /// it trusts changes (`saveIdentity`). `mode`, if given, is used without opening the drive;
+    /// so is `keyring`, which also makes it encrypted.
     public convenience init(
         client: XRPCClient, owner: String, key: String = Lexicon.defaultDriveKey,
         transfers: TransferOptions = .standard, device: String = DeviceName.current, tids: TIDSource = .system,
-        identity: DeviceIdentity? = nil, keyring: Keyring? = nil,
+        identity: DeviceIdentity? = nil, mode: DriveMode? = nil, keyring: Keyring? = nil,
         saveIdentity: (@Sendable (DeviceIdentity) -> Void)? = nil
     ) {
         self.init(
             client: client, owner: owner,
             space: XRPCClient.spaceURI(authority: owner, type: Lexicon.driveSpace, key: key), transfers: transfers,
-            device: device, tids: tids, keys: DriveKeys(keyring: keyring, identity: identity),
+            device: device, tids: tids,
+            keys: DriveKeys(mode: keyring == nil ? mode : .encrypted, keyring: keyring, identity: identity),
             saveIdentity: saveIdentity)
     }
 
@@ -61,7 +68,8 @@ public final class Drive: Sendable {
         self.saveIdentity = saveIdentity
     }
 
-    /// The logged-in account's drive, as `identity` (this device). It's locked until `unlock`.
+    /// The logged-in account's drive, as `identity` (this device). It can't be written to until
+    /// it's opened (`open`).
     public convenience init(
         session: SessionManager, transport: any HTTPTransport = URLSessionTransport(),
         identity: DeviceIdentity? = nil, saveIdentity: (@Sendable (DeviceIdentity) -> Void)? = nil
@@ -73,7 +81,11 @@ public final class Drive: Sendable {
             saveIdentity: saveIdentity)
     }
 
-    /// The drive's keyring on this device: `nil` until it's unlocked.
+    /// Whether the drive is encrypted, as far as this device knows: `nil` until it's opened.
+    public var mode: DriveMode? { keys.value.mode }
+
+    /// An encrypted drive's keyring on this device: `nil` until it's unlocked, and on a plain
+    /// drive.
     public var keyring: Keyring? { keys.value.keyring }
 
     /// This device, with what it now trusts.
@@ -154,11 +166,12 @@ public final class Drive: Sendable {
     /// A drive that's gone comes back as a snapshot with no revision: callers that have synced
     /// before must not take that for an empty drive.
     ///
-    /// If this device's record changed (another device rotated the keyring, say), the keyring is
-    /// unwrapped again first, and what it couldn't read before is read again (`refreshKeys`).
+    /// If the settings or this device's record changed (encryption was turned on or off, or
+    /// another device rotated the keyring), the drive is opened again first, and every record is
+    /// read again as the drive now reads them (`refreshKeys`).
     public func update(_ snapshot: DriveSnapshot?, now: Date = Date()) async throws -> DriveSnapshot {
         var updated = try await fetch(snapshot, now: now)
-        if await refreshKeys(seeing: updated) { updated.reread(with: self) }
+        if await refreshKeys(seeing: updated) { updated = try await listEverything(now: now) }
         return updated
     }
 
@@ -232,9 +245,8 @@ public final class Drive: Sendable {
         let chunks = node.record.chunks ?? []
         let total = node.record.size ?? 0
         var local: LocalChunks?
-        if let previous, let key = keyring?.keys.first, !chunks.isEmpty {
-            local = await LocalChunks(
-                of: previous, wanted: Set(chunks.map(\.id)), key: key, chunking: transfers.chunking)
+        if let previous, let scheme = chunkScheme(of: chunks) {
+            local = await LocalChunks(of: previous, wanted: chunks, scheme: scheme, chunking: transfers.chunking)
         }
         var hasher = SHA256()
         var done = 0
@@ -492,10 +504,12 @@ public final class Drive: Sendable {
             if state.kind != .file {
                 stamped?.contentsFrom = nil
                 stamped?.continuations = nil
+                stamped?.continuationsFrom = nil
             } else if newContents || state.contentsFrom == nil {
                 stamped?.contentsFrom = versionID
                 continuations = Self.continuationParts(of: state.chunks ?? [], limit: transfers.chunkListLimit)
                 stamped?.continuations = continuations.isEmpty ? nil : continuations.count
+                stamped?.continuationsFrom = nil
             }
         }
         let version = VersionRecord(
@@ -615,8 +629,8 @@ public final class Drive: Sendable {
         }
     }
 
-    /// Applies writes as one transaction. Writes never create the drive: only `create` does, as
-    /// it has a recovery key to show (see `DriveKeys.swift`).
+    /// Applies writes as one transaction. Writes never create the drive: only `create` does (see
+    /// `DriveKeys.swift`).
     @discardableResult
     func apply(_ writes: [SpaceWrite]) async throws -> [String?] {
         do {

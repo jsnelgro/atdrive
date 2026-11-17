@@ -1,7 +1,16 @@
 import Foundation
 
-/// How node, version, chunks and settings records are stored: only what the PDS needs stays
-/// readable.
+/// How node, version, chunks and settings records are stored. Each record says for itself
+/// whether it's plain or sealed, so a drive can hold both while encryption is being turned on or
+/// off, and every reader can read either.
+///
+/// Plain, on a drive that isn't encrypted:
+///
+///     {"$type": "me.jsnelgro.atdrive.node",
+///      "name": "notes.txt", "kind": "file", "size": 42, "sha256": "…", …,
+///      "chunks": [{"$type": "blob", …}, …]}
+///
+/// Sealed, on an encrypted drive, where only what the PDS needs stays readable:
 ///
 ///     {"$type": "me.jsnelgro.atdrive.node",
 ///      "chunks": [{"$type": "blob", …}, …],
@@ -11,13 +20,15 @@ import Foundation
 ///   references them. Absent for folders, deletes, and versions whose contents are in another.
 ///   Absent too when the list is too long for a record: it's then in `chunks` records
 ///   (`ChunksPayload`) of the version holding the contents, and the record says how many.
-/// - `sealed`: everything else (`NodePayload`, `VersionPayload`, `ChunksPayload`,
-///   `DriveSettings`), sealed with the keyring's current key for this collection and record key
-///   (`Keyring.seal`), so it can't be read, changed, or moved to another record. It includes the
-///   chunks' IDs, in the same order.
+/// - Everything else (`NodePayload`, `VersionPayload`, `ChunksPayload`, `DriveSettings`) is
+///   beside them in a plain record, and in `sealed` in a sealed one: encrypted with the keyring's
+///   current key for this space, collection and record key (`Keyring.seal`), so it can't be read,
+///   changed, or moved to another record. It includes the IDs of encrypted chunks, in the same
+///   order, and the key they were made with.
 ///
-/// The in-memory types (`NodeRecord`, `VersionRecord`, `DriveSettings`) stay plaintext: `Drive`
-/// seals on the way out and opens on the way in, and nothing else sees this.
+/// The in-memory types (`NodeRecord`, `VersionRecord`, `DriveSettings`) are the same either way:
+/// `Drive` picks the form on the way out (`Drive.mode`) and reads either on the way in, and
+/// nothing else sees this.
 struct SealedRecord: Encodable {
     var type: String
     var chunks: [BlobRef]?
@@ -28,7 +39,7 @@ struct SealedRecord: Encodable {
         case chunks, sealed
     }
 
-    /// Reads one from a stored value, or `nil` if it isn't one. Straight from the `JSONValue`,
+    /// Reads one from a stored value, or `nil` if it isn't sealed. Straight from the `JSONValue`,
     /// without a round trip through `JSONDecoder`: listing a drive reads every record.
     init?(_ value: JSONValue) {
         guard let type = value["$type"]?.string, let sealed = value["sealed"],
@@ -37,12 +48,8 @@ struct SealedRecord: Encodable {
         else { return nil }
         self.type = type
         self.sealed = SealedValue(keyID: KeyID(rawValue: keyID), sealed: Bytes(data))
-        switch value["chunks"] {
-        case nil, .null?: chunks = nil
-        case let list?:
-            guard let refs = try? list.decode(as: [BlobRef].self) else { return nil }
-            chunks = refs
-        }
+        guard let chunks = Self.blobs(beside: value) else { return nil }
+        self.chunks = chunks
     }
 
     init(type: String, chunks: [BlobRef]?, sealed: SealedValue) {
@@ -50,10 +57,53 @@ struct SealedRecord: Encodable {
         self.chunks = chunks
         self.sealed = sealed
     }
+
+    /// The blob refs in a stored record's `chunks`: `.some(nil)` if it has none, and `nil` if
+    /// they aren't blob refs.
+    static func blobs(beside value: JSONValue) -> [BlobRef]?? {
+        switch value["chunks"] {
+        case nil, .null?: return .some(nil)
+        case let list?:
+            guard let refs = try? list.decode(as: [BlobRef].self) else { return nil }
+            return .some(refs)
+        }
+    }
+
+    /// Whether a stored value has a `sealed` part at all (even one that can't be read).
+    static func isSealed(_ value: JSONValue?) -> Bool {
+        guard let sealed = value?["sealed"], case .object = sealed else { return false }
+        return true
+    }
 }
 
-/// The sealed part of a node record: all of `NodeRecord` but the chunks' blob refs, which stay
-/// outside; their IDs are here instead, in the same order. A list in `chunks` records
+/// How a record was stored, as far as it matters for trusting it.
+enum StoredForm: Equatable {
+    /// Sealed with one of the drive's current keys.
+    case sealed(KeyID)
+    /// Sealed with a retired key (`DriveSettings.retiredKeys`): readable by the PDS.
+    case retired(KeyID)
+    case plain
+
+    var isCurrent: Bool {
+        if case .sealed = self { return true }
+        return false
+    }
+}
+
+/// A record's chunk IDs and the key they were made with, as stored beside its other fields.
+/// Either every chunk of a record is encrypted, or none is: a chunk list is stored whole.
+private func chunkKeys(of chunks: [ChunkRef]?) throws -> (ids: [ChunkID]?, key: KeyID?) {
+    guard let chunks, chunks.contains(where: \.isEncrypted) else { return (nil, nil) }
+    let ids = chunks.compactMap(\.id)
+    let keys = Set(chunks.map(\.key))
+    guard ids.count == chunks.count, keys.count == 1 else {
+        throw ATDriveError.integrity("a chunk list mixes chunks encrypted in different ways")
+    }
+    return (ids, chunks[0].key)
+}
+
+/// Everything in a node record but the chunks' blob refs: all of `NodeRecord`, with the IDs of
+/// encrypted chunks in the same order as the blob refs. A list in `chunks` records
 /// (`continuations`) is in neither.
 struct NodePayload: Codable {
     var name: String
@@ -62,41 +112,45 @@ struct NodePayload: Codable {
     var size: Int?
     var sha256: String?
     var chunkIDs: [ChunkID]?
+    var chunkKey: KeyID?
     var createdAt: String
     var modifiedAt: String?
     var version: String?
     var contentsFrom: String?
     var continuations: Int?
+    var continuationsFrom: Int?
 
-    init(_ record: NodeRecord) {
+    init(_ record: NodeRecord) throws {
         name = record.name
         parent = record.parent
         kind = record.kind
         size = record.size
         sha256 = record.sha256
-        chunkIDs = record.hasContinuations ? nil : record.chunks?.map(\.id)
+        if !record.hasContinuations { (chunkIDs, chunkKey) = try chunkKeys(of: record.chunks) }
         createdAt = record.createdAt
         modifiedAt = record.modifiedAt
         version = record.version
         contentsFrom = record.contentsFrom
         continuations = record.hasContinuations ? record.continuations : nil
+        continuationsFrom = record.hasContinuations ? record.continuationsFrom : nil
     }
 
     /// The record, its chunks put back together; `nil` if the blob refs beside it don't match
-    /// the sealed IDs (the PDS changed them). Chunks in `chunks` records aren't in it yet.
+    /// the chunk IDs (the PDS changed them). Chunks in `chunks` records aren't in it yet.
     func record(chunks blobs: [BlobRef]?) -> NodeRecord? {
-        guard let chunks = ChunkRef.pair(blobs, chunkIDs) else { return nil }
+        guard let chunks = ChunkRef.pair(blobs, chunkIDs, key: chunkKey) else { return nil }
         var record = NodeRecord(name: name, parent: parent, kind: kind, size: size, sha256: sha256, chunks: chunks)
         record.createdAt = createdAt
         record.modifiedAt = modifiedAt
         record.version = version
         record.contentsFrom = contentsFrom
         record.continuations = continuations
+        record.continuationsFrom = continuationsFrom
         return record
     }
 }
 
-/// The sealed part of a version record: all of `VersionRecord` but the chunks' blob refs.
+/// Everything in a version record but the chunks' blob refs.
 struct VersionPayload: Codable {
     var node: String
     var change: VersionRecord.Change
@@ -111,9 +165,11 @@ struct VersionPayload: Codable {
     var modifiedAt: String?
     var contentsFrom: String?
     var chunkIDs: [ChunkID]?
+    var chunkKey: KeyID?
     var continuations: Int?
+    var continuationsFrom: Int?
 
-    init(_ record: VersionRecord) {
+    init(_ record: VersionRecord) throws {
         node = record.node
         change = record.change
         device = record.device
@@ -126,15 +182,16 @@ struct VersionPayload: Codable {
         createdAt = record.createdAt
         modifiedAt = record.modifiedAt
         contentsFrom = record.contentsFrom
-        chunkIDs = record.hasContinuations ? nil : record.chunks?.map(\.id)
+        if !record.hasContinuations { (chunkIDs, chunkKey) = try chunkKeys(of: record.chunks) }
         continuations = record.hasContinuations ? record.continuations : nil
+        continuationsFrom = record.hasContinuations ? record.continuationsFrom : nil
     }
 
     /// A change other than a delete always says what the node became.
     var isValid: Bool { change == .deleted || (name != nil && kind != nil) }
 
     func record(chunks blobs: [BlobRef]?) -> VersionRecord? {
-        guard let chunks = ChunkRef.pair(blobs, chunkIDs) else { return nil }
+        guard let chunks = ChunkRef.pair(blobs, chunkIDs, key: chunkKey) else { return nil }
         var record = VersionRecord(
             node: node, change: change, device: device, prev: prev, state: nil, holdsContents: false)
         record.name = name
@@ -147,14 +204,21 @@ struct VersionPayload: Codable {
         record.contentsFrom = contentsFrom
         record.chunks = chunks
         record.continuations = continuations
+        record.continuationsFrom = continuationsFrom
         return record
     }
 }
 
-/// The sealed part of a `chunks` record: the IDs of the chunks whose blob refs are beside it, in
-/// the same order. Its key (`Lexicon.continuationKey`) says whose list it continues, and where.
+/// Everything in a `chunks` record but the blob refs: the IDs of those chunks, if they're
+/// encrypted, in the same order. Its key (`Lexicon.continuationKey`) says whose list it
+/// continues, and where.
 struct ChunksPayload: Codable {
-    var chunkIDs: [ChunkID]
+    var chunkIDs: [ChunkID]?
+    var chunkKey: KeyID?
+
+    init(_ part: [ChunkRef]) throws {
+        (chunkIDs, chunkKey) = try chunkKeys(of: part)
+    }
 }
 
 extension NodeRecord {
@@ -168,13 +232,14 @@ extension VersionRecord {
 }
 
 extension ChunkRef {
-    /// Blob refs and chunk IDs, matched up in order: `.some(nil)` if there are neither, and `nil`
-    /// if one is missing or they don't have the same length.
-    static func pair(_ blobs: [BlobRef]?, _ ids: [ChunkID]?) -> [ChunkRef]?? {
+    /// Blob refs and chunk IDs, matched up in order. No IDs means plain chunks. `.some(nil)` if
+    /// there are no blobs either, and `nil` if there are IDs without blobs, or not one per blob.
+    static func pair(_ blobs: [BlobRef]?, _ ids: [ChunkID]?, key: KeyID?) -> [ChunkRef]?? {
         switch (blobs, ids) {
         case (nil, nil): return .some(nil)
+        case (let blobs?, nil): return .some(blobs.map { ChunkRef(blob: $0) })
         case (let blobs?, let ids?) where blobs.count == ids.count:
-            return .some(zip(blobs, ids).map { ChunkRef(blob: $0, id: $1) })
+            return .some(zip(blobs, ids).map { ChunkRef(blob: $0, id: $1, key: key) })
         default: return nil
         }
     }
@@ -194,14 +259,15 @@ public enum VersionEntry: Sendable, Equatable {
 }
 
 extension Drive {
-    // MARK: Reading sealed records
+    // MARK: Reading stored records
 
     /// The one place a stored node record becomes a `Node`, for listings and the change feed
     /// alike. A record that can't be read is unreadable rather than dropped, so it can't look
     /// deleted: one sealed with a key this device doesn't have (`missingKey`), one that doesn't
-    /// open (`tampered`: changed, or moved from another record), one that doesn't decode (a
-    /// newer format), and one whose name could escape a local folder (e.g. `..`) when
-    /// downloaded. Our own writes never produce the last two.
+    /// open (`tampered`: changed, or moved from another record), one that isn't sealed with the
+    /// drive's keys though the drive is encrypted (`notSealed`: the PDS could have written it),
+    /// one that doesn't decode (a newer format), and one whose name could escape a local folder
+    /// (e.g. `..`) when downloaded. Our own writes never produce the last two.
     ///
     /// `continuations` are the `chunks` records by key, for a file whose chunk list is in them;
     /// one that's missing makes it unreadable (`incomplete`).
@@ -210,12 +276,13 @@ extension Drive {
     {
         let record: NodeRecord
         do {
-            let (payload, chunks) = try unseal(value, as: NodePayload.self, collection: Lexicon.node, rkey: id)
+            let (payload, chunks, _) = try unseal(value, as: NodePayload.self, collection: Lexicon.node, rkey: id)
             guard var unsealed = payload.record(chunks: chunks) else { throw Unreadable(reason: .tampered) }
             if unsealed.hasContinuations {
                 guard chunks == nil, let holder = unsealed.contentsFrom else { throw Unreadable(reason: .tampered) }
                 unsealed.chunks = try readContinuations(
-                    of: holder, count: unsealed.continuations ?? 0, in: continuations)
+                    of: holder, from: unsealed.continuationsFrom, count: unsealed.continuations ?? 0,
+                    in: continuations)
             }
             record = unsealed
         } catch {
@@ -233,12 +300,14 @@ extension Drive {
         -> VersionEntry
     {
         do {
-            let (payload, chunks) = try unseal(value, as: VersionPayload.self, collection: Lexicon.version, rkey: id)
+            let (payload, chunks, _) = try unseal(
+                value, as: VersionPayload.self, collection: Lexicon.version, rkey: id)
             guard payload.isValid else { throw Unreadable(reason: .newerFormat) }
             guard var record = payload.record(chunks: chunks) else { throw Unreadable(reason: .tampered) }
             if record.hasContinuations {
                 guard chunks == nil else { throw Unreadable(reason: .tampered) }
-                record.chunks = try readContinuations(of: id, count: record.continuations ?? 0, in: continuations)
+                record.chunks = try readContinuations(
+                    of: id, from: record.continuationsFrom, count: record.continuations ?? 0, in: continuations)
             }
             return .readable(Version(id: id, cid: cid, record: record))
         } catch {
@@ -247,15 +316,24 @@ extension Drive {
         }
     }
 
-    /// The drive's settings from their stored record, or `nil` if it can't be read here. A
-    /// plaintext one, or one sealed with a key that isn't the drive's, is ignored: the defaults
-    /// apply, so a forged retention can't make devices prune history. `keyring` is this drive's
-    /// unless given.
-    public func readSettings(_ value: JSONValue?, with keyring: Keyring? = nil) -> DriveSettings? {
-        try? unseal(
-            value, as: DriveSettings.self, collection: Lexicon.settings, rkey: Lexicon.settingsKey,
-            with: keyring
-        ).payload
+    /// The drive's settings from their stored record, as this drive reads its records (see
+    /// `unseal`); `nil` if they can't be read here. On an encrypted drive, a plain one, or one
+    /// sealed with a key that isn't the drive's, is ignored: the defaults apply, so a forged
+    /// retention can't make devices prune history.
+    public func readSettings(_ value: JSONValue?) -> DriveSettings? {
+        try? unseal(value, as: DriveSettings.self, collection: Lexicon.settings, rkey: Lexicon.settingsKey).payload
+    }
+
+    /// The settings as their record stores them, read with `keyring` if they're sealed, whatever
+    /// this drive's mode: for working out the mode in the first place (`open`).
+    func settings(stored value: JSONValue?, keyring: Keyring?) -> DriveSettings? {
+        guard let value else { return nil }
+        if let stored = SealedRecord(value) {
+            return try? keyring?.open(
+                stored.sealed, as: DriveSettings.self, space: space, collection: Lexicon.settings,
+                rkey: Lexicon.settingsKey)
+        }
+        return try? value.decode(as: DriveSettings.self)
     }
 
     private struct Unreadable: Error {
@@ -263,15 +341,16 @@ extension Drive {
     }
 
     /// A chunk list from a version's `chunks` records, put together in order.
-    private func readContinuations(of version: String, count: Int, in records: [String: JSONValue]) throws
-        -> [ChunkRef]
+    private func readContinuations(of version: String, from first: Int?, count: Int, in records: [String: JSONValue])
+        throws -> [ChunkRef]
     {
         var chunks: [ChunkRef] = []
-        for index in 1...max(count, 1) {
+        let first = max(first ?? 1, 1)
+        for index in first..<(first + max(count, 1)) {
             let key = Lexicon.continuationKey(of: version, index)
             guard let value = records[key] else { throw Unreadable(reason: .incomplete) }
-            let (payload, blobs) = try unseal(value, as: ChunksPayload.self, collection: Lexicon.chunks, rkey: key)
-            guard let paired = ChunkRef.pair(blobs, payload.chunkIDs), let part = paired else {
+            let (payload, blobs, _) = try unseal(value, as: ChunksPayload.self, collection: Lexicon.chunks, rkey: key)
+            guard let paired = ChunkRef.pair(blobs, payload.chunkIDs, key: payload.chunkKey), let part = paired else {
                 throw Unreadable(reason: .tampered)
             }
             chunks += part
@@ -279,17 +358,39 @@ extension Drive {
         return chunks
     }
 
-    /// Opens a stored record's sealed payload, and gives the blob refs beside it. Throws
-    /// `Unreadable`.
-    private func unseal<Payload: Decodable>(
-        _ value: JSONValue?, as type: Payload.Type, collection: String, rkey: String, with keyring: Keyring? = nil
-    ) throws -> (payload: Payload, chunks: [BlobRef]?) {
-        guard let value, let stored = SealedRecord(value) else { throw Unreadable(reason: .newerFormat) }
-        guard let keyring = keyring ?? self.keyring else { throw Unreadable(reason: .missingKey) }
-        do {
-            return (try keyring.open(stored.sealed, as: type, collection: collection, rkey: rkey), stored.chunks)
-        } catch DriveCryptoError.unknownKeyID {
+    /// Reads a stored record, plain or sealed: its payload, the blob refs beside it, and how it
+    /// was stored. Throws `Unreadable`.
+    ///
+    /// A sealed record opens with the drive's keyring, or with its retired keys (published when
+    /// encryption was turned off). On an encrypted drive, a record that's plain or sealed with a
+    /// retired key is one the PDS could have written, so it's read only while the drive says
+    /// such records are still being encrypted (`DriveSettings.converting`).
+    func unseal<Payload: Decodable>(_ value: JSONValue?, as type: Payload.Type, collection: String, rkey: String)
+        throws -> (payload: Payload, chunks: [BlobRef]?, form: StoredForm)
+    {
+        guard let value else { throw Unreadable(reason: .newerFormat) }
+        let keys = keys.value
+        guard SealedRecord.isSealed(value) else {
+            guard keys.acceptsUnsealed else { throw Unreadable(reason: .notSealed) }
+            guard let payload = try? value.decode(as: type), let chunks = SealedRecord.blobs(beside: value) else {
+                throw Unreadable(reason: .newerFormat)
+            }
+            return (payload, chunks, .plain)
+        }
+        guard let stored = SealedRecord(value) else { throw Unreadable(reason: .newerFormat) }
+        let keyring: Keyring
+        let form: StoredForm
+        if let current = keys.keyring, current.key(id: stored.sealed.keyID) != nil {
+            (keyring, form) = (current, .sealed(stored.sealed.keyID))
+        } else if let retired = keys.retired, retired.key(id: stored.sealed.keyID) != nil {
+            guard keys.acceptsUnsealed else { throw Unreadable(reason: .notSealed) }
+            (keyring, form) = (retired, .retired(stored.sealed.keyID))
+        } else {
             throw Unreadable(reason: .missingKey)
+        }
+        do {
+            let payload = try keyring.open(stored.sealed, as: type, space: space, collection: collection, rkey: rkey)
+            return (payload, stored.chunks, form)
         } catch DriveCryptoError.authenticationFailed {
             throw Unreadable(reason: .tampered)
         } catch {
@@ -297,26 +398,31 @@ extension Drive {
         }
     }
 
-    // MARK: Sealing records
+    /// How a record that reads here was stored; `nil` if it doesn't.
+    func storedForm(of value: JSONValue?, collection: String, rkey: String) -> StoredForm? {
+        struct Anything: Decodable {}
+        return try? unseal(value, as: Anything.self, collection: collection, rkey: rkey).form
+    }
+
+    // MARK: Storing records
 
     /// A node record as it's stored.
     func stored(_ record: NodeRecord, id: String) throws -> JSONValue {
-        try seal(
+        try store(
             NodePayload(record), collection: Lexicon.node, rkey: id,
             chunks: record.hasContinuations ? nil : record.chunks?.map(\.blob))
     }
 
     /// A version record as it's stored.
     func stored(_ record: VersionRecord, id: String) throws -> JSONValue {
-        try seal(
+        try store(
             VersionPayload(record), collection: Lexicon.version, rkey: id,
             chunks: record.hasContinuations ? nil : record.chunks?.map(\.blob))
     }
 
     /// A `chunks` record as it's stored: one part of a version's chunk list.
     func stored(_ part: [ChunkRef], key: String) throws -> JSONValue {
-        try seal(
-            ChunksPayload(chunkIDs: part.map(\.id)), collection: Lexicon.chunks, rkey: key, chunks: part.map(\.blob))
+        try store(ChunksPayload(part), collection: Lexicon.chunks, rkey: key, chunks: part.map(\.blob))
     }
 
     /// A chunk list cut into parts for `chunks` records of at most `limit` bytes each (as
@@ -341,25 +447,51 @@ extension Drive {
     }
 
     /// About how many bytes a chunk adds to a stored record: its blob ref
-    /// (`{"$type":"blob","ref":{"$link":"…"},"mimeType":"…","size":…},`) and its ID in the sealed
-    /// part (`"…",`: 43 characters of base64, then base64 again, sealed).
+    /// (`{"$type":"blob","ref":{"$link":"…"},"mimeType":"…","size":…},`) and, if it's encrypted,
+    /// its ID in the sealed part (`"…",`: 43 characters of base64, then base64 again, sealed).
     static func storedSize(of chunk: ChunkRef) -> Int {
         let blob = 60 + chunk.blob.cid.utf8.count + chunk.blob.mimeType.utf8.count + String(chunk.blob.size).utf8.count
-        return blob + 62
+        return blob + (chunk.isEncrypted ? 62 : 0)
     }
 
-    /// The settings record as it's stored.
-    func stored(_ settings: DriveSettings, with keyring: Keyring) throws -> JSONValue {
-        try seal(settings, collection: Lexicon.settings, rkey: Lexicon.settingsKey, chunks: nil, with: keyring)
+    /// The settings record as it's stored: sealed with `keyring`, or plain without one.
+    func stored(_ settings: DriveSettings, with keyring: Keyring?) throws -> JSONValue {
+        try Self.store(
+            settings, space: space, collection: Lexicon.settings, rkey: Lexicon.settingsKey, chunks: nil,
+            keyring: keyring)
     }
 
-    /// Seals with the current key, which throws `DriveAccessError.locked` if this device doesn't
-    /// have the drive's keys.
-    private func seal<Payload: Encodable>(
-        _ payload: Payload, collection: String, rkey: String, chunks: [BlobRef]?, with keyring: Keyring? = nil
+    /// A record as this drive stores it now: sealed with the current key on an encrypted drive
+    /// (which throws `DriveAccessError.locked` if this device doesn't have the keys), plain
+    /// otherwise. Throws `DriveAccessError.notOpened` before the drive knows which it is.
+    private func store<Payload: Encodable>(_ payload: Payload, collection: String, rkey: String, chunks: [BlobRef]?)
+        throws -> JSONValue
+    {
+        let keys = keys.value
+        switch keys.mode {
+        case nil: throw DriveAccessError.notOpened
+        case .plain?:
+            return try Self.store(
+                payload, space: space, collection: collection, rkey: rkey, chunks: chunks, keyring: nil)
+        case .encrypted?:
+            guard let keyring = keys.keyring else { throw DriveAccessError.locked }
+            return try Self.store(
+                payload, space: space, collection: collection, rkey: rkey, chunks: chunks, keyring: keyring)
+        }
+    }
+
+    private static func store<Payload: Encodable>(
+        _ payload: Payload, space: String, collection: String, rkey: String, chunks: [BlobRef]?, keyring: Keyring?
     ) throws -> JSONValue {
-        guard let keyring = keyring ?? self.keyring else { throw DriveAccessError.locked }
-        let sealed = try keyring.seal(payload, collection: collection, rkey: rkey)
-        return try JSONValue(encoding: SealedRecord(type: collection, chunks: chunks, sealed: sealed))
+        if let keyring {
+            let sealed = try keyring.seal(payload, space: space, collection: collection, rkey: rkey)
+            return try JSONValue(encoding: SealedRecord(type: collection, chunks: chunks, sealed: sealed))
+        }
+        guard case .object(var fields) = try JSONValue(encoding: payload) else {
+            throw ATDriveError.integrity("a \(collection) record isn't an object")
+        }
+        fields["$type"] = .string(collection)
+        if let chunks { fields["chunks"] = try JSONValue(encoding: chunks) }
+        return .object(fields)
     }
 }

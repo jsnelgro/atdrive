@@ -15,7 +15,7 @@ import Testing
     init() async throws {
         let clock = clock
         laptop = pds.device("laptop", tids: TIDSource(clockID: 1) { clock.now })
-        _ = try await laptop.create()
+        _ = try await laptop.create(encrypted: true)
         directory = try temporaryDirectory()
     }
 
@@ -53,7 +53,8 @@ import Testing
         #expect(versions[0].record.chunks == created.record.chunks)
         #expect(snapshot.history.record(at: versions[1]) == moved.record)
         let settings = try #require(snapshot.settings)
-        #expect(settings.retentionDays == 30 && settings.roster.map(\.name) == ["laptop"])
+        #expect(settings.retentionDays == 30 && settings.generation == 0)
+        #expect(try await laptop.devices().map(\.name) == ["laptop"])
         #expect(try await contents(try #require(snapshot.tree.nodes[moved.id])) == "hello, sealed world")
 
         // Stored, each holds only its type, the blob refs, and the sealed value.
@@ -177,7 +178,9 @@ import Testing
     @Test func aDeviceWithoutTheKeySeesOnlyUnreadableRecords() async throws {
         let docs = try await laptop.createFolder(named: "docs", in: nil)
         try await laptop.upload(try file("aaaa"), as: "a.txt", in: docs.id)
-        for stranger in [pds.device("no keys"), pds.device("another drive's keys", keyring: Keyring(DriveKey()))] {
+        for stranger in [
+            pds.device("no keys", mode: .encrypted), pds.device("another drive's keys", keyring: Keyring(DriveKey())),
+        ] {
             let snapshot = try await stranger.update(nil)
             #expect(snapshot.tree.nodes.isEmpty)
             #expect(snapshot.tree.unreadable.count == 2)
@@ -186,7 +189,7 @@ import Testing
             #expect(snapshot.settings == nil)
         }
         await #expect(throws: DriveAccessError.locked) {
-            try await pds.device("no keys").createFolder(named: "x", in: nil)
+            try await pds.device("no keys", mode: .encrypted).createFolder(named: "x", in: nil)
         }
     }
 

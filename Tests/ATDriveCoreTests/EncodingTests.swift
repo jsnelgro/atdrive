@@ -49,7 +49,7 @@ import Testing
         #expect(object["$type"] as? String == "me.jsnelgro.atdrive.node")
         #expect(Set(object.keys) == ["$type", "sealed"])  // no chunks
         let sealed = try #require(SealedRecord(stored)).sealed
-        let payload = try keyring.open(sealed, as: JSONValue.self, collection: Lexicon.node, rkey: "3jzfcijpj2z2a")
+        let payload = try keyring.open(sealed, as: JSONValue.self, space: FakePDS.space, collection: Lexicon.node, rkey: "3jzfcijpj2z2a")
         guard case .object(let fields) = payload else { throw CancellationError() }
         #expect(Set(fields.keys) == ["name", "kind", "createdAt"])
         #expect(

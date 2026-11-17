@@ -30,6 +30,9 @@ public struct UnreadableNode: Sendable, Equatable {
         case missingKey
         /// Sealed, but it doesn't open: changed on the server, or moved there from another record.
         case tampered
+        /// Not sealed with the drive's keys, on an encrypted drive: written by a device that
+        /// hadn't noticed encryption was turned on, or by the server. `Drive.convert` can adopt it.
+        case notSealed
         /// A file whose chunk list continues in `chunks` records, and one of them isn't there.
         case incomplete
 
@@ -39,6 +42,9 @@ public struct UnreadableNode: Sendable, Equatable {
             case .invalidName: "its name can't be used in a folder"
             case .missingKey: "it's sealed with a drive key this device doesn't have (yet)"
             case .tampered: "it doesn't decrypt: it was changed on the server, or isn't where it was written"
+            case .notSealed:
+                "it isn't encrypted with the drive's keys, though the drive is: a device that hadn't noticed "
+                    + "wrote it, or the server did (`atdrive encryption on` can encrypt and keep it)"
             case .incomplete: "part of its list of contents is missing from the server"
             }
         }

@@ -6,7 +6,7 @@ struct Devices: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "The devices that hold the drive's keys, and those asking for them.",
         discussion: """
-            The drive is encrypted: only devices that hold its keys can read it. A new device asks for them when you run `atdrive login` there; approve it from one that has them, after checking both show the same code. Or set it up with the recovery key (`atdrive unlock`).
+            On an encrypted drive, only devices that hold its keys can read it. A new device asks for them when you run `atdrive login` there; approve it from one that has them, after checking both show the same code. Or set it up with the recovery key (`atdrive unlock`).
             """,
         subcommands: [ListDevices.self, ApproveDevice.self, RemoveDevice.self],
         defaultSubcommand: ListDevices.self
@@ -19,7 +19,7 @@ struct ListDevices: AsyncParsableCommand {
     func run() async throws {
         let context = try await Context.locked()
         // Unlocked, the roster says which are approved; without the keys, only their records do.
-        let unlocked = (try? await context.drive.unlock()) != nil
+        let unlocked = (try? await context.drive.open()) == .encrypted
         let devices = try await context.drive.devices()
         let width = devices.map(\.name.count).max() ?? 0
         for device in devices {
@@ -50,7 +50,7 @@ struct ApproveDevice: AsyncParsableCommand {
     var device: String?
 
     func run() async throws {
-        let context = try await Context.load()
+        let context = try await Context.encrypted()
         let drive = context.drive
         guard let me = drive.identity else { throw DriveAccessError.locked }
         let waiting = try await drive.devices().filter { !$0.approved && !$0.isThisDevice }
@@ -99,7 +99,7 @@ struct RemoveDevice: AsyncParsableCommand {
     var device: String
 
     func run() async throws {
-        let context = try await Context.load()
+        let context = try await Context.encrypted()
         let drive = context.drive
         let devices = try await drive.devices()
         let target = try pick(device, from: devices.filter { !$0.isThisDevice }, describing: "in this drive")
@@ -149,10 +149,16 @@ struct Unlock: AsyncParsableCommand {
             """)
 
     func run() async throws {
-        let context = try await Context.locked()
-        if (try? await context.drive.unlock()) != nil {
+        let context = try await Context.locked(makingIdentity: true)
+        do {
+            guard try await context.drive.open() == .encrypted else { throw DriveAccessError.notEncrypted }
             print("This device already has the drive's keys.")
             return
+        } catch let error as DriveAccessError {
+            switch error {
+            case .notApproved, .untrustedKeyring, .keyringMissingKeys: break
+            default: throw error
+            }
         }
         try await KeySetup.unlockWithRecoveryKey(context.drive)
     }
@@ -163,7 +169,7 @@ struct NewRecoveryKey: AsyncParsableCommand {
         commandName: "recovery-key", abstract: "Make a new recovery key. The old one stops working.")
 
     func run() async throws {
-        let drive = try await Context.load().drive
+        let drive = try await Context.encrypted().drive
         guard Prompt.confirm("Make a new recovery key? The current one stops working.") else { return }
         // Shown before it's in effect, so it never is without having been seen.
         let recoveryKey = RecoveryKey()
@@ -173,27 +179,53 @@ struct NewRecoveryKey: AsyncParsableCommand {
     }
 }
 
-/// Getting this device the drive's keys, after signing in (`atdrive login`, `atdrive unlock`).
+/// Opening the drive on this device after signing in (`atdrive login`), and getting it an
+/// encrypted drive's keys (`atdrive unlock`).
 enum KeySetup {
-    /// Opens the drive on this device; creates it if the account has none (showing its recovery
-    /// key); or, for a drive this device has no keys for, asks for them: from another device, or
-    /// with the recovery key.
-    static func run() async throws {
-        let context = try await Context.locked()
-        let drive = context.drive
+    /// Opens the drive on this device; creates it if the account has none (encrypted if asked,
+    /// showing its recovery key); or, for an encrypted drive this device has no keys for, asks for
+    /// them: from another device, or with the recovery key.
+    static func run(encrypted: Bool) async throws {
+        // A plain drive needs no device identity, so one is made only for an encrypted drive.
+        var context = try await Context.locked(makingIdentity: encrypted)
+        var drive = context.drive
         do {
-            try await drive.unlock()
-            print("✓ This device has the drive's keys.")
+            switch try await drive.open() {
+            case .plain:
+                print("✓ Your drive is ready. It isn't encrypted (`atdrive encryption on` turns encryption on).")
+                if encrypted { print("  --encrypted only applies when the drive is created: it already exists.") }
+            case .encrypted:
+                print("✓ Your drive is encrypted, and this device has its keys.")
+            }
             return
         } catch DriveAccessError.noDrive {
-            let recoveryKey: RecoveryKey
             do {
-                recoveryKey = try await drive.create()
+                if let recoveryKey = try await drive.create(encrypted: encrypted) {
+                    print("✓ Created your drive. It's encrypted: only your devices can read it.")
+                    try RecoveryKeyNotice.show(recoveryKey, replacing: false)
+                } else {
+                    print(
+                        """
+                        ✓ Created your drive. It isn't encrypted: whoever runs your PDS can read it, and
+                          there are no keys to look after. `atdrive encryption on` turns encryption on.
+                        """)
+                }
             } catch DriveAccessError.driveExists {
-                return try await run()  // another device made it a moment ago
+                return try await run(encrypted: encrypted)  // another device made it a moment ago
             }
-            print("✓ Created your drive. It's encrypted: only your devices can read it.")
-            try RecoveryKeyNotice.show(recoveryKey, replacing: false)
+            return
+        } catch DriveAccessError.encryptionRemoved {
+            print(
+                """
+
+                This device had the keys of your encrypted drive, and the drive's settings now say it
+                isn't encrypted. When one of your devices turns encryption off, it publishes the keys
+                as proof; these settings don't have them, so the server may have changed them.
+                """)
+            guard Prompt.confirm("Did you turn encryption off, and want this device to use the drive unencrypted?")
+            else { throw DriveAccessError.encryptionRemoved }
+            try await drive.acceptEncryptionRemoved()
+            print("✓ This device now uses the drive unencrypted.")
             return
         } catch let error as DriveAccessError {
             switch error {
@@ -201,6 +233,10 @@ enum KeySetup {
             default: throw error
             }
             if case .notApproved = error {} else { Output.warn(error.description) }
+        }
+        if drive.identity == nil {
+            context = try await Context.locked(makingIdentity: true)
+            drive = context.drive
         }
         try await join(drive)
     }

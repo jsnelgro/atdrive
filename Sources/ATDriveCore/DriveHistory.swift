@@ -128,6 +128,7 @@ public struct DriveHistory: Sendable {
             state.chunks = holder?.record.chunks
             state.contentsFrom = holder?.id ?? version.record.contentsFrom
             state.continuations = holder?.record.continuations
+            state.continuationsFrom = holder?.record.continuationsFrom
         }
         return state
     }
