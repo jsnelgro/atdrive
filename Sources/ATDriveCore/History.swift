@@ -434,7 +434,7 @@ struct Restoration {
             let prev = lineages.of(id)?.head.id
             changes.append(drive.change(.create, node: id, record: record, .restored, prev: prev))
             present.insert(id)
-            if target.kind == .folder { folders.insert(id) }
+            if target.kind != .file { folders.insert(id) }
         }
         if let old = place[id], taken[old.parent]?[old.name] == id { taken[old.parent]?[old.name] = nil }
         place[id] = (parent, name)

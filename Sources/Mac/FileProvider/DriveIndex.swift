@@ -6,13 +6,14 @@ import Foundation
 /// The extension's view of the drive: the latest tree, plus the last few trees by revision so
 /// enumerators can report "what changed since revision X" by comparing two snapshots.
 ///
-/// The repo revision (a TID that moves on every write) doubles as the File Provider sync anchor.
+/// The repo revisions (TIDs that move on every write), the home drive's and each mounted space's,
+/// together make the File Provider sync anchor (`JoinedSnapshot.anchor`).
 /// The drive is kept current with its change feed (`Drive.update`): one small request when
 /// nothing changed, and only what changed otherwise.
 actor DriveIndex {
-    private var cachedDrive: Drive?
-    /// The drive as last fetched, every record included.
-    private var snapshot: DriveSnapshot?
+    private var cachedDrive: JoinedDrive?
+    /// The drive as last fetched, every record included: the home drive and each mounted space.
+    private var snapshot: JoinedSnapshot?
     private var current: (revision: String, tree: DriveTree)?
     private var history: [(revision: String, tree: DriveTree)] = []
     private let historyLimit = 16
@@ -24,7 +25,7 @@ actor DriveIndex {
     /// lazily, so signing in (and getting the keys) after the extension starts works. Until the
     /// app has opened the drive on this Mac, it's "not signed in". The extension never creates
     /// a drive: the app does.
-    func drive() async throws -> Drive {
+    func drive() async throws -> JoinedDrive {
         if let cachedDrive { return cachedDrive }
         guard let store = AppGroup.sessionStore(), let session = try store.load(),
             let devices = AppGroup.deviceStore(), let identity = try devices.load()
@@ -41,9 +42,14 @@ actor DriveIndex {
         } catch is DriveAccessError {
             throw NSFileProviderError(.notAuthenticated)
         }
-        cachedDrive = drive
-        return drive
+        let joined = JoinedDrive(
+            home: drive, access: SpaceAccess(ownClient: drive.client, resolver: IdentityResolver()))
+        cachedDrive = joined
+        return joined
     }
+
+    /// The drive as last fetched (for sharing actions and badges).
+    func latest() -> JoinedSnapshot? { snapshot }
 
     /// The drive as it is now, with the changes since last time applied.
     func refresh() async throws -> (revision: String, tree: DriveTree) {
@@ -73,7 +79,7 @@ actor DriveIndex {
             updated = try await drive.update(updated)
         }
         snapshot = updated
-        let revision = updated.revision ?? Self.emptyRevision
+        let revision = updated.anchor ?? Self.emptyRevision
         if let current, current.revision == revision { return current }
         let latest = (revision: revision, tree: updated.tree)
         current = latest

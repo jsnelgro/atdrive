@@ -196,10 +196,17 @@ struct RemoteView {
     /// them). They're left alone on both sides, never taken for deletions.
     let unknown: Set<String>
 
-    init(_ tree: DriveTree, base: SyncBase) {
+    /// `held`: mounts that can't be read right now (`JoinedSnapshot.held`). Whatever was synced
+    /// from one is unknown: left alone, never taken for deleted.
+    init(_ tree: DriveTree, base: SyncBase, held: Set<String> = []) {
         self.tree = tree
         var entries: [String: SyncEntry] = [:]
         var unknown = Set(tree.unreadable.keys)
+        if !held.isEmpty {
+            for id in base.entries.keys {
+                if let mount = NodeID.split(id).mount, held.contains(mount) { unknown.insert(id) }
+            }
+        }
         for node in tree.nodes.values {
             var path = tree.path(of: node).components
             if let container = tree.unreadableContainer(of: node.id) {

@@ -23,6 +23,14 @@ public enum Lexicon {
     public static let shareKey = "me.jsnelgro.atdrive.shareKey"
     /// Record key of the sharing key.
     public static let shareKeyKey = "self"
+    /// Record collection, in a shared space, holding one record per member (keyed by their DID)
+    /// of an encrypted share: its keyring wrapped for them (`MemberRecord`).
+    public static let member = "me.jsnelgro.atdrive.member"
+    /// Record collection, in a shared space, holding its link record (`linkKey`): an encrypted
+    /// share's keyring sealed with its public link's key (`ShareLink`).
+    public static let link = "me.jsnelgro.atdrive.link"
+    /// Record key of the link record.
+    public static let linkKey = "self"
     /// Space key of the default drive.
     public static let defaultDriveKey = "default"
 

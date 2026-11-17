@@ -237,7 +237,7 @@ public struct DriveHistory: Sendable {
         var cursor = parent
         while let id = cursor, !folders.contains(id), folders.count < 4096,
             let folder = record(of: id, upTo: bound, inclusive: inclusive, lineages: lineages),
-            folder.kind == .folder
+            folder.kind != .file
         {
             components.append(folder.name)
             folders.append(id)
@@ -302,7 +302,7 @@ public struct DriveHistory: Sendable {
         public var deletedWithFolder: Bool
 
         public var name: String { record.name }
-        public var isFolder: Bool { record.kind == .folder }
+        public var isFolder: Bool { record.kind != .file }
         public var deletedAt: Date { deletion.date }
     }
 

@@ -314,7 +314,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     /// The drive folder ID for a File Provider parent identifier (`nil` = top level). A folder
     /// deleted on the drive that something is going into here is put back, since a folder is
     /// kept if anything kept is inside it (`ConflictRules`).
-    private func folderID(_ identifier: NSFileProviderItemIdentifier, in tree: DriveTree, drive: Drive)
+    private func folderID(_ identifier: NSFileProviderItemIdentifier, in tree: DriveTree, drive: JoinedDrive)
         async throws -> String?
     {
         switch identifier {

@@ -54,6 +54,20 @@ public final class Drive: Sendable {
             saveIdentity: saveIdentity)
     }
 
+    /// The drive in `space` (any of `owner`'s, such as a shared folder), read and written with
+    /// `client`: the owner's own session, or a credential for another account's space
+    /// (`SpaceCredentials`).
+    public convenience init(
+        client: XRPCClient, owner: String, space: String, transfers: TransferOptions = .standard,
+        device: String = DeviceName.current, tids: TIDSource = .system, identity: DeviceIdentity? = nil,
+        mode: DriveMode? = nil, keyring: Keyring? = nil
+    ) {
+        self.init(
+            client: client, owner: owner, space: space, transfers: transfers, device: device, tids: tids,
+            keys: DriveKeys(mode: keyring == nil ? mode : .encrypted, keyring: keyring, identity: identity),
+            saveIdentity: nil)
+    }
+
     private init(
         client: XRPCClient, owner: String, space: String, transfers: TransferOptions, device: String,
         tids: TIDSource, keys: DriveKeys, saveIdentity: (@Sendable (DeviceIdentity) -> Void)?
@@ -448,6 +462,30 @@ public final class Drive: Sendable {
     }
 
     var spaceKey: String { String(space.split(separator: "/").last!) }
+
+    /// Writes a copy of a node from another of the owner's spaces, as new: `id` (a new one unless
+    /// given), in `parent`, named `name`, with one `created` version. A file keeps the chunks it
+    /// has (its blobs are the account's, and an encrypted chunk's ID decrypts it wherever it's
+    /// written), so nothing is uploaded: only between spaces of the same mode (`copy` in
+    /// `Mounts.swift` transfers the rest). `RecordAlreadyExists` if `id` is taken.
+    @discardableResult
+    func writeCopy(of record: NodeRecord, id: String? = nil, in parent: String?, as name: String) async throws -> Node {
+        try DrivePath.validate(name: name)
+        var copy = NodeRecord(
+            name: name, parent: parent, kind: record.kind, size: record.size, sha256: record.sha256,
+            chunks: record.chunks)
+        copy.createdAt = record.createdAt
+        copy.modifiedAt = record.modifiedAt
+        copy.mount = record.mount
+        return try await commit(change(.create, node: id ?? tids.next(), record: copy, .created, prev: nil, newContents: true))!
+    }
+
+    /// Deletes nodes that moved to another space: recorded as `kind` (`.shared` keeps them out of
+    /// the trash), everything else as `delete` does.
+    func delete(_ nodes: [Node], recordedAs kind: VersionRecord.Change) async throws {
+        let changes = nodes.map { change(.delete, node: $0.id, record: nil, kind, prev: $0.record.version) }
+        _ = try await commit(changes)
+    }
 
     // MARK: Writing with history
 

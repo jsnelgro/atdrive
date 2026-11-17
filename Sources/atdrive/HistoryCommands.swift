@@ -25,10 +25,13 @@ struct ShowHistory: AsyncParsableCommand {
     }
 
     func run() async throws {
-        let snapshot = try await Context.load().snapshot()
+        let context = try await Context.load()
+        var snapshot = try await context.snapshot()
         var scope = DriveHistory.Scope.drive
         if let path {
-            let found = try snapshot.find(DrivePath(path))
+            let (_, space, local) = try await context.space(of: DrivePath(path), writing: false)
+            snapshot = space
+            let found = try snapshot.find(local)
             if let id = found.id { scope = found.isFolder ? .folder(id) : .node(id) }
         }
         let entries = snapshot.entries(scope)
@@ -62,6 +65,8 @@ struct ShowHistory: AsyncParsableCommand {
                 if let record = change.record, record.kind == .file { notes.append(Output.size(record.size ?? 0)) }
             case .deleted:
                 break
+            case .shared:
+                notes.append("moved into its own space, to share")
             }
             if change.lost { notes.append("lost a race") }
             let note = notes.isEmpty ? "" : "  (\(notes.joined(separator: ", ")))"
@@ -77,7 +82,7 @@ struct ShowHistory: AsyncParsableCommand {
     private static func device(_ entry: DriveHistory.Entry) -> String { entry.device.isEmpty ? "-" : entry.device }
 
     private static func describe(_ path: DrivePath, _ record: NodeRecord?) -> String {
-        record?.kind == .folder && !path.isRoot ? "\(path)/" : path.description
+        record.map { $0.kind != .file } == true && !path.isRoot ? "\(path)/" : path.description
     }
 }
 
@@ -110,9 +115,7 @@ struct Restore: AsyncParsableCommand {
     }
 
     func run() async throws {
-        let drive = try await Context.load().drive
-        let snapshot = try await drive.update(nil)
-        let path = DrivePath(path)
+        let (drive, snapshot, path) = try await Context.load().space(of: DrivePath(path), writing: true)
         var past: DriveTree?
         let result: Drive.RestoreResult
         var undoingDelete = false
@@ -224,11 +227,12 @@ struct TrashRestore: AsyncParsableCommand {
     }
 
     func run() async throws {
-        let drive = try await Context.load().drive
-        let snapshot = try await drive.update(nil)
+        let context = try await Context.load()
+        let (drive, snapshot, _) = try await context.space(of: DrivePath(paths[0]), writing: true)
         var ids: [String] = []
         for raw in paths {
-            let path = DrivePath(raw)
+            let (other, _, path) = try await context.space(of: DrivePath(raw), writing: true)
+            guard other === drive else { throw CommandError("restore things from one shared folder at a time") }
             guard let item = snapshot.trashed(at: path) else {
                 let isThere = (try? snapshot.tree.find(path)).map { $0 != .missing } ?? false
                 throw CommandError("\(path): not in the trash\(isThere ? " (it's in the drive)" : "")")
@@ -289,12 +293,13 @@ struct Purge: AsyncParsableCommand {
     }
 
     func run() async throws {
-        let drive = try await Context.load().drive
-        let snapshot = try await drive.update(nil)
+        let context = try await Context.load()
+        let (drive, snapshot, _) = try await context.space(of: DrivePath(paths[0]), writing: true)
         // Check every path before deleting anything.
         var targets: [(id: String, line: String)] = []
         for raw in paths {
-            let path = DrivePath(raw)
+            let (other, _, path) = try await context.space(of: DrivePath(raw), writing: true)
+            guard other === drive else { throw CommandError("purge things from one shared folder at a time") }
             let found = try snapshot.find(path)
             guard let id = found.id else { throw CommandError("refusing to purge the whole drive") }
             if found.isFolder, !recursive { throw ATDriveError.needsRecursive(path.description) }
@@ -363,10 +368,10 @@ struct Prune: AsyncParsableCommand {
     )
 
     func run() async throws {
-        let drive = try await Context.load().drive
-        let snapshot = try await drive.update(nil)
-        let removed = try await drive.prune(snapshot)
-        let days = Output.days(snapshot.retention)
+        let joined = try await Context.load().joined
+        let snapshot = try await joined.update(nil)
+        let removed = try await joined.prune(snapshot)
+        let days = Output.days(snapshot.home.retention)
         if removed == 0 {
             print("Nothing to remove. History is kept for \(days).")
         } else {
@@ -400,12 +405,34 @@ extension Context {
     /// The drive with its history and settings.
     func snapshot() async throws -> DriveSnapshot { try await drive.update(nil) }
 
-    /// The drive as it is now, or as it was at `date`.
+    /// The drive as it is now, or as it was at `date`: every space in it.
     func tree(at date: Date?) async throws -> DriveTree {
-        guard let date else { return try await drive.tree() }
-        let snapshot = try await snapshot()
-        Output.warnIfBeforeHistory(date, snapshot)
-        return snapshot.tree(at: date)
+        let joined = try await self.joined.update(nil)
+        guard let date else { return joined.tree }
+        Output.warnIfBeforeHistory(date, joined.home)
+        return joined.tree(at: date)
+    }
+
+    /// History is per space: the space a path is in (the home drive, or a shared folder mounted
+    /// in it), its snapshot, and the path within it. `writing`: for a change, which a folder
+    /// shared with you can't take.
+    func space(of path: DrivePath, writing: Bool) async throws -> (drive: Drive, snapshot: DriveSnapshot, path: DrivePath) {
+        let joined = try await self.joined.update(nil)
+        for length in stride(from: path.components.count, through: 1, by: -1) {
+            let prefix = DrivePath(components: Array(path.components.prefix(length)))
+            guard case .node(let node)? = try? joined.tree.find(prefix), node.isMount, let state = joined.mounts[node.id]
+            else { continue }
+            if writing, state.readOnly { throw ATDriveError.readOnly(path: path.description, owner: state.owner) }
+            guard let drive = self.joined.drive(ofMount: node.id), let snapshot = state.snapshot else {
+                throw ATDriveError.mountUnavailable(
+                    path: prefix.description, why: state.problem?.description ?? "it can't be read")
+            }
+            if length == path.components.count, writing {
+                throw CommandError("\(path) is a shared folder: its history is inside it (try \(path)/<name>)")
+            }
+            return (drive, snapshot, DrivePath(components: Array(path.components.dropFirst(length))))
+        }
+        return (self.drive, joined.home, path)
     }
 }
 

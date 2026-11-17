@@ -13,7 +13,9 @@ public struct Node: Sendable, Identifiable, Equatable {
     }
 
     public var name: String { record.name }
-    public var isFolder: Bool { record.kind == .folder }
+    /// A folder, or a mount (another space, which shows as a folder).
+    public var isFolder: Bool { record.kind != .file }
+    public var isMount: Bool { record.kind == .mount }
 }
 
 /// A node record that exists in the drive but that this device can't read (yet). It must never
@@ -95,7 +97,7 @@ public struct DrivePath: Sendable, Equatable, CustomStringConvertible {
         self.components = components
     }
 
-    init(components: [String]) { self.components = components }
+    public init(components: [String]) { self.components = components }
 
     public var isRoot: Bool { components.isEmpty }
     public var name: String? { components.last }

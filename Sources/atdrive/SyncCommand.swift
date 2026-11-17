@@ -51,7 +51,7 @@ struct Sync: AsyncParsableCommand {
         var context = waits ? try await Self.waitForSignIn() : try await Context.load()
         let sync: FolderSync
         do {
-            sync = try FolderSync(folder: url, drive: context.drive) { SyncLog.write($0.description) }
+            sync = try FolderSync(folder: url, drive: context.joined) { SyncLog.write($0.description) }
         } catch let error as SyncError {
             throw Self.fatal(error)
         }
@@ -98,7 +98,7 @@ struct Sync: AsyncParsableCommand {
                 let expired = await context.session.session
                 SyncLog.write("Your session has ended. Run `atdrive login <handle>` to resume syncing.")
                 context = try await Self.waitForSignIn(after: expired)
-                do { try sync.use(context.drive) } catch let error as SyncError { throw Self.fatal(error) }
+                do { try sync.use(context.joined) } catch let error as SyncError { throw Self.fatal(error) }
                 SyncLog.write("Signed in again; resuming.")
             } catch {
                 failures += 1

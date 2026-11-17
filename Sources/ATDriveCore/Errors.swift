@@ -18,6 +18,8 @@ public enum ATDriveError: Error, CustomStringConvertible, Equatable {
     case invalidLink(String)
     /// Inside a folder someone else shared: only they can change it.
     case readOnly(path: String, owner: String)
+    /// Inside a shared folder that can't be read right now.
+    case mountUnavailable(path: String, why: String)
 
     public var description: String {
         switch self {
@@ -36,6 +38,7 @@ public enum ATDriveError: Error, CustomStringConvertible, Equatable {
         case .unexpectedResponse(let why): "unexpected server response: \(why)"
         case .invalidLink(let text): "not an ATDrive link or space address: \(text)"
         case .readOnly(let path, let owner): "\(path) is read-only: \(owner) shared it with you"
+        case .mountUnavailable(let path, let why): "\(path) is in a shared folder that can't be read now: \(why)"
         }
     }
 }

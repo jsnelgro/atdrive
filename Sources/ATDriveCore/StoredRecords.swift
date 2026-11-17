@@ -119,6 +119,7 @@ struct NodePayload: Codable {
     var contentsFrom: String?
     var continuations: Int?
     var continuationsFrom: Int?
+    var mount: MountInfo?
 
     init(_ record: NodeRecord) throws {
         name = record.name
@@ -133,6 +134,7 @@ struct NodePayload: Codable {
         contentsFrom = record.contentsFrom
         continuations = record.hasContinuations ? record.continuations : nil
         continuationsFrom = record.hasContinuations ? record.continuationsFrom : nil
+        mount = record.kind == .mount ? record.mount : nil
     }
 
     /// The record, its chunks put back together; `nil` if the blob refs beside it don't match
@@ -146,6 +148,8 @@ struct NodePayload: Codable {
         record.contentsFrom = contentsFrom
         record.continuations = continuations
         record.continuationsFrom = continuationsFrom
+        record.mount = kind == .mount ? mount : nil
+        if kind == .mount, mount == nil { return nil }
         return record
     }
 }
@@ -168,6 +172,7 @@ struct VersionPayload: Codable {
     var chunkKey: KeyID?
     var continuations: Int?
     var continuationsFrom: Int?
+    var mount: MountInfo?
 
     init(_ record: VersionRecord) throws {
         node = record.node
@@ -185,10 +190,13 @@ struct VersionPayload: Codable {
         if !record.hasContinuations { (chunkIDs, chunkKey) = try chunkKeys(of: record.chunks) }
         continuations = record.hasContinuations ? record.continuations : nil
         continuationsFrom = record.hasContinuations ? record.continuationsFrom : nil
+        mount = record.kind == .mount ? record.mount : nil
     }
 
     /// A change other than a delete always says what the node became.
-    var isValid: Bool { change == .deleted || (name != nil && kind != nil) }
+    var isValid: Bool {
+        change == .deleted || change == .shared || (name != nil && kind != nil && (kind != .mount || mount != nil))
+    }
 
     func record(chunks blobs: [BlobRef]?) -> VersionRecord? {
         guard let chunks = ChunkRef.pair(blobs, chunkIDs, key: chunkKey) else { return nil }
@@ -205,6 +213,7 @@ struct VersionPayload: Codable {
         record.chunks = chunks
         record.continuations = continuations
         record.continuationsFrom = continuationsFrom
+        record.mount = mount
         return record
     }
 }
@@ -406,16 +415,19 @@ extension Drive {
 
     // MARK: Storing records
 
-    /// A node record as it's stored.
+    /// A node record as it's stored. A mount holding a keyring is refused unless it's sealed: on a
+    /// plain drive, the keyring would be readable.
     func stored(_ record: NodeRecord, id: String) throws -> JSONValue {
-        try store(
+        if record.mount?.keyring != nil, mode != .encrypted { throw SharingError.keyringWouldBeReadable }
+        return try store(
             NodePayload(record), collection: Lexicon.node, rkey: id,
             chunks: record.hasContinuations ? nil : record.chunks?.map(\.blob))
     }
 
-    /// A version record as it's stored.
+    /// A version record as it's stored (see the node's).
     func stored(_ record: VersionRecord, id: String) throws -> JSONValue {
-        try store(
+        if record.mount?.keyring != nil, mode != .encrypted { throw SharingError.keyringWouldBeReadable }
+        return try store(
             VersionPayload(record), collection: Lexicon.version, rkey: id,
             chunks: record.hasContinuations ? nil : record.chunks?.map(\.blob))
     }
