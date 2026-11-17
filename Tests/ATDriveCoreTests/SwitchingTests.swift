@@ -136,8 +136,14 @@ import Testing
                 == EncryptionStatus(
                     mode: .plain, pending: 0, pendingBytes: 0, converting: false, unsealed: 0, unreadable: 0))
 
+        // What turning it on will cost, to say before doing it: every record, every file's bytes.
+        let estimate = try await laptop.conversionEstimate(to: .encrypted)
+        #expect(estimate.pending == before.tree.nodes.count + before.history.versions.count)
+        #expect(estimate.pendingBytes > 0 && laptop.mode == .plain)
+
         let recoveryKey = try await laptop.enableEncryption()
         #expect(laptop.mode == .encrypted && laptop.keyring != nil)
+        #expect(try await laptop.encryptionStatus().pending == estimate.pending)
         await #expect(throws: DriveAccessError.alreadyEncrypted) { try await laptop.enableEncryption() }
         // Everything is still there and still plain: readable while it's converted.
         var status = try await laptop.encryptionStatus()

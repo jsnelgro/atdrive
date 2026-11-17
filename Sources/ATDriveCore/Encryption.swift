@@ -102,6 +102,16 @@ extension Drive {
         return try await survey(mode).status(mode, converting: keys.value.converting)
     }
 
+    /// What converting would have to do if the drive were switched to `mode`: for a warning
+    /// before turning encryption on, which stores every file again. Lists the whole drive.
+    public func conversionEstimate(to mode: DriveMode) async throws -> EncryptionStatus {
+        _ = try await open()
+        let current = keys.value.mode
+        // Nothing is under the keys an encrypted drive would get, so everything counts.
+        return try await survey(mode, firstKey: current == mode ? keyring?.keys.first?.id : nil)
+            .status(mode, converting: false)
+    }
+
     /// Rewrites everything that isn't stored the way the drive now stores things: each record
     /// in the drive's form and, where a file's chunks aren't (plain chunks on an encrypted drive,
     /// encrypted ones on a plain drive, or ones encrypted with keys since published), its
@@ -197,6 +207,11 @@ extension Drive {
     }
 
     private func survey(_ mode: DriveMode) async throws -> Survey {
+        try await survey(mode, firstKey: keyring?.keys.first?.id)
+    }
+
+    /// `firstKey` is the key chunks have to be named with to count as encrypted.
+    private func survey(_ mode: DriveMode, firstKey: KeyID?) async throws -> Survey {
         var listing: [XRPCClient.SpaceRecordPage<JSONValue>.Record] = []
         var cursor: String?
         repeat {
@@ -210,11 +225,12 @@ extension Drive {
             cursor = page.records.isEmpty ? nil : page.cursor
         } while cursor != nil
 
-        let firstKey = keyring?.keys.first?.id
         func chunksConform(_ chunks: [ChunkRef]?) -> Bool {
             (chunks ?? []).allSatisfy { mode == .encrypted ? $0.isEncrypted && $0.key == firstKey : !$0.isEncrypted }
         }
-        func formConforms(_ form: StoredForm?) -> Bool { mode == .encrypted ? form?.isCurrent == true : form == .plain }
+        func formConforms(_ form: StoredForm?) -> Bool {
+            mode == .encrypted ? firstKey != nil && form?.isCurrent == true : form == .plain
+        }
 
         var continuations: [String: JSONValue] = [:]
         for record in listing where record.collection == Lexicon.chunks { continuations[record.rkey] = record.value }

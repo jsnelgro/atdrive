@@ -44,7 +44,7 @@ struct EncryptionOn: AsyncParsableCommand {
         let mode = try await drive.open()
         var adopt = false
         if mode == .plain {
-            let status = try await drive.encryptionStatus()
+            let status = try await drive.conversionEstimate(to: .encrypted)
             print(
                 """
                 Turning encryption on:
