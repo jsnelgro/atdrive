@@ -1,3 +1,4 @@
+import Crypto
 import Foundation
 
 #if canImport(FoundationNetworking)
@@ -107,9 +108,25 @@ public struct DIDDocument: Decodable, Sendable {
         }
     }
 
+    public struct VerificationMethod: Decodable, Sendable {
+        public var id: String
+        public var type: String?
+        public var publicKeyMultibase: String?
+    }
+
     public var id: String
     public var alsoKnownAs: [String]?
     public var service: [Service]?
+    public var verificationMethod: [VerificationMethod]?
+
+    /// The key a repo host derives MAC secrets with for this account's space repos
+    /// (`#atproto_kem`, P-256); `nil` if it publishes none.
+    public var kemKey: P256.KeyAgreement.PublicKey? {
+        verificationMethod?
+            .first { $0.id == "#atproto_kem" || $0.id == "\(id)#atproto_kem" }
+            .flatMap(\.publicKeyMultibase)
+            .flatMap(P256DIDKey.publicKey)
+    }
 
     public var pdsEndpoint: URL? {
         service?

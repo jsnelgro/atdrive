@@ -6,7 +6,11 @@ import Testing
 @Suite struct XRPCTests {
     let session = Session(
         did: "did:plc:test", handle: "alice.test", service: URL(string: "https://pds.test")!,
-        accessJwt: "old-access", refreshJwt: "old-refresh")
+        accessJwt: "old-access", refreshJwt: "old-refresh",
+        oauth: OAuthInfo(
+            issuer: "https://auth.test", tokenEndpoint: URL(string: "https://auth.test/token")!,
+            revocationEndpoint: nil, clientID: "http://localhost", dpopKey: DPoPKey().rawRepresentation,
+            expiresAt: nil))
 
     final class Saved: @unchecked Sendable {
         var sessions: [Session] = []
@@ -14,10 +18,10 @@ import Testing
 
     @Test func refreshesExpiredTokenOnceAndRetries() async throws {
         let transport = ScriptedTransport([
-            (400, #"{"error":"ExpiredToken","message":"Token has expired"}"#, [:]),
+            (401, #"{"error":"invalid_token","message":"Token has expired"}"#, [:]),
             (
                 200,
-                #"{"did":"did:plc:test","handle":"alice.test","accessJwt":"new-access","refreshJwt":"new-refresh"}"#,
+                #"{"access_token":"new-access","token_type":"DPoP","refresh_token":"new-refresh","sub":"did:plc:test"}"#,
                 [:]
             ),
             (200, #"{"value":42}"#, [:]),
@@ -31,17 +35,18 @@ import Testing
 
         #expect(output.value == 42)
         let auth = transport.requests.map { $0.value(forHTTPHeaderField: "Authorization") }
-        #expect(auth == ["Bearer old-access", "Bearer old-refresh", "Bearer new-access"])
-        #expect(transport.requests[1].url?.lastPathComponent == "com.atproto.server.refreshSession")
+        #expect(auth == ["DPoP old-access", nil, "DPoP new-access"])
+        #expect(transport.requests[1].url == session.oauth.tokenEndpoint)
+        #expect(transport.requests.allSatisfy { $0.value(forHTTPHeaderField: "DPoP") != nil })
         #expect(saved.sessions.map(\.refreshJwt) == ["new-refresh"])
         #expect(await manager.session.accessJwt == "new-access")
     }
 
     @Test func saysSoWhenTheSessionCantBeRenewed() async throws {
-        // E.g. its app password was deleted: the access token expires and refreshing is refused.
+        // E.g. it was signed out elsewhere: the access token expires and refreshing is refused.
         let transport = ScriptedTransport([
-            (400, #"{"error":"ExpiredToken","message":"Token has expired"}"#, [:]),
-            (400, #"{"error":"ExpiredToken","message":"Token has been revoked"}"#, [:]),
+            (401, #"{"error":"invalid_token","message":"Token has expired"}"#, [:]),
+            (400, #"{"error":"invalid_grant","error_description":"Token has been revoked"}"#, [:]),
         ])
         let client = XRPCClient(
             service: session.service, session: SessionManager(session, transport: transport), transport: transport)

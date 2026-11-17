@@ -2,8 +2,8 @@ import Foundation
 
 /// Saves the session to `~/.config/atdrive/session.json` (readable only by you).
 ///
-/// The directory can be moved with `ATDRIVE_CONFIG_DIR` or `XDG_CONFIG_HOME`. The password is
-/// never stored, only the tokens the server hands back, which `atdrive logout` revokes.
+/// The directory can be moved with `ATDRIVE_CONFIG_DIR` or `XDG_CONFIG_HOME`. Only the OAuth
+/// tokens the server hands back are stored, which `atdrive logout` revokes.
 public struct SessionStore: Sendable {
     public let directory: URL
 
@@ -25,9 +25,11 @@ public struct SessionStore: Sendable {
 
     public var file: URL { directory.appendingPathComponent("session.json") }
 
+    /// The saved session; `nil` if there's none, or it's from an older version of ATDrive (an
+    /// app-password session, say), which means signing in again.
     public func load() throws -> Session? {
         guard FileManager.default.fileExists(atPath: file.path) else { return nil }
-        return try JSONDecoder().decode(Session.self, from: Data(contentsOf: file))
+        return try? JSONDecoder().decode(Session.self, from: Data(contentsOf: file))
     }
 
     public func save(_ session: Session) throws {

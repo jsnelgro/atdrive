@@ -113,7 +113,7 @@ import Testing
         #expect(session.did == "did:plc:alice")
         #expect(session.handle == "alice.test")
         #expect(session.accessJwt == "access-1")
-        #expect(session.oauth?.clientID.hasPrefix("http://localhost?scope=") == true)
+        #expect(session.oauth.clientID.hasPrefix("http://localhost?scope="))
         // PKCE: the verifier sent at the end matches the challenge sent at the start.
         let verifier = try #require(server.lastToken["code_verifier"])
         #expect(Base64URL.encode(SHA256.hash(data: Data(verifier.utf8))) == par["code_challenge"])

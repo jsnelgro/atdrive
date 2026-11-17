@@ -17,9 +17,9 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
 - `scripts/test.sh`: unit tests (`--filter Name` to run some), run twice: the drive-logic suites
   on a plain drive, then on an encrypted one (`ATDRIVE_TEST_MODE=plain` or `=encrypted` runs one;
   `TestMode` in `FakePDS.swift`). Anything about how the drive behaves has to pass on both. They
-  hit a real PDS only when
-  enabled: `OAuthLiveTests` with `ATDRIVE_LIVE_HANDLE`, and `LiveTests` with that plus
-  `ATDRIVE_LIVE_PASSWORD`.
+  hit a real PDS only when enabled: `OAuthLiveTests` with `ATDRIVE_LIVE_HANDLE`, the others with
+  `ATDRIVE_LIVE_CONFIG` (and `ATDRIVE_LIVE_CONFIG_B`, a second account, for sharing): a folder
+  `ATDRIVE_CONFIG_DIR=<folder> atdrive login <handle>` saved a session to.
 - `scripts/build.sh`: release binary at `build/atdrive`. The Swift runtime is static on Linux.
 - `scripts/format.sh`: formatting (config in `.swift-format`).
 - `scripts/build-app.sh` / `scripts/run-app.sh` (macOS): build `build/ATDrive.app` (and install
@@ -33,8 +33,8 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
   - `XRPC.swift`, `Session.swift`: HTTP API client; `SessionManager` signs requests (Bearer, or
     DPoP for OAuth), tracks DPoP nonces and refreshes tokens.
   - `OAuth.swift`, `DPoP.swift`, `LoopbackServer.swift`: atproto OAuth sign-in (PAR + PKCE +
-    DPoP, loopback client ID, browser redirect caught on 127.0.0.1). The default. App-password
-    login (`Auth.login`) is kept for scripts and tests.
+    DPoP, loopback client ID, browser redirect caught on 127.0.0.1). The only way to sign in:
+    atproto spaces refuse app passwords.
   - `Identity.swift`: handle → DID → PDS. Never hardcode a PDS or account.
   - `Spaces.swift`: **every** `com.atproto.space.*` call. The alpha API changes weekly, so keep it
     contained here.

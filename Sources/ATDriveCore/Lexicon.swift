@@ -18,6 +18,11 @@ public enum Lexicon {
     /// Record collection holding the rest of chunk lists too long for the version record that
     /// holds them, in order (`continuationKey`).
     public static let chunks = "me.jsnelgro.atdrive.chunks"
+    /// Record collection, in an account's public repo, holding its sharing key (`shareKeyKey`):
+    /// what encrypted shares are wrapped for.
+    public static let shareKey = "me.jsnelgro.atdrive.shareKey"
+    /// Record key of the sharing key.
+    public static let shareKeyKey = "self"
     /// Space key of the default drive.
     public static let defaultDriveKey = "default"
 
@@ -36,4 +41,6 @@ public enum Lexicon {
 
     /// Policy for a space only its owner can read or write.
     static let personalSpacePolicy = "com.atproto.personalspace.policy"
+    /// Policy for a space its owner shares with members (and, with `publicRead`, anyone).
+    static let memberSpacePolicy = "com.atproto.memberspace.policy"
 }

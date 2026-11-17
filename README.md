@@ -175,7 +175,7 @@ command. `atdrive login` prints a link to open in a browser on any device. After
 browser lands on a page that won't load, at an address starting with `http://127.0.0.1`. Paste that
 address back into the terminal and you're signed in.
 
-For scripts, `atdrive login --app-password <handle>` signs in with an app password instead.
+Signing in is always through the browser: atproto spaces don't accept app passwords.
 
 ## History and trash
 
@@ -266,7 +266,7 @@ The rest of this section is about encrypted drives.
   - The removed device keeps what it could already read: everything written before, and its own
     copies.
   - It can still sign in to your account until you revoke its session (in your account's settings,
-    or by deleting its app password). Until every other device has seen the removal, what it
+    or by signing it out there). Until every other device has seen the removal, what it
     writes may still be read.
 - **What the PDS still sees:** how many files and folders there are, roughly how big each file
   is, when things are created and changed, which files share contents, and your devices' names.
@@ -356,13 +356,16 @@ ATDRIVE_LIVE_HANDLE=you.spaces-alpha.bsky.network scripts/test.sh --filter OAuth
 ```
 
 ```bash
-ATDRIVE_LIVE_HANDLE=you.spaces-alpha.bsky.network ATDRIVE_LIVE_PASSWORD=xxxx-xxxx-xxxx-xxxx scripts/test.sh --filter LiveTests
+ATDRIVE_CONFIG_DIR=~/.atdrive-live-a atdrive login you.spaces-alpha.bsky.network
+ATDRIVE_LIVE_CONFIG=~/.atdrive-live-a scripts/test.sh --filter Live
 ```
 
-- `OAuthLiveTests` needs no password. It starts a real OAuth sign-in and checks the server accepts
-  it, up to the point where a person would approve it.
-- `LiveTests` runs a full upload/download round trip using an app password, and cleans up after
-  itself. It creates the account's drive if there's none (plain); for an account whose drive
+- `OAuthLiveTests` starts a real OAuth sign-in and checks the server accepts it, up to the point
+  where a person would approve it.
+- The other live tests use the session `atdrive login` saved in `ATDRIVE_LIVE_CONFIG` (sign in
+  into a folder of its own with `ATDRIVE_CONFIG_DIR`, as above). `LiveTests` runs a full
+  upload/download round trip, and `LiveChangeFeedTests` follows the change feed. Both clean up
+  after themselves. It creates the account's drive if there's none (plain); for an account whose drive
   is encrypted, set `ATDRIVE_LIVE_RECOVERY_KEY` to its recovery key (each run then adds a device
   to the drive).
 
