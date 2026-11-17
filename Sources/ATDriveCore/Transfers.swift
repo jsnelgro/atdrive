@@ -149,7 +149,8 @@ extension Drive {
         let (bytes, id, key) = scheme.stored(plaintext)
         let blob = BlobRef(cid: CID.forBlob(bytes), mimeType: Self.chunkType, size: bytes.count)
         func done(_ blob: BlobRef, _ outcome: ChunkUpload.Outcome) -> ChunkUpload {
-            ChunkUpload(index: index, ref: ChunkRef(blob: blob, id: id, key: key), size: plaintext.count, outcome: outcome)
+            ChunkUpload(
+                index: index, ref: ChunkRef(blob: blob, id: id, key: key), size: plaintext.count, outcome: outcome)
         }
         if known.contains(blob.cid) { return done(blob, .reused) }
         guard claimed.update({ $0.insert(blob.cid).inserted }) else { return done(blob, .repeated) }

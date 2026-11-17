@@ -129,7 +129,9 @@ private func randomData(_ count: Int) -> Data {
     @Test func roundTrips() throws {
         let sealed = try keyring.seal(value, space: FakePDS.space, collection: node, rkey: "3jzfcijpj2z2b")
         #expect(sealed.keyID == keyring.current.id)
-        #expect(try keyring.open(sealed, as: Metadata.self, space: FakePDS.space, collection: node, rkey: "3jzfcijpj2z2b") == value)
+        #expect(
+            try keyring.open(sealed, as: Metadata.self, space: FakePDS.space, collection: node, rkey: "3jzfcijpj2z2b")
+                == value)
         // nonce (12) + JSON + tag (16)
         #expect(sealed.sealed.data.count == 12 + (try Sealing.encoder.encode(value)).count + 16)
     }
@@ -173,7 +175,8 @@ private func randomData(_ count: Int) -> Data {
         }
         #expect(throws: DriveCryptoError.authenticationFailed) {
             try keyring.open(
-                sealed, as: Metadata.self, space: FakePDS.space, collection: "me.jsnelgro.atdrive.version", rkey: "3jzfcijpj2z2a")
+                sealed, as: Metadata.self, space: FakePDS.space, collection: "me.jsnelgro.atdrive.version",
+                rkey: "3jzfcijpj2z2a")
         }
         // The separator keeps collection and rkey apart: "ab" + "c" isn't "a" + "bc".
         let split = try keyring.seal(value, space: FakePDS.space, collection: "ab", rkey: "c")
@@ -313,7 +316,9 @@ private func randomData(_ count: Int) -> Data {
         #expect(throws: DriveCryptoError.authenticationFailed) {
             try Keyring(unwrapping: wrapped, with: device, space: "at://did:plc:test/space/x/other")
         }
-        #expect(throws: DriveCryptoError.authenticationFailed) { try Keyring(unwrapping: wrapped, with: approver, space: FakePDS.space) }
+        #expect(throws: DriveCryptoError.authenticationFailed) {
+            try Keyring(unwrapping: wrapped, with: approver, space: FakePDS.space)
+        }
     }
 
     @Test func detectsTampering() throws {
@@ -321,11 +326,15 @@ private func randomData(_ count: Int) -> Data {
         for index in [0, 31, 50, wrapped.ciphertext.data.count - 1] {
             var tampered = wrapped
             tampered.ciphertext = Bytes(flipping(wrapped.ciphertext.data, at: index))
-            #expect(throws: DriveCryptoError.authenticationFailed) { try Keyring(unwrapping: tampered, with: device, space: FakePDS.space) }
+            #expect(throws: DriveCryptoError.authenticationFailed) {
+                try Keyring(unwrapping: tampered, with: device, space: FakePDS.space)
+            }
         }
         var tampered = wrapped
         tampered.encapsulatedKey = Bytes(flipping(wrapped.encapsulatedKey.data, at: 3))
-        #expect(throws: DriveCryptoError.authenticationFailed) { try Keyring(unwrapping: tampered, with: device, space: FakePDS.space) }
+        #expect(throws: DriveCryptoError.authenticationFailed) {
+            try Keyring(unwrapping: tampered, with: device, space: FakePDS.space)
+        }
     }
 
     /// The PDS can wrap a keyring of its own for any device. It can't make it look like a device
@@ -335,7 +344,9 @@ private func randomData(_ count: Int) -> Data {
         var forged = try Keyring(DriveKey()).wrapped(for: device.publicKey, from: pds, space: FakePDS.space)
         #expect(try forged.senderKey.rawRepresentation != approver.publicKey.rawRepresentation)
         forged.sender = Bytes(approver.publicKey.rawRepresentation)
-        #expect(throws: DriveCryptoError.authenticationFailed) { try Keyring(unwrapping: forged, with: device, space: FakePDS.space) }
+        #expect(throws: DriveCryptoError.authenticationFailed) {
+            try Keyring(unwrapping: forged, with: device, space: FakePDS.space)
+        }
     }
 
     /// Both devices show the same code, each from its own key and the other's; a key the PDS
@@ -429,6 +440,8 @@ private func randomData(_ count: Int) -> Data {
         }
         var tampered = wrapped
         tampered.sealed = Bytes(flipping(wrapped.sealed.data, at: 20))
-        #expect(throws: DriveCryptoError.authenticationFailed) { try Keyring(unwrapping: tampered, with: recoveryKey, space: FakePDS.space) }
+        #expect(throws: DriveCryptoError.authenticationFailed) {
+            try Keyring(unwrapping: tampered, with: recoveryKey, space: FakePDS.space)
+        }
     }
 }

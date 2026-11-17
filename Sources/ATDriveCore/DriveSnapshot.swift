@@ -90,6 +90,11 @@ public struct DriveSnapshot: Sendable {
     /// until a check passes.
     public private(set) var mismatch: ChangeFeedGap?
 
+    /// How the drive read its records when these were read (`DriveKeys.readState`). Once the
+    /// drive's mode or keys change, what's readable here may not be any more, and the other way
+    /// round, so the drive is listed again.
+    var readState: ReadState?
+
     /// How often the whole drive is listed while the records don't match the commit.
     public static let fullListingInterval: TimeInterval = 60 * 60
 
@@ -138,6 +143,7 @@ public struct DriveSnapshot: Sendable {
         tree = DriveTree(entries)
         self.listedAt = listedAt
         listedThisRun = true
+        readState = drive.keys.value.readState
     }
 
     /// Whether the next update should list the whole drive rather than follow the change feed.
@@ -384,6 +390,7 @@ public struct DriveSnapshot: Sendable {
         listedAt = saved.listedAt
         listedThisRun = false
         verified = saved.verified
+        readState = drive.keys.value.readState
         reread(with: drive)
     }
 }

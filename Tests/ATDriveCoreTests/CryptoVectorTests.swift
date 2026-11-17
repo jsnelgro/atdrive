@@ -38,7 +38,9 @@ import Testing
             nonce: AES.GCM.Nonce(data: Self.bytes(0xa0..<0xac)))
         let expected = "oKGio6SlpqeoqaqrVgWNW76n6K8RN+nPsSg4pGsH2DBDWLKZ7L+FeP09QlHbM0HIq5FNCcKawSR3tA"
         #expect(sealed == SealedValue(keyID: KeyID(rawValue: "19a109e328d0060e"), sealed: Bytes(Self.base64(expected))))
-        #expect(try key.open(sealed, space: FakePDS.space, collection: "me.jsnelgro.atdrive.node", rkey: "3jzfcijpj2z2a") == value)
+        #expect(
+            try key.open(sealed, space: FakePDS.space, collection: "me.jsnelgro.atdrive.node", rkey: "3jzfcijpj2z2a")
+                == value)
     }
 
     @Test func chunks() throws {
@@ -56,7 +58,8 @@ import Testing
 
     @Test func recoveryWrap() throws {
         let keyring = try Keyring([key, secondKey])
-        let wrapped = try keyring.wrapped(for: recoveryKey, space: FakePDS.space, nonce: AES.GCM.Nonce(data: Self.bytes(0xb0..<0xbc)))
+        let wrapped = try keyring.wrapped(
+            for: recoveryKey, space: FakePDS.space, nonce: AES.GCM.Nonce(data: Self.bytes(0xb0..<0xbc)))
         let expected =
             "sLGys7S1tre4ubq7surOhXaASA0i+YRvE67fiKhkH9pNLk6FBBqqAy2JiCj/ZztusZ6BYJNd3mjWi4XFU6zpiVhHwxbpGkT7kgt9mgG5IKc7+ksEyvXbA3ax8JQ"
         #expect(wrapped.sealed.data == Self.base64(expected))

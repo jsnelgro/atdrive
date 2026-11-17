@@ -127,16 +127,17 @@ public final class FolderSync {
             try await fetch()
             checked = true
         }
-        try checkDrive()
         // The drive's mode or keys changed and this device couldn't follow: encryption was turned
-        // on and it has no keys yet, or the settings can't be believed. Syncing on would write
-        // in the wrong form, or treat what it can't read as gone, so it waits.
+        // on and it has no keys yet, it was removed, or the settings can't be believed. Syncing on
+        // would write in the wrong form, or treat what it can't read as gone, so it waits.
         if let problem = drive.accessProblem,
             problem == .encryptionRemoved || problem == .settingsRolledBack
                 || (drive.mode == .encrypted && drive.keyring == nil)
+                || (remote?.settings == nil && remote?.repo.cid(Lexicon.settings, Lexicon.settingsKey) != nil)
         {
             throw problem
         }
+        try checkDrive()
         if checked, let revision = remote!.revision {
             if revision != settledAt {
                 // Changes that lost a race between devices; then the drive as that left it.

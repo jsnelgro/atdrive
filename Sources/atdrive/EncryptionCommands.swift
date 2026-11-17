@@ -139,7 +139,8 @@ enum EncryptionReport {
             if status.unsealed > 0 {
                 print(
                     "\(status.unsealed) record\(status.unsealed == 1 ? " isn't" : "s aren't") encrypted with the "
-                        + "drive's keys and \(status.unsealed == 1 ? "is" : "are") ignored (see `atdrive encryption on`).")
+                        + "drive's keys and \(status.unsealed == 1 ? "is" : "are") ignored (see `atdrive encryption on`)."
+                )
             }
         }
         if status.unreadable > 0 {

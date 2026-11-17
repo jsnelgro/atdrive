@@ -171,12 +171,17 @@ public final class Drive: Sendable {
     /// read again as the drive now reads them (`refreshKeys`).
     public func update(_ snapshot: DriveSnapshot?, now: Date = Date()) async throws -> DriveSnapshot {
         var updated = try await fetch(snapshot, now: now)
-        if await refreshKeys(seeing: updated) { updated = try await listEverything(now: now) }
+        _ = await refreshKeys(seeing: updated)
+        if updated.revision != nil, updated.readState != keys.value.readState {
+            updated = try await listEverything(now: now)
+        }
         return updated
     }
 
     private func fetch(_ snapshot: DriveSnapshot?, now: Date) async throws -> DriveSnapshot {
-        guard var snapshot, let revision = snapshot.revision, !snapshot.needsFullListing(at: now) else {
+        guard var snapshot, let revision = snapshot.revision, !snapshot.needsFullListing(at: now),
+            snapshot.readState == keys.value.readState
+        else {
             return try await listEverything(now: now)
         }
         do {

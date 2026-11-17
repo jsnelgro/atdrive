@@ -228,7 +228,8 @@ extension Drive {
             let form = { self.storedForm(of: record.value, collection: record.collection ?? "", rkey: record.rkey) }
             switch record.collection {
             case Lexicon.version:
-                switch readVersion(id: record.rkey, cid: record.cid, value: record.value, continuations: continuations) {
+                switch readVersion(id: record.rkey, cid: record.cid, value: record.value, continuations: continuations)
+                {
                 case .readable(let version): versions[version.id] = (version, formConforms(form()))
                 case .unreadable(let version): count(version.reason)
                 }
@@ -286,7 +287,8 @@ extension Drive {
         found.contents += groups.values.sorted { ($0.version?.id ?? "") < ($1.version?.id ?? "") }
         // `chunks` records that stay, but aren't in the drive's form.
         for (key, value) in continuations.sorted(by: { $0.key < $1.key }) where !replacedParts.contains(key) {
-            guard let (payload, blobs, form) = try? unseal(
+            guard
+                let (payload, blobs, form) = try? unseal(
                     value, as: ChunksPayload.self, collection: Lexicon.chunks, rkey: key),
                 let paired = ChunkRef.pair(blobs, payload.chunkIDs, key: payload.chunkKey), let part = paired
             else { continue }
@@ -312,13 +314,15 @@ extension Drive {
         var writes: [SpaceWrite] = []
         for version in found.versions {
             writes.append(
-                .update(collection: Lexicon.version, rkey: version.id, value: try stored(version.record, id: version.id)))
+                .update(
+                    collection: Lexicon.version, rkey: version.id, value: try stored(version.record, id: version.id)))
         }
         for node in found.nodes {
             writes.append(.update(collection: Lexicon.node, rkey: node.id, value: try stored(node.record, id: node.id)))
         }
         for part in found.parts {
-            writes.append(.update(collection: Lexicon.chunks, rkey: part.key, value: try stored(part.chunks, key: part.key)))
+            writes.append(
+                .update(collection: Lexicon.chunks, rkey: part.key, value: try stored(part.chunks, key: part.key)))
         }
         for batch in transactions(writes) {
             do {
@@ -389,7 +393,8 @@ extension Drive {
             record.chunks = contents.chunks
             record.continuations = parts.isEmpty ? nil : parts.count
             record.continuationsFrom = parts.isEmpty || first == 1 ? nil : first
-            writes.append(.update(collection: Lexicon.version, rkey: version.id, value: try stored(record, id: version.id)))
+            writes.append(
+                .update(collection: Lexicon.version, rkey: version.id, value: try stored(record, id: version.id)))
         }
         for node in group.nodes {
             var record = node.record

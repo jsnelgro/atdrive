@@ -32,10 +32,26 @@ struct DriveKeys: Sendable {
     /// Why the last try to open the drive again failed, if it did.
     var problem: DriveAccessError?
 
+    /// Everything that decides how a stored record reads here. A snapshot read under one of
+    /// these is stale under another (`Drive.update`).
+    var readState: ReadState {
+        ReadState(
+            mode: mode, keys: keyring?.keys.map(\.id) ?? [], retired: retired?.keys.map(\.id) ?? [],
+            converting: converting)
+    }
+
     /// Whether records that aren't sealed with the drive's current keys are read. Always on a
     /// plain drive; on an encrypted one only while it's converting, since the PDS could have
     /// written them.
     var acceptsUnsealed: Bool { mode != .encrypted || converting }
+}
+
+/// How a device reads a drive's records at some moment: its mode and the keys it holds.
+struct ReadState: Sendable, Equatable {
+    var mode: DriveMode?
+    var keys: [KeyID]
+    var retired: [KeyID]
+    var converting: Bool
 }
 
 /// A value shared between tasks, behind a lock.
@@ -454,6 +470,7 @@ extension Drive {
         keys.update {
             $0.mode = .encrypted
             $0.keyring = keyring
+            $0.problem = nil
         }
     }
 

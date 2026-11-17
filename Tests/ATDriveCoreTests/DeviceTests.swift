@@ -164,7 +164,8 @@ import Testing
         // With a roster of its own, it gets as far as the code, which isn't the laptop's.
         let code = try await listed(phone, by: laptop).pairingCode(with: try #require(laptop.identity))
         try await overwrite(
-            Lexicon.device, "pds", with: try forgedMember("pds", name: "laptop", key: attacker.publicKey, keyring: forged))
+            Lexicon.device, "pds",
+            with: try forgedMember("pds", name: "laptop", key: attacker.publicKey, keyring: forged))
         try await overwrite(
             Lexicon.settings, Lexicon.settingsKey, with: try laptop.stored(DriveSettings(), with: forged))
         let arrived = try #require(try await phone.arrivedKeyring())
@@ -307,7 +308,10 @@ import Testing
         let fromMe = try keyring.wrapped(for: me.publicKey, from: me.privateKey, space: FakePDS.space)
         let fromOther = try keyring.wrapped(for: me.publicKey, from: other, space: FakePDS.space)
         let member = RosterEntry(id: "o", name: "o", publicKey: Bytes(other.publicKey.rawRepresentation))
-        func check(_ wrapped: WrappedKeyring, _ trust: DeviceTrust?, in trusted: String = space, roster: [RosterEntry] = [member])
+        func check(
+            _ wrapped: WrappedKeyring, _ trust: DeviceTrust?, in trusted: String = space,
+            roster: [RosterEntry] = [member]
+        )
             -> KeyTrust.Decision
         {
             var device = me

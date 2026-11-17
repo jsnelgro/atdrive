@@ -487,10 +487,12 @@ extension FakePDS {
     }
 
     /// A device that doesn't know yet whether the drive is encrypted: it has to open it.
-    func unopened(_ name: String = "test", identity: DeviceIdentity? = nil) -> Drive {
+    func unopened(_ name: String = "test", transfers: TransferOptions = .fixed(8), identity: DeviceIdentity? = nil)
+        -> Drive
+    {
         Drive(
             client: XRPCClient(service: URL(string: "https://pds.test")!, transport: self), owner: "did:plc:test",
-            transfers: .fixed(8), device: name, identity: identity ?? DeviceIdentity(name: name))
+            transfers: transfers, device: name, identity: identity ?? DeviceIdentity(name: name))
     }
 
     /// The space every test drive is.
