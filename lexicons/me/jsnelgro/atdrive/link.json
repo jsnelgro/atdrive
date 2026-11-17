@@ -1,0 +1,23 @@
+{
+  "lexicon": 1,
+  "id": "me.jsnelgro.atdrive.link",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "literal:self",
+      "description": "In an encrypted share whose public link is on: its keyring, for whoever has the link.",
+      "record": {
+        "type": "object",
+        "required": [
+          "keyring"
+        ],
+        "properties": {
+          "keyring": {
+            "type": "bytes",
+            "description": "The keyring's keys, oldest first, sealed with AES-256-GCM (12-byte nonce first, 16-byte tag last) under HKDF-SHA256(link key, info \"atdrive link key v1\"), with the space's keyring info as associated data. The link key travels in the link's #fragment and never reaches a server."
+          }
+        }
+      }
+    }
+  }
+}

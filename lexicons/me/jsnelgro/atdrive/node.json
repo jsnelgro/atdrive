@@ -21,7 +21,8 @@
             "type": "string",
             "knownValues": [
               "file",
-              "folder"
+              "folder",
+              "mount"
             ]
           },
           "size": {
@@ -80,6 +81,11 @@
             "type": "ref",
             "ref": "me.jsnelgro.atdrive.defs#sealedValue",
             "description": "On an encrypted drive: every other field, as a JSON object, sealed for this space, collection and record key. The record then has only this and chunks."
+          },
+          "mount": {
+            "type": "ref",
+            "ref": "me.jsnelgro.atdrive.defs#mount",
+            "description": "Mounts: the space that appears here."
           }
         }
       }

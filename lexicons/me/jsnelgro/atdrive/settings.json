@@ -36,6 +36,15 @@
             "type": "ref",
             "ref": "me.jsnelgro.atdrive.defs#sealedValue",
             "description": "On an encrypted drive: every other field, sealed."
+          },
+          "sharingKey": {
+            "type": "bytes",
+            "description": "Home drives: the account's sharing key (raw X25519 private key). Sealed with the rest on an encrypted drive; readable on a plain one, which its shareKey record says. Replaced when encryption is turned on or off."
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 255,
+            "description": "Shares: the shared file's or folder's name, for those who open it."
           }
         }
       }

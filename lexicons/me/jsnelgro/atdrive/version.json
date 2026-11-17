@@ -20,8 +20,10 @@
               "edited",
               "moved",
               "deleted",
-              "restored"
-            ]
+              "restored",
+              "shared"
+            ],
+            "description": "shared: deleted from this space because it moved into a space of its own, to be shared (it's in the mount, not the trash)."
           },
           "device": {
             "type": "string",
@@ -42,7 +44,8 @@
             "type": "string",
             "knownValues": [
               "file",
-              "folder"
+              "folder",
+              "mount"
             ]
           },
           "size": {
@@ -97,6 +100,11 @@
             "type": "ref",
             "ref": "me.jsnelgro.atdrive.defs#sealedValue",
             "description": "On an encrypted drive: every other field, as a JSON object, sealed for this space, collection and record key. The record then has only this and chunks."
+          },
+          "mount": {
+            "type": "ref",
+            "ref": "me.jsnelgro.atdrive.defs#mount",
+            "description": "Mounts: the space that appears here."
           }
         }
       }

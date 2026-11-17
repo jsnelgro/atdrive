@@ -18,7 +18,7 @@ struct ATDrive: AsyncParsableCommand {
             MakeFolder.self, Move.self, Remove.self, Sync.self,
             Share.self, Unshare.self, Open.self, Shared.self,
             ShowHistory.self, Restore.self, Trash.self, Purge.self, DiskUsage.self, Prune.self,
-            Encryption.self, Devices.self, Unlock.self, NewRecoveryKey.self,
+            Encryption.self, Devices.self, Unlock.self, NewRecoveryKey.self, Lexicons.self,
         ]
     )
 }

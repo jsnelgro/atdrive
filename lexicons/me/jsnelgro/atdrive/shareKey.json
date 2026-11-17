@@ -1,0 +1,32 @@
+{
+  "lexicon": 1,
+  "id": "me.jsnelgro.atdrive.shareKey",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "literal:self",
+      "description": "In an account's public repo: its sharing key, which owners of encrypted shares wrap their keyrings for.",
+      "record": {
+        "type": "object",
+        "required": [
+          "publicKey",
+          "protected"
+        ],
+        "properties": {
+          "publicKey": {
+            "type": "bytes",
+            "description": "Raw X25519 public key."
+          },
+          "protected": {
+            "type": "boolean",
+            "description": "Whether the private key is kept encrypted (an encrypted drive). If not, whoever runs the account's PDS can read what's shared with it."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime"
+          }
+        }
+      }
+    }
+  }
+}
