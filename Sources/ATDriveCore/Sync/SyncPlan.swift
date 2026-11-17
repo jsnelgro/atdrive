@@ -202,9 +202,10 @@ struct RemoteView {
         self.tree = tree
         var entries: [String: SyncEntry] = [:]
         var unknown = Set(tree.unreadable.keys)
-        if !held.isEmpty {
-            for id in base.entries.keys {
-                if let mount = NodeID.split(id).mount, held.contains(mount) { unknown.insert(id) }
+        for id in base.entries.keys {
+            // In a mount that can't be read, or whose own record can't be: nothing to go by.
+            if let mount = NodeID.split(id).mount, held.contains(mount) || tree.unreadable[mount] != nil {
+                unknown.insert(id)
             }
         }
         for node in tree.nodes.values {

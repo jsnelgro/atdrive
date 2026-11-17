@@ -126,6 +126,10 @@ extension JoinedDrive {
     /// owner checked it.
     public func addMembers(_ dids: [String], to mount: Node, allowingChangedKeys: Bool = false) async throws {
         let (info, share) = try await ownShare(mount)
+        if case .members = try await home.client.getSpacePolicy(info.space) {} else {
+            // Unshared since (`personalspace`): members again, link off.
+            try await home.client.updateSpace(info.space, policy: .members(publicRead: false))
+        }
         if !allowingChangedKeys {
             for warning in try await memberWarnings(dids, for: mount) {
                 if case .keyChanged(let did, _, _) = warning { throw SharingError.keyChanged(did) }

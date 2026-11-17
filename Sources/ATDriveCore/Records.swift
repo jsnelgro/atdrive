@@ -245,11 +245,26 @@ public struct MountInfo: Codable, Sendable, Equatable {
     /// Someone else's encrypted share opened from its link: the link's key, which opens the
     /// keyring in the share's link record. Readable on a plain drive, as its owner was told.
     public var linkKey: Bytes?
+    /// Whether the space was encrypted when it was mounted. A space that was can't become plain:
+    /// its settings saying so would be the PDS's doing, and writing there in the clear would leak.
+    public var encrypted: Bool?
 
-    public init(space: String, keyring: Keyring? = nil, linkKey: Data? = nil) {
+    public init(space: String, keyring: Keyring? = nil, linkKey: Data? = nil, encrypted: Bool? = nil) {
         self.space = space
         self.keyring = keyring.map { $0.keys.map { Bytes($0.rawRepresentation) } }
         self.linkKey = linkKey.map(Bytes.init)
+        self.encrypted = encrypted ?? (keyring != nil || linkKey != nil ? true : nil)
+    }
+
+    /// Whether it must be encrypted: it was, or it holds keys for it.
+    var mustBeEncrypted: Bool { encrypted == true || keyring != nil || linkKey != nil }
+
+    /// Its keyring replaced (keeping everything else, the link key included).
+    func with(_ keyring: Keyring) -> MountInfo {
+        var copy = self
+        copy.keyring = keyring.keys.map { Bytes($0.rawRepresentation) }
+        copy.encrypted = true
+        return copy
     }
 
     /// The space's owner.

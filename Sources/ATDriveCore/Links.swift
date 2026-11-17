@@ -83,11 +83,13 @@ extension JoinedDrive {
         if let keyring = share.keyring {
             if linkKey == nil {
                 let key = ShareLink.newKey()
-                try await share.apply([
-                    .create(
-                        collection: Lexicon.link, rkey: Lexicon.linkKey,
-                        value: try ShareLink.record(for: keyring, linkKey: key, space: info.space))
-                ])
+                let value = try ShareLink.record(for: keyring, linkKey: key, space: info.space)
+                do {
+                    try await share.apply([.create(collection: Lexicon.link, rkey: Lexicon.linkKey, value: value)])
+                } catch let error as XRPCError where error.error == "RecordAlreadyExists" {
+                    // Left by an earlier try that stopped before the mount kept its key.
+                    try await share.apply([.update(collection: Lexicon.link, rkey: Lexicon.linkKey, value: value)])
+                }
                 var updated = info
                 updated.linkKey = Bytes(key)
                 _ = try await home.updateMount(try homeNode(mount), updated)
@@ -150,17 +152,19 @@ extension JoinedDrive {
 
     /// Opens a link to look at what's shared: its owner, name and mode, and its drive to read.
     /// Works signed out for a public link (`access` with no account).
+    /// `verifiedOwnerKey`: the owner's sharing key, if `me` verified it: a member record from
+    /// any other key is refused.
     public static func open(
-        _ link: ShareLinkAddress, access: SpaceAccess, sharingKeys: SharingKeyPair? = nil, me: String? = nil
-    )
-        async throws -> OpenedShare
-    {
+        _ link: ShareLinkAddress, access: SpaceAccess, sharingKeys: SharingKeyPair? = nil, me: String? = nil,
+        verifiedOwnerKey: Data? = nil
+    ) async throws -> OpenedShare {
         guard link.isDrive else { throw LinkError.notADrive(link.space) }
         let owner = XRPCClient.spaceParts(link.space)!.authority
         let client = try await access.credentials(for: link.space).client
         let probe = Drive(client: client, owner: owner, space: link.space)
         guard let settings = try await probe.settingsRecord() else { throw SpaceAccessProblem.notShared }
         let encrypted = settings.value.flatMap(SealedRecord.init) != nil
+        if !encrypted, link.key != nil { throw SharingError.downgraded }
         var keyring: Keyring?
         if encrypted {
             if let key = link.key {
@@ -168,7 +172,7 @@ extension JoinedDrive {
             } else if let sharingKeys, let me {
                 keyring = try await MemberKeys.keyring(
                     space: link.space, owner: owner, me: me, keys: sharingKeys, client: client,
-                    resolver: access.resolver)
+                    resolver: access.resolver, verifiedOwnerKey: verifiedOwnerKey)
             } else {
                 throw SharingError.linkKeyMissing
             }
@@ -190,7 +194,9 @@ extension JoinedDrive {
         }
         guard let access else { throw MountUnavailable() }
         let sharingKeys = snapshot.settings?.sharingKeyPair(encrypted: home.mode == .encrypted)
-        let opened = try await Self.open(link, access: access, sharingKeys: sharingKeys, me: owner)
+        let verified = try? await verifiedKeys()[XRPCClient.spaceParts(link.space)?.authority ?? ""]
+        let opened = try await Self.open(
+            link, access: access, sharingKeys: sharingKeys, me: owner, verifiedOwnerKey: verified)
         guard opened.owner != owner else { throw LinkError.yourOwn }
         let taken = Set(snapshot.tree.children(of: nil).map(\.name))
         var name = opened.name
@@ -199,7 +205,9 @@ extension JoinedDrive {
             name = "\(opened.name) (\(counter))"
             counter += 1
         }
-        let info = MountInfo(space: link.space, linkKey: opened.mode == .encrypted ? link.key : nil)
+        let info = MountInfo(
+            space: link.space, linkKey: opened.mode == .encrypted ? link.key : nil,
+            encrypted: opened.mode == .encrypted)
         let mount = try await home.createMount(info, named: name, in: nil)
         snapshot = try await update(snapshot)
         return snapshot.tree.nodes[mount.id] ?? mount

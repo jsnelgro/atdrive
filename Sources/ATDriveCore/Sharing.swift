@@ -171,13 +171,19 @@ extension JoinedDrive {
         let mount = try await current(mount)
         guard mount.isMount, let info = mount.record.mount else { throw SharingError.notShared(mount.name) }
         guard info.owner == owner else { throw SharingError.notYours(mount.name) }
+        try await stopSharing(info)
+        try await rotateKey(of: mount)
+    }
+
+    /// Nobody but its owner can read a space of this account's any more: `personalspace` (which
+    /// drops members and `publicRead`), and its member and link records gone.
+    func stopSharing(_ info: MountInfo) async throws {
         try await home.client.updateSpace(info.space, policy: .personal)
-        let share = try await drive(forShare: mount)
+        let share = Drive(client: home.client, owner: owner, space: info.space)
         let records = try await shareRecords(share)
         if !records.isEmpty {
             try await share.apply(records.map { .delete(collection: $0.collection, rkey: $0.rkey) })
         }
-        try await rotateKey(of: mount)
     }
 
     /// The member and link records in a share.
@@ -200,7 +206,7 @@ extension JoinedDrive {
         guard let info = mount.record.mount, var keyring = info.spaceKeyring else { return nil }
         _ = keyring.rotate()
         let local = try homeNode(mount)
-        _ = try await home.updateMount(local, MountInfo(space: info.space, keyring: keyring))
+        _ = try await home.updateMount(local, info.with(keyring))
         opened.update { $0[mount.id] = nil }
         _ = try await update(nil)
         return keyring
@@ -270,11 +276,13 @@ extension JoinedDrive {
         let parent = joined.parent(of: mount.id)
         let top = shareTree.children(of: nil)
         if top.count == 1, let file = top.first, !file.isFolder, file.name == mount.name {
-            // A shared file: it comes back as the file.
+            // A shared file: it comes back as the file, copied before the mount goes.
             let global = Node(id: NodeID.join(mount.id, file.id), cid: file.cid, record: file.record)
+            let copied = try await copy(
+                global, in: joined, from: share, to: home, parent: parent, as: Self.unmountingName(file.name))
             try await home.delete([try homeNode(mount)])
-            _ = try await copy(global, in: joined, from: share, to: home, parent: parent, as: file.name)
             try await home.client.deleteSpace(share.space)
+            _ = try await home.move(copied, to: parent, as: file.name)
             return
         }
         let folder = try await home.createFolder(named: Self.unmountingName(mount.name), in: parent)

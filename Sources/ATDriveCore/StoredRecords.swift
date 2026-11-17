@@ -438,7 +438,12 @@ extension Drive {
 
     /// A version record as it's stored (see the node's).
     func stored(_ record: VersionRecord, id: String) throws -> JSONValue {
-        if record.mount?.keyring != nil, mode != .encrypted { throw SharingError.keyringWouldBeReadable }
+        var record = record
+        if record.mount?.keyring != nil, mode != .encrypted {
+            // History on a plain drive (being converted, say) keeps no keyring: readable, it
+            // would protect nothing.
+            record.mount?.keyring = nil
+        }
         return try store(
             VersionPayload(record), collection: Lexicon.version, rkey: id,
             chunks: record.hasContinuations ? nil : record.chunks?.map(\.blob))

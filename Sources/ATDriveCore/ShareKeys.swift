@@ -193,7 +193,8 @@ public enum MemberKeys {
     /// The share's keyring from `me`'s member record. It's accepted only if it was wrapped by the
     /// sharing key the owner published, and the record's membership opens with it and names `me`.
     static func keyring(
-        space: String, owner: String, me: String, keys: SharingKeyPair, client: XRPCClient, resolver: IdentityResolver?
+        space: String, owner: String, me: String, keys: SharingKeyPair, client: XRPCClient, resolver: IdentityResolver?,
+        verifiedOwnerKey: Data? = nil
     ) async throws -> Keyring {
         let page = try await client.listRawSpaceRecords(space: space, repo: owner, collection: Lexicon.member)
         guard let value = page.records.first(where: { $0.rkey == me })?.value,
@@ -201,7 +202,8 @@ public enum MemberKeys {
         else { throw MemberKeyProblem.noRecord }
         guard let resolver,
             let published = try await SharingKeyRecord.fetch(owner, resolver: resolver, transport: client.transport),
-            published.publicKey == record.keyring.sender
+            published.publicKey == record.keyring.sender,
+            verifiedOwnerKey.map({ $0 == published.publicKey.data }) ?? true
         else { throw MemberKeyProblem.wrongSender }
         let keyring = try Keyring(unwrapping: record.keyring, with: keys.privateKey, space: space)
         guard

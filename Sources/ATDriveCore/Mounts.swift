@@ -34,6 +34,8 @@ public enum SharingError: Error, Equatable, CustomStringConvertible {
     case noSharingKey(String)
     /// Their sharing key changed since it was verified, or last wrapped for: check it first.
     case keyChanged(String)
+    /// An encrypted share's settings say it isn't encrypted: not something its owner can do.
+    case downgraded
 
     public var description: String {
         switch self {
@@ -50,6 +52,8 @@ public enum SharingError: Error, Equatable, CustomStringConvertible {
         case .linkKeyWrong: "this link's key doesn't open the share: it's mistyped, or the link was turned off"
         case .noSharingKey(let who):
             "\(who) hasn't set up ATDrive yet, so there's no key to share encrypted files with; send a link instead"
+        case .downgraded:
+            "this share was encrypted, and its settings now say it isn't: the server may have changed them, so it isn't used"
         case .keyChanged(let who):
             "\(who)'s sharing key changed: compare verification codes (`atdrive share verify`) before sharing with them"
         }
@@ -280,6 +284,11 @@ public final class JoinedDrive: Sendable {
                 snapshot = try await drive.update(nil, now: now)
             }
             state.mode = drive.mode
+            if readOnly, let mismatch = snapshot.mismatch {
+                // Read with a credential, the MAC'd commit is what vouches for the records.
+                state.problem = .unreachable("its records don't match its signed commit (\(mismatch))")
+                return state
+            }
             guard snapshot.revision != nil else {
                 // No repo: the space is gone, or (with a credential) it says nothing. Never empty.
                 state.problem = .access(.notShared)
@@ -322,6 +331,11 @@ public final class JoinedDrive: Sendable {
                 method: "com.atproto.space.listRecords", status: 400, body: Data(#"{"error":"SpaceNotFound"}"#.utf8))
         }
         let encrypted = settings.value.flatMap(SealedRecord.init) != nil
+        if !encrypted, info.mustBeEncrypted {
+            // An encrypted share whose settings now read plain: the PDS changed them. Writing
+            // or reading it as plain would leak, or take the PDS's records for the owner's.
+            throw SharingError.downgraded
+        }
         var keyring: Keyring?
         if encrypted {
             if let own = info.spaceKeyring {
@@ -345,9 +359,10 @@ public final class JoinedDrive: Sendable {
                 space: info.space, owner: info.owner, linkKey: linkKey.data, client: client)
         }
         guard let sharingKeys else { throw SharingError.linkKeyMissing }
+        let verified = try? await verifiedKeys()[info.owner]
         return try await MemberKeys.keyring(
             space: info.space, owner: info.owner, me: owner, keys: sharingKeys, client: client,
-            resolver: access?.resolver)
+            resolver: access?.resolver, verifiedOwnerKey: verified)
     }
 
     struct MountUnavailable: Error, CustomStringConvertible {
@@ -497,6 +512,11 @@ public final class JoinedDrive: Sendable {
     /// what's in it stay (so anything inside a mount deleted with it is left alone).
     public func delete(_ nodes: [Node]) async throws {
         let mounts = Set(nodes.filter(\.isMount).map(\.id))
+        // A share of yours deleted stops being shared (it stays restorable from the trash, and
+        // unshared): otherwise nothing would list it, and its link would go on working.
+        for node in nodes where node.isMount && node.record.mount?.owner == owner {
+            if let info = node.record.mount { try await stopSharing(info) }
+        }
         var bySpace: [String?: (Drive, [Node])] = [:]
         for node in nodes {
             if let mount = NodeID.split(node.id).mount, mounts.contains(mount) { continue }

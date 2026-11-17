@@ -100,6 +100,7 @@ public final class XRPCClient: Sendable {
         var refreshed = false
         var retriedNonce = false
         var renewedCredential = false
+        var refreshedKEM = false
         var attempt = 0
 
         while true {
@@ -145,7 +146,15 @@ public final class XRPCClient: Sendable {
             let newNonce = await session?.observe(response, for: request.url!) ?? false
             if (200..<300).contains(response.statusCode) {
                 if let mac, let credentials, let repo = params["repo"] ?? nil {
-                    try Self.verifyMAC(data, response: response, request: mac, repo: repo, space: credentials.space)
+                    do {
+                        try Self.verifyMAC(data, response: response, request: mac, repo: repo, space: credentials.space)
+                    } catch let error as SpaceAuthError where !refreshedKEM {
+                        // Its host's KEM key may have changed (a migration): look it up again, once.
+                        refreshedKEM = true
+                        _ = try await credentials.kemKey(of: repo, refresh: true)
+                        _ = error
+                        continue
+                    }
                 }
                 return data
             }

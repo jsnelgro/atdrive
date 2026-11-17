@@ -164,7 +164,32 @@ Reviewed by the same hands that wrote it, as above: not an independent audit.
   isn't the owner's can't serve a commit that passes. Records themselves carry no MAC in a
   listing: the LtHash check against the commit covers them.
 
+**Fixed after a second review** (a separate reviewer read the branch for key leaks and data loss):
+
+- The PDS could make an encrypted share's settings read plain, and a device would then write to it
+  in the clear. A mount now remembers that its space was encrypted (and holding a keyring or link
+  key means it was): plain settings there are refused as a downgrade, by owners and link holders.
+- Removing a member rotated the key but dropped the link key, so link holders silently stopped
+  getting new files. Rotation now keeps it, and rewraps for the link.
+- After sharing, turning encryption off failed on old mount versions holding a keyring. History
+  on a plain drive now keeps no keyring.
+- Deleting your own shared folder left it shared, with no command that listed it. It's now
+  unshared first (and stays restorable from the trash).
+- Ending a shared file's sharing deleted the mount before copying the file back. Now it copies
+  first.
+- Adding people after `unshare` failed (the space was `personalspace`). Now it's set back.
+- A mount whose own record can't be read made sync delete the share's local copies; a share never
+  read showed empty in Finder. Both are held now.
+- A member who verified the owner's key now refuses member records from any other key.
+- A credential read whose records don't match the MAC'd commit is held, and a MAC failure looks
+  the owner's KEM key up again once.
+
 **Open findings**
+
+- **Turning encryption off exposes history** (medium, by design of that switch): it publishes the
+  drive's keys, which open its history, including mounts' old versions. Shares of your own are
+  deleted when encryption is switched, so their keys there open nothing; but the link key of
+  someone else's share you had opened is in that history, and their space may still be public.
 
 - **The scope asks for too much until the lexicons are published** (medium): reading spaces of
   any type from any account (`space:*?authority=*&action=read`), which the consent screen warns
