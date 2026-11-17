@@ -125,6 +125,10 @@ public enum SpaceAccessProblem: Error, Equatable, CustomStringConvertible {
 
     /// What a host's error says about the space; `nil` if it says nothing (network trouble, say).
     public init?(_ error: Error) {
+        if let problem = error as? SpaceAccessProblem {
+            self = problem
+            return
+        }
         guard let error = error as? XRPCError else { return nil }
         switch error.error {
         case "SpaceNotFound", "RepoNotFound", "AccountNotAuthorized", "NotAuthorized", "InvalidDelegationToken":

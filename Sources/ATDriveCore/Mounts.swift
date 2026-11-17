@@ -201,6 +201,7 @@ public final class JoinedDrive: Sendable {
     let opened = Locked<[String: Opened]>([:])
     /// The last snapshot `update` made: where writes find the nodes they move or delete.
     private let latest = Locked<JoinedSnapshot?>(nil)
+    var latestSnapshot: JoinedSnapshot? { latest.value }
 
     struct Opened: Sendable {
         var info: MountInfo

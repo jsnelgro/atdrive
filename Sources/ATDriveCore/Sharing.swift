@@ -10,7 +10,7 @@ extension Drive {
     /// drive's type, `policy`, and settings in the given mode. An encrypted one gets a new keyring
     /// (its own first key, so its own chunk IDs and chunker seed). Returns it, ready to write.
     static func createSpace(
-        client: XRPCClient, owner: String, key: String, encrypted: Bool, policy: SpacePolicy,
+        client: XRPCClient, owner: String, key: String, encrypted: Bool, policy: SpacePolicy, name: String? = nil,
         transfers: TransferOptions = .standard, device: String = DeviceName.current, tids: TIDSource = .system
     ) async throws -> Drive {
         let space = try await client.createSpace(type: Lexicon.driveSpace, key: key, policy: policy)
@@ -18,7 +18,7 @@ extension Drive {
         let drive = Drive(
             client: client, owner: owner, space: space, transfers: transfers, device: device, tids: tids,
             mode: encrypted ? .encrypted : .plain, keyring: keyring)
-        try await drive.writeSettingsIfMissing(DriveSettings(driveID: DriveSettings.newDriveID()))
+        try await drive.writeSettingsIfMissing(DriveSettings(driveID: DriveSettings.newDriveID(), name: name))
         return drive
     }
 
@@ -107,7 +107,8 @@ extension JoinedDrive {
         } else {
             let space = try await Drive.createSpace(
                 client: home.client, owner: owner, key: newShareKey(), encrypted: encrypted,
-                policy: .members(publicRead: false), transfers: home.transfers, device: home.device, tids: home.tids)
+                policy: .members(publicRead: false), name: node.name, transfers: home.transfers, device: home.device,
+                tids: home.tids)
             mount = try await home.createMount(
                 MountInfo(space: space.space, keyring: space.keyring), named: Self.sharingName(node.name), in: parent)
             snapshot = try await update(snapshot)
@@ -163,6 +164,7 @@ extension JoinedDrive {
     /// key for what's written from now on. The folder stays where it is, a mount: nothing moves
     /// back.
     public func unshare(_ mount: Node) async throws {
+        let mount = try await current(mount)
         guard mount.isMount, let info = mount.record.mount else { throw SharingError.notShared(mount.name) }
         guard info.owner == owner else { throw SharingError.notYours(mount.name) }
         try await home.client.updateSpace(info.space, policy: .personal)
@@ -189,6 +191,7 @@ extension JoinedDrive {
     /// records, which `Sharing` rewrites.
     @discardableResult
     func rotateKey(of mount: Node) async throws -> Keyring? {
+        let mount = try await current(mount)
         guard let info = mount.record.mount, var keyring = info.spaceKeyring else { return nil }
         _ = keyring.rotate()
         let local = try homeNode(mount)

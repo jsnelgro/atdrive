@@ -55,6 +55,8 @@ extension Drive {
         else { throw DriveAccessError.damaged("settings") }
         settings.converting = true
         settings.generation += 1
+        // The sharing key was readable until now: a new one is made (`ensureSharingKey`).
+        settings.sharingKey = nil
         let keyring = Keyring(DriveKey())
         let recoveryKey = RecoveryKey()
         let writes =
@@ -82,6 +84,8 @@ extension Drive {
         else { throw DriveAccessError.damaged("settings") }
         settings.converting = false
         settings.generation += 1
+        // It would be readable from now on: a new one is made (`ensureSharingKey`).
+        settings.sharingKey = nil
         for key in keyring.keys.map({ Bytes($0.rawRepresentation) }) where !settings.retiredKeys.contains(key) {
             settings.retiredKeys.append(key)
         }

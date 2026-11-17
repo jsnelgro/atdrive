@@ -30,7 +30,7 @@ public enum OAuthLogin {
     /// `_lexicon.atdrive.jsnelgro.me`, plus the schema records), switch to `narrowScope`.
     public static func scope(environment: [String: String] = ProcessInfo.processInfo.environment) -> String {
         if let configured = environment["ATDRIVE_OAUTH_SCOPE"], !configured.isEmpty { return configured }
-        return "atproto space:*?\(collections)&manage=create&manage=update&manage=delete blob:*/*"
+        return "atproto space:*?\(collections)&manage=create&manage=update&manage=delete repo:\(Lexicon.shareKey) blob:*/*"
     }
 
     /// The scope to use once ATDrive's lexicons are published: access to ATDrive's spaces only.

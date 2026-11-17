@@ -296,12 +296,16 @@ public struct DriveSettings: Codable, Sendable, Equatable {
     /// on an encrypted drive, readable on a plain one (`SharingKeyPair`). Replaced whenever
     /// encryption is turned on or off.
     public var sharingKey: Bytes?
+    /// Shares only: the shared file's or folder's name, for those who open it.
+    public var name: String?
 
     public init(
         retentionDays: Int = defaultRetentionDays, driveID: String? = DriveSettings.newDriveID(),
-        converting: Bool = false, retiredKeys: [Bytes] = [], generation: Int = 0, sharingKey: Bytes? = nil
+        converting: Bool = false, retiredKeys: [Bytes] = [], generation: Int = 0, sharingKey: Bytes? = nil,
+        name: String? = nil
     ) {
         self.sharingKey = sharingKey
+        self.name = name
         self.retentionDays = retentionDays
         self.driveID = driveID
         self.generation = generation
@@ -324,7 +328,7 @@ public struct DriveSettings: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case retentionDays, driveID, converting, retiredKeys, generation, sharingKey
+        case retentionDays, driveID, converting, retiredKeys, generation, sharingKey, name
     }
 
     public init(from decoder: Decoder) throws {
@@ -335,6 +339,7 @@ public struct DriveSettings: Codable, Sendable, Equatable {
         retiredKeys = try container.decodeIfPresent([Bytes].self, forKey: .retiredKeys) ?? []
         generation = try container.decodeIfPresent(Int.self, forKey: .generation) ?? 0
         sharingKey = try container.decodeIfPresent(Bytes.self, forKey: .sharingKey)
+        name = try container.decodeIfPresent(String.self, forKey: .name)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -345,6 +350,7 @@ public struct DriveSettings: Codable, Sendable, Equatable {
         if !retiredKeys.isEmpty { try container.encode(retiredKeys, forKey: .retiredKeys) }
         try container.encode(generation, forKey: .generation)
         try container.encodeIfPresent(sharingKey, forKey: .sharingKey)
+        try container.encodeIfPresent(name, forKey: .name)
     }
 
     /// The sharing key pair, if there is one. `encrypted`: whether these settings are stored sealed.

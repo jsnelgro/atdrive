@@ -1,0 +1,288 @@
+import Foundation
+import Testing
+
+@testable import ATDriveCore
+
+/// Links (#21) and sharing with people (#22), with three accounts: the owner (`did:plc:test`, its
+/// drive in the test mode), Bob (a plain drive) and Carol (an encrypted one).
+@Suite struct LinkAndMemberTests {
+    let pds = FakePDS()
+    let owner: JoinedDrive
+    let bob: JoinedDrive
+    let carol: JoinedDrive
+    let bobDID: String
+    let carolDID: String
+
+    init() async throws {
+        bobDID = pds.addAccount("bob")
+        carolDID = pds.addAccount("carol")
+        let home = pds.device("here")
+        _ = try await home.create(encrypted: TestMode.encrypted)
+        owner = JoinedDrive(home: home, access: pds.access())
+        let bobs = pds.device("bob's", account: bobDID, mode: .plain)
+        _ = try await bobs.create(encrypted: false)
+        bob = JoinedDrive(home: bobs, access: pds.access(as: bobDID))
+        let carols = pds.unopened("carol's", account: carolDID)
+        _ = try await carols.create(encrypted: true)
+        carol = JoinedDrive(home: carols, access: pds.access(as: carolDID))
+        for drive in [owner, bob, carol] { try await drive.ensureSharingKey() }
+    }
+
+    func file(_ contents: String) throws -> URL {
+        let url = try temporaryDirectory().appendingPathComponent("f.txt")
+        try Data(contents.utf8).write(to: url)
+        return url
+    }
+
+    /// `/photos` with `a.txt` and `trip/b.txt`, shared.
+    func sharedPhotos() async throws -> Node {
+        let photos = try await owner.createFolder(named: "photos", in: nil)
+        _ = try await owner.upload(try file("aaa"), as: "a.txt", in: photos.id)
+        let trip = try await owner.createFolder(named: "trip", in: photos.id)
+        _ = try await owner.upload(try file("bbb"), as: "b.txt", in: trip.id)
+        return try await owner.share(photos)
+    }
+
+    func contents(_ drive: JoinedDrive, _ path: String) async throws -> String? {
+        let tree = try await drive.tree()
+        guard let node = try? tree.locate(DrivePath(path)) else { return nil }
+        var data = Data()
+        try await drive.read(node) { data.append($0) }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    // MARK: Links
+
+    @Test func linksRoundTrip() throws {
+        let space = XRPCClient.spaceURI(authority: "did:plc:abc", type: Lexicon.driveSpace, key: "k1")
+        let key = ShareLink.newKey()
+        let link = ShareLinkAddress(space: space, key: key)
+        #expect(link.description.hasPrefix("atdrive://open?at=at%3A%2F%2Fdid%3Aplc%3Aabc%2Fspace%2F"))
+        #expect(try ShareLinkAddress(parsing: link.description) == link)
+        #expect(try ShareLinkAddress(parsing: space) == ShareLinkAddress(space: space))
+        #expect(throws: ATDriveError.self) { try ShareLinkAddress(parsing: "https://example.com") }
+        let other = try ShareLinkAddress(parsing: "at://did:plc:abc/space/com.example.board/b1")
+        #expect(!other.isDrive)
+    }
+
+    @Test func aPublicLinkReadsSignedOut() async throws {
+        let mount = try await sharedPhotos()
+        let link = try await owner.turnLinkOn(mount)
+        #expect((link.key != nil) == TestMode.encrypted)
+        #expect(try await owner.link(of: mount) == link)
+
+        let opened = try await JoinedDrive.open(link, access: pds.access(as: nil))
+        #expect(opened.name == "photos" && opened.owner == FakePDS.defaultDID)
+        let tree = try await opened.drive.tree()
+        let b = try #require(try tree.locate(DrivePath("/trip/b.txt")))
+        var data = Data()
+        try await opened.drive.read(b) { data.append($0) }
+        #expect(String(decoding: data, as: UTF8.self) == "bbb")
+    }
+
+    @Test func anEncryptedLinkWithoutItsKeyFailsClearly() async throws {
+        guard TestMode.encrypted else { return }
+        let mount = try await sharedPhotos()
+        let link = try await owner.turnLinkOn(mount)
+        await #expect(throws: SharingError.linkKeyMissing) {
+            _ = try await JoinedDrive.open(ShareLinkAddress(space: link.space), access: pds.access(as: nil))
+        }
+        await #expect(throws: SharingError.linkKeyWrong) {
+            _ = try await JoinedDrive.open(
+                ShareLinkAddress(space: link.space, key: ShareLink.newKey()), access: pds.access(as: nil))
+        }
+    }
+
+    @Test func openingALinkMountsItReadOnlyInPlainAndEncryptedDrives() async throws {
+        let mount = try await sharedPhotos()
+        let link = try await owner.turnLinkOn(mount)
+        for recipient in [bob, carol] {
+            let added = try await recipient.add(link)
+            #expect(added.isMount && added.name == "photos")
+            #expect(try await recipient.add(link).id == added.id, "added once")
+            #expect(try await contents(recipient, "/photos/trip/b.txt") == "bbb")
+            // Read-only.
+            let folder = try #require(try await recipient.tree().locate(DrivePath("/photos")))
+            await #expect(throws: ATDriveError.self) { _ = try await recipient.createFolder(named: "x", in: folder.id) }
+        }
+        // A plain drive keeps the link key readable; an encrypted one seals it.
+        let bobsMount = try #require(try await bob.home.update(nil).tree.nodes.values.first(where: \.isMount))
+        #expect((bobsMount.record.mount?.linkKey != nil) == TestMode.encrypted)
+        // The owner's changes come through.
+        _ = try await owner.upload(try file("ccc"), as: "c.txt", in: mount.id)
+        #expect(try await contents(bob, "/photos/c.txt") == "ccc")
+    }
+
+    @Test func aNameThatsTakenGetsANumber() async throws {
+        let mount = try await sharedPhotos()
+        let link = try await owner.turnLinkOn(mount)
+        _ = try await bob.createFolder(named: "photos", in: nil)
+        #expect(try await bob.add(link).name == "photos (2)")
+    }
+
+    @Test func turningTheLinkOffLeavesWhatWasOpened() async throws {
+        let mount = try await sharedPhotos()
+        let link = try await owner.turnLinkOn(mount)
+        _ = try await bob.add(link)
+        let folder = try temporaryDirectory().appendingPathComponent("bob")
+        do {
+            let sync = try FolderSync(folder: folder, drive: bob, settle: 0)
+            try await sync.sync()
+            #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("photos/a.txt").path))
+
+            try await owner.turnLinkOff(mount)
+            #expect(try await owner.link(of: mount) == nil)
+            try await sync.sync()
+            #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("photos/a.txt").path))
+            let state = try await bob.update(nil).mounts.values.first
+            #expect(state?.problem == .access(.notShared))
+        }
+        await #expect { _ = try await JoinedDrive.open(link, access: pds.access(as: nil)) } throws: {
+            SpaceAccessProblem($0) == .notShared
+        }
+    }
+
+    @Test func localEditsInAReadOnlyShareStayHere() async throws {
+        let mount = try await sharedPhotos()
+        _ = try await bob.add(try await owner.turnLinkOn(mount))
+        let folder = try temporaryDirectory().appendingPathComponent("bob")
+        let events = Events()
+        let sync = try FolderSync(folder: folder, drive: bob, settle: 0) { events.add($0) }
+        try await sync.sync()
+        let a = folder.appendingPathComponent("photos/a.txt")
+        try Data("bob was here".utf8).write(to: a)
+        try FileManager.default.removeItem(at: folder.appendingPathComponent("photos/trip/b.txt"))
+        try Data("new".utf8).write(to: folder.appendingPathComponent("photos/new.txt"))
+        try await sync.sync()
+        try await sync.sync()
+
+        #expect(try await contents(owner, "/photos/a.txt") == "aaa", "never uploaded")
+        #expect(try await contents(owner, "/photos/trip/b.txt") == "bbb", "never deleted")
+        #expect(try await contents(owner, "/photos/new.txt") == nil)
+        #expect(String(decoding: try Data(contentsOf: a), as: UTF8.self) == "bob was here", "kept here")
+        #expect(events.all.contains { $0.description.contains("read-only") })
+    }
+
+    @Test func aDeletedShareGoesFromRecipients() async throws {
+        let mount = try await sharedPhotos()
+        _ = try await bob.add(try await owner.turnLinkOn(mount))
+        let folder = try temporaryDirectory().appendingPathComponent("bob")
+        let sync = try FolderSync(folder: folder, drive: bob, settle: 0)
+        try await sync.sync()
+        #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("photos/a.txt").path))
+        try await owner.client.deleteSpace(mount.record.mount!.space)
+        try await sync.sync()
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("photos/a.txt").path))
+        #expect(try await bob.update(nil).mounts.values.first?.problem == .access(.deleted))
+    }
+
+    // MARK: People
+
+    @Test func membersReadAndOthersDont() async throws {
+        let mount = try await sharedPhotos()
+        try await owner.addMembers([bobDID, carolDID], to: mount)
+        let address = ShareLinkAddress(space: mount.record.mount!.space)
+        for member in [bob, carol] {
+            _ = try await member.add(address)
+            #expect(try await contents(member, "/photos/trip/b.txt") == "bbb")
+        }
+        let dave = JoinedDrive(home: pds.device("dave's", account: pds.addAccount("dave"), mode: .plain), access: pds.access(as: "did:plc:dave"))
+        _ = try await dave.home.create(encrypted: false)
+        await #expect { _ = try await dave.add(address) } throws: { SpaceAccessProblem($0) == .notShared }
+        #expect(Set(try await owner.members(of: mount).map(\.did)) == [bobDID, carolDID])
+    }
+
+    @Test func aRemovedMemberIsHeldAndGetsNothingNew() async throws {
+        let mount = try await sharedPhotos()
+        try await owner.addMembers([bobDID, carolDID], to: mount)
+        _ = try await bob.add(ShareLinkAddress(space: mount.record.mount!.space))
+        _ = try await carol.add(ShareLinkAddress(space: mount.record.mount!.space))
+        let folder = try temporaryDirectory().appendingPathComponent("bob")
+        do {
+            let sync = try FolderSync(folder: folder, drive: bob, settle: 0)
+            try await sync.sync()
+
+            try await owner.removeMembers([bobDID], from: mount)
+            _ = try await owner.upload(try file("after"), as: "after.txt", in: mount.id)
+            try await sync.sync()
+            #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("photos/a.txt").path))
+            #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("photos/after.txt").path))
+            #expect(try await bob.update(nil).mounts.values.first?.problem == .access(.notShared))
+        }
+        // Carol stays, and reads what's new (with the new key, if encrypted).
+        #expect(try await contents(carol, "/photos/after.txt") == "after")
+        #expect(try await owner.members(of: mount).map(\.did) == [carolDID])
+    }
+
+    @Test func anEncryptedShareToAPlainDriveWarnsAndWorks() async throws {
+        guard TestMode.encrypted else { return }
+        let mount = try await sharedPhotos()
+        #expect(try await owner.memberWarnings([bobDID], for: mount) == [.unprotected(bobDID)])
+        #expect(try await owner.memberWarnings([carolDID], for: mount) == [])
+        try await owner.addMembers([bobDID], to: mount)
+        _ = try await bob.add(ShareLinkAddress(space: mount.record.mount!.space))
+        #expect(try await contents(bob, "/photos/a.txt") == "aaa")
+        #expect(try await owner.members(of: mount).first?.protected == false)
+    }
+
+    @Test func someoneWithoutASharingKeyCantJoinAnEncryptedShare() async throws {
+        guard TestMode.encrypted else { return }
+        let mount = try await sharedPhotos()
+        let dave = pds.addAccount("dave")
+        await #expect(throws: SharingError.noSharingKey(dave)) { try await owner.memberWarnings([dave], for: mount) }
+        await #expect(throws: SharingError.noSharingKey(dave)) { try await owner.addMembers([dave], to: mount) }
+    }
+
+    @Test func aMemberRecordFromTheWrongSenderIsRefused() async throws {
+        guard TestMode.encrypted else { return }
+        let mount = try await sharedPhotos()
+        try await owner.addMembers([bobDID], to: mount)
+        let space = mount.record.mount!.space
+        // The PDS puts in a record of its own: a keyring of its choosing, wrapped for Bob.
+        let bobsKey = try #require(
+            try await SharingKeyRecord.fetch(bobDID, resolver: pds.resolver, transport: pds).flatMap(\.key))
+        let forged = try MemberKeys.record(
+            keyring: Keyring(DriveKey()), for: bobDID, key: bobsKey,
+            from: SharingKeyPair(protected: true), space: space)
+        pds.insertRawRecord(rkey: bobDID, collection: Lexicon.member, space: space, forged.anyValue)
+        await #expect(throws: (any Error).self) { _ = try await bob.add(ShareLinkAddress(space: space)) }
+    }
+
+    @Test func membersAndTheLinkAreIndependent() async throws {
+        let mount = try await sharedPhotos()
+        try await owner.addMembers([bobDID], to: mount)
+        let link = try await owner.turnLinkOn(mount)
+        try await owner.turnLinkOff(mount)
+        _ = try await bob.add(ShareLinkAddress(space: link.space))
+        #expect(try await contents(bob, "/photos/a.txt") == "aaa", "still a member")
+        try await owner.removeMembers([bobDID], from: mount)
+        let again = try await owner.turnLinkOn(mount)
+        _ = try await JoinedDrive.open(again, access: pds.access(as: nil))
+        #expect(try await owner.members(of: mount).isEmpty)
+    }
+
+    @Test func publishesSharingKeys() async throws {
+        let published = try #require(
+            try await SharingKeyRecord.fetch(carolDID, resolver: pds.resolver, transport: pds))
+        #expect(published.protected)
+        let bobs = try #require(try await SharingKeyRecord.fetch(bobDID, resolver: pds.resolver, transport: pds))
+        #expect(!bobs.protected)
+        // Stable: ensuring it again changes nothing.
+        try await carol.ensureSharingKey()
+        #expect(try await SharingKeyRecord.fetch(carolDID, resolver: pds.resolver, transport: pds) == published)
+    }
+}
+
+final class Events: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [SyncEvent] = []
+    func add(_ event: SyncEvent) { lock.withLock { events.append(event) } }
+    var all: [SyncEvent] { lock.withLock { events } }
+}
+
+extension JSONValue {
+    /// As Foundation JSON, for `FakePDS.insertRawRecord`.
+    var anyValue: [String: Any] {
+        (try? JSONSerialization.jsonObject(with: Data(serialized()))) as? [String: Any] ?? [:]
+    }
+}
