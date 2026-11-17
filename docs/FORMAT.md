@@ -1,0 +1,174 @@
+# ATDrive storage format
+
+What an ATDrive client reads and writes, precisely enough to write another client (a web app,
+say). The Swift implementation is `Sources/ATDriveCore`; `lexicons/` has the record schemas;
+`Tests/ATDriveCoreTests/CryptoVectorTests.swift` has known answers for everything under
+*Cryptography*, and `Tests/vectors/crypto_vectors.py` computes them without any ATDrive code.
+
+Alpha: nothing here is stable yet, and nothing is backward compatible.
+
+## A drive
+
+- A drive is one atproto space: `at://<did>/space/me.jsnelgro.atdrive.drive/<key>`. The home
+  drive's key is `default`. Everything below is per space: a shared folder will be another space
+  of the same type, with its own settings, mode, keys, history and change feed.
+- Collections: `node` (one record per file or folder), `version` (one per change),
+  `chunks` (the rest of chunk lists too long for one record), `settings` (one record, key
+  `self`), `device` (encrypted drives: one per device, plus `recovery`). All under
+  `me.jsnelgro.atdrive.`.
+- File contents are blobs, referenced from `chunks` arrays in records. A blob lives while a
+  record references it.
+
+## Plain and sealed records
+
+Every `node`, `version`, `chunks` and `settings` record is stored in one of two forms, and says
+which by whether it has a `sealed` field.
+
+- **Plain:** the record's fields as JSON, as in the lexicon.
+- **Sealed:** `{"$type", "chunks"?, "sealed": {"keyID", "sealed"}}`. `chunks` (blob refs) stays
+  readable so the PDS keeps the blobs. Every other field is in a JSON object encrypted in
+  `sealed` (see *Sealing*).
+
+**The drive's mode is the form of its settings record:** sealed means the drive is encrypted,
+plain means it isn't. A client writes every record in the drive's mode, and re-reads the settings
+whenever that record's CID changes.
+
+Reading, a client accepts:
+
+| Record | Plain drive | Encrypted drive |
+|---|---|---|
+| Plain | yes | only while `settings.converting` |
+| Sealed with a key in the drive's keyring | (there's no keyring) | yes |
+| Sealed with a key in `settings.retiredKeys` | yes | only while `settings.converting` |
+| Sealed with any other key | unreadable | unreadable |
+
+On an encrypted drive, a plain record or one sealed with a retired key could have been written
+by the PDS, which is why it's refused once the drive has finished converting. A record a client
+can't read is **never treated as deleted**: it's left alone, on the drive and locally.
+
+## Records
+
+`node` (key: a TID, the file or folder's permanent ID):
+`name`, `parent?` (a node key), `kind` (`file` or `folder`), `createdAt`, `version?` (key of its
+current version), and for files `size`, `sha256` (hex, of the whole file), `modifiedAt?`,
+`chunks`, `chunkIDs?`, `chunkKey?`, `contentsFrom?`, `continuations?`, `continuationsFrom?`.
+
+`version` (key: a TID made when the change was): `node`, `change` (`created`, `edited`, `moved`,
+`deleted`, `restored`), `device` (a name), `prev?` (the version the change was based on), and the
+node's state after the change (none after a delete): `name`, `parent`, `kind`, `size`, `sha256`,
+`createdAt`, `modifiedAt`, and either the chunk list (`chunks`, `chunkIDs?`, `chunkKey?`,
+`continuations?`, `continuationsFrom?`) or `contentsFrom`, the version that holds it.
+
+- Every change to a node writes its `version` in the same `applyWrites`. Two versions with the
+  same `prev` are a race; the loser is settled by `ConflictRules`.
+- A node's `chunks` are a copy of the list held by the version `contentsFrom` names.
+
+Chunk lists:
+- `chunks`: blob refs, in order. The file is the chunks' contents concatenated.
+- `chunkIDs`: present if the chunks are encrypted: one ID per blob, in the same order (32 bytes,
+  base64 without padding). `chunkKey`: the key ID of the drive key the IDs were made with (the
+  keyring's first key at the time). A list is all encrypted or all plain.
+- A list too long for a record (about 400 kB of JSON) is in `chunks` records instead, keyed
+  `<version key>-<n>` for `n` from `continuationsFrom` (default 1), `continuations` of them; the
+  node and version then hold no `chunks`. Rewriting a list writes new parts numbered after the
+  old ones, then switches the version and node to them in one write, then deletes the old parts.
+
+`settings` (key `self`): `retentionDays` (default 30), `driveID` (random; a different one means
+the drive was wiped and created again), `generation` (incremented on every change), `converting`
+(encrypted drives), `retiredKeys` (raw drive keys, published when encryption was turned off).
+
+`device` (encrypted drives; key: the device's ID, a TID): `name`, `publicKey` (raw X25519),
+`keyring?` (the keyring wrapped for it), `member?` (sealed `{id, name, publicKey}`),
+`approvedBy?`, `createdAt`. Key `recovery`: `recoveryKeyring`.
+
+## Chunking
+
+FastCDC with a gear table derived from a 32-byte seed (`Chunker.swift`; `ChunkerTests` has fixed
+vectors). Minimum 256 KiB, average 1 MiB, maximum 4 MiB.
+
+- Plain drive: the seed is 32 zero bytes, so every client cuts the same way.
+- Encrypted drive: the seed is the first drive key's `atdrive chunker seed v1` subkey.
+
+Any cut is valid for reading. Cutting the same way only matters for skipping chunks the drive
+already has, and for reusing chunks of a local copy.
+
+## Cryptography
+
+Only on encrypted drives. Every primitive is in WebCrypto: AES-256-GCM, HKDF-SHA256,
+HMAC-SHA256, SHA-256, X25519.
+
+**Drive keys.** 32 random bytes each. The keyring is every key so far, oldest first; the newest
+seals records, and the first names chunks. Subkeys are `HKDF-SHA256(ikm = key, salt = none,
+info = <label>, 32 bytes)`:
+
+| Label | Use |
+|---|---|
+| `atdrive key id v1` | 8 bytes, as hex: the key ID |
+| `atdrive record sealing v1` | AES-256-GCM key for sealed records |
+| `atdrive chunk id v1` | HMAC key that names chunks |
+| `atdrive chunker seed v1` | chunker seed |
+| `atdrive key fingerprint v1` | as hex: what a device remembers of a key it accepted |
+
+**Sealing.** `sealed.sealed` is a random 12-byte nonce, the ciphertext, then the 16-byte tag:
+AES-256-GCM under the record-sealing subkey of the key `sealed.keyID` names, over the payload as
+JSON. Associated data: `atdrive record v2`, the space's URI, the collection NSID and the record
+key, each followed by a zero byte. A record that fails to open is unreadable (tampered with, or
+moved from another record or drive).
+
+**Chunks.** ID = `HMAC-SHA256(chunk-id subkey of the first key, plaintext)`. Chunk key =
+`HKDF-SHA256(ikm = ID, info = "atdrive chunk key v1")`. The blob is AES-256-GCM of the plaintext
+under the chunk key with a nonce of 12 zero bytes, ciphertext then tag (each key encrypts exactly
+one plaintext). Identical chunks give identical blobs, so they're stored once. An ID is all it
+takes to decrypt its chunk, so IDs are only ever in sealed records, or in plain ones after
+encryption was turned off.
+
+**Device keys and the keyring.** Each device has an X25519 key pair. `device.keyring` is the
+keyring (keys concatenated, oldest first) wrapped with HPKE (RFC 9180) in auth mode:
+DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, AES-256-GCM; `info` = `atdrive keyring v2`, a zero byte,
+the space's URI, a zero byte; `sender` is the wrapping device's public key. `recoveryKeyring` is
+the same plaintext under AES-256-GCM (random nonce, then ciphertext and tag) with the key
+`HKDF-SHA256(recovery key, info = "atdrive recovery wrap v1")` and the HPKE `info` as associated
+data.
+
+**The roster** is the device records whose `member` opens with the keyring's *current* key
+(associated data as for any sealed record, in the `device` collection) and names that record's
+key and `publicKey`. Removing a device rotates the key and re-seals every remaining `member`, so
+an old `member` restored by the PDS is void.
+
+**Which keyring a device accepts** (`KeyTrust`): one that holds every key it accepted before, and
+that was wrapped by itself, or (its first) by the device whose pairing code the user compared,
+or (later) by a device in the roster. The pairing code is the first 8 bytes of
+`SHA-256("atdrive pairing code v2" || both public keys, sorted)`, as a number modulo 10^16.
+
+**The recovery key** is 32 random bytes, written as 56 Crockford base32 characters: the key, then
+the first 3 bytes of `SHA-256("atdrive recovery key checksum v1" || key)`.
+
+## Switching modes
+
+- **Off → on:** one `applyWrites`: the settings sealed with a new keyring (`converting: true`,
+  `generation + 1`, `retiredKeys` kept), the `recovery` record, the device's own record. Then
+  every record that isn't sealed with the new keyring is rewritten, and every chunk list that
+  isn't encrypted under its first key is downloaded and stored again. When none is left,
+  `converting` is cleared.
+- **On → off:** one `applyWrites`: the settings plain, with the keyring's keys appended to
+  `retiredKeys` (`generation + 1`), and every `device` record deleted. Nothing else has to be
+  rewritten: what's sealed opens with the retired keys. Rewriting it as plain is optional.
+- **A device that held the keys** accepts plain settings only if `retiredKeys` holds every key it
+  accepted before (compare fingerprints). The PDS can make settings plain, but can't publish
+  keys it never had. It also refuses sealed settings whose `generation` is lower than one it has
+  read.
+
+## A web client
+
+Nothing in the format needs a native client.
+
+- **Plain drive:** no cryptography at all. List records, read fields, fetch blobs, verify
+  `sha256`. Writing needs FastCDC (or any chunking: files then just don't share chunks with ones
+  other clients wrote) and SHA-256.
+- **Encrypted drive:** the browser is a device: an X25519 key pair (WebCrypto can keep the
+  private key non-extractable), approved from another device or with the recovery key. HPKE is a
+  few HKDF and X25519 calls on top of WebCrypto.
+- **The exact-listing check** (`RepoState.check`: an LtHash over BLAKE3) is an optimization that
+  needs BLAKE3; a client without it lists the drive instead of following the change feed.
+- A hosted page can't be trusted with an encrypted drive's keys any more than its host: that's
+  a product decision for the web milestone, not a format one.

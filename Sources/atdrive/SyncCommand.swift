@@ -116,7 +116,7 @@ struct Sync: AsyncParsableCommand {
 
     /// Waits until a session other than `expired` is saved (by `atdrive login`), and this device
     /// has the drive's keys, then loads it. Never creates a drive: that's `atdrive login`'s, as it
-    /// shows the recovery key.
+    /// decides whether it's encrypted.
     private static func waitForSignIn(after expired: Session? = nil) async throws -> Context {
         var said = expired != nil
         var saidLocked: String?

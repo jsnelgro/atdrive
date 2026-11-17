@@ -468,19 +468,36 @@ final class ScriptedTransport: HTTPTransport, @unchecked Sendable {
 
 extension FakePDS {
     /// A device using this PDS's drive (`did:plc:test`), with tiny chunks (8 bytes, unless
-    /// `transfers` says otherwise). Pass `keyring` to give it the drive's keys straight away
-    /// (devices sharing one, as tests do), or create the drive with it (`Drive.create`), or unlock
-    /// it.
+    /// `transfers` says otherwise). Pass `keyring` to give it an encrypted drive's keys straight
+    /// away (devices sharing one, as tests do), or `mode` to say what the drive is without
+    /// opening it; or create the drive with it (`Drive.create`), or open it.
+    ///
+    /// With neither, it takes the drive to be `TestMode.current`: the drive-logic suites run
+    /// once on a plain drive and once on an encrypted one (`scripts/test.sh`).
     func device(
         _ name: String = "test", transfers: TransferOptions = .fixed(8), tids: TIDSource = .system,
-        keyring: Keyring? = nil, identity: DeviceIdentity? = nil,
+        keyring: Keyring? = nil, mode: DriveMode? = nil, identity: DeviceIdentity? = nil,
         saveIdentity: (@Sendable (DeviceIdentity) -> Void)? = nil
     ) -> Drive {
         Drive(
             client: XRPCClient(service: URL(string: "https://pds.test")!, transport: self), owner: "did:plc:test",
             transfers: transfers, device: name, tids: tids, identity: identity ?? DeviceIdentity(name: name),
-            keyring: keyring, saveIdentity: saveIdentity)
+            mode: mode ?? (keyring == nil && TestMode.current == .plain ? .plain : nil), keyring: keyring,
+            saveIdentity: saveIdentity)
     }
+
+    /// A device that doesn't know yet whether the drive is encrypted: it has to open it.
+    func unopened(_ name: String = "test", transfers: TransferOptions = .fixed(8), identity: DeviceIdentity? = nil)
+        -> Drive
+    {
+        Drive(
+            client: XRPCClient(service: URL(string: "https://pds.test")!, transport: self), owner: "did:plc:test",
+            transfers: transfers, device: name, identity: identity ?? DeviceIdentity(name: name))
+    }
+
+    /// The space every test drive is.
+    static let space = XRPCClient.spaceURI(
+        authority: "did:plc:test", type: Lexicon.driveSpace, key: Lexicon.defaultDriveKey)
 
     /// A record's value as stored, if it exists.
     func rawRecord(rkey: String, collection: String = Lexicon.node) -> [String: Any]? {
@@ -495,6 +512,16 @@ extension FakePDS {
         lock.withLock { records.values.map(\.json) + Array(blobs.values) }
     }
 
+    /// Stores `payload` (any JSON object) as a record the way `drive` stores records now: sealed
+    /// with its keyring, or plain.
+    func insert(rkey: String, collection: String = Lexicon.node, _ payload: [String: Any], as drive: Drive) throws {
+        if let keyring = drive.keyring {
+            try insertSealed(rkey: rkey, collection: collection, payload, keyring: keyring)
+        } else {
+            insertRawRecord(rkey: rkey, collection: collection, payload.merging(["$type": collection]) { a, _ in a })
+        }
+    }
+
     /// Seals `payload` (any JSON object) with `keyring` for `collection`/`rkey` and stores it, as
     /// a device with that keyring (a newer version of ATDrive, or another drive) would.
     func insertSealed(
@@ -502,7 +529,7 @@ extension FakePDS {
         chunks: [[String: Any]]? = nil
     ) throws {
         let value = try JSONValue(parsing: JSONSerialization.data(withJSONObject: payload))
-        let sealed = try keyring.seal(value, collection: collection, rkey: rkey)
+        let sealed = try keyring.seal(value, space: Self.space, collection: collection, rkey: rkey)
         var record: [String: Any] = [
             "$type": collection,
             "sealed": ["keyID": sealed.keyID.rawValue, "sealed": ["$bytes": Base64.encode(sealed.sealed.data)]],
@@ -524,4 +551,16 @@ func temporaryDirectory() throws -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent("atdrive-tests-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
+}
+
+/// Which kind of drive the drive-logic suites run on: `ATDRIVE_TEST_MODE=encrypted` for an
+/// encrypted one, a plain one otherwise. Everything but how records are stored should behave the
+/// same, so the same tests run on both.
+enum TestMode {
+    static let current: DriveMode =
+        ProcessInfo.processInfo.environment["ATDRIVE_TEST_MODE"] == "encrypted" ? .encrypted : .plain
+    static var encrypted: Bool { current == .encrypted }
+
+    /// A keyring for devices that share one, on an encrypted drive; none on a plain one.
+    static func keyring() -> Keyring? { encrypted ? Keyring(DriveKey()) : nil }
 }

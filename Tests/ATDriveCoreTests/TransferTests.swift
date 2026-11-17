@@ -9,7 +9,7 @@ import Testing
 @Suite struct TransferTests {
     let pds = FakePDS()
     let laptop: Drive
-    let recoveryKey: RecoveryKey
+    let recoveryKey: RecoveryKey?
     let directory: URL
 
     /// Chunks of about 4 KiB, so a file of a few hundred KiB has dozens.
@@ -17,7 +17,7 @@ import Testing
 
     init() async throws {
         laptop = pds.device("laptop", transfers: Self.small)
-        recoveryKey = try await laptop.create()
+        recoveryKey = try await laptop.create(encrypted: TestMode.encrypted)
         directory = try temporaryDirectory()
     }
 
@@ -133,7 +133,7 @@ import Testing
         let node = try await laptop.upload(try file(zeros), as: "zeros.bin", in: nil)
         let chunks = try #require(node.record.chunks)
         let distinct = Set(chunks.map(\.cid)).count
-        let runs = chunks.indices.filter { $0 == 0 || chunks[$0].id != chunks[$0 - 1].id }.count
+        let runs = chunks.indices.filter { $0 == 0 || chunks[$0].cid != chunks[$0 - 1].cid }.count
         #expect(chunks.count > 5 && distinct <= 2 && runs == distinct)
         #expect(pds.uploads == distinct)
         pds.resetCounts()
@@ -143,7 +143,8 @@ import Testing
 
     /// Keys rotate when a device is removed. Chunks are cut and named with the first key, so
     /// the same contents come out as the same chunks, which the drive already has.
-    @Test func chunksStayTheSameAfterKeysRotate() async throws {
+    @Test(.enabled(if: TestMode.encrypted)) func chunksStayTheSameAfterKeysRotate() async throws {
+        let recoveryKey = try #require(recoveryKey)
         let data = Self.noise(200_000, seed: 5)
         let before = try await laptop.upload(try file(data), as: "a.bin", in: nil)
         let phone = pds.device("phone", transfers: Self.small)
@@ -229,16 +230,16 @@ import Testing
         let node = try await laptop.upload(try file(data), as: "a.bin", in: nil)
         let chunks = try #require(node.record.chunks)
         let local = try file(data)
-        let key = try #require(laptop.keyring?.keys.first)
-        let found = await LocalChunks(of: local, wanted: Set(chunks.map(\.id)), key: key, chunking: Self.small.chunking)
+        let scheme = try laptop.currentScheme()
+        let found = await LocalChunks(of: local, wanted: chunks, scheme: scheme, chunking: Self.small.chunking)
         let cut = try #require(found)
-        #expect(cut.count == Set(chunks.map(\.id)).count)
-        #expect(try cut.read(chunks[0].id).map(key.chunkID(for:)) == chunks[0].id)
+        #expect(cut.count == Set(chunks.map(\.cid)).count)
+        #expect(try cut.read(chunks[0]).map(scheme.name(of:)) == ChunkScheme.name(of: chunks[0]))
         // Overwritten in place after it was cut: its chunks are no longer where they were.
         let handle = try FileHandle(forWritingTo: local)
         try handle.write(contentsOf: Self.noise(100_000, seed: 10))
         try handle.close()
-        #expect(try cut.read(chunks[1].id) == nil)
+        #expect(try cut.read(chunks[1]) == nil)
     }
 
     // MARK: A few at a time
@@ -303,9 +304,10 @@ import Testing
 
     // MARK: Long chunk lists
 
-    /// Two 8-byte chunks to a record, so 100 bytes take seven `chunks` records.
+    /// Two 8-byte chunks to a record (encrypted chunks take more room in one: their IDs), so 100
+    /// bytes take seven `chunks` records.
     static let tiny = TransferOptions(
-        chunking: .init(minSize: 8, averageSize: 8, maxSize: 8), chunkListLimit: 600)
+        chunking: .init(minSize: 8, averageSize: 8, maxSize: 8), chunkListLimit: TestMode.encrypted ? 600 : 420)
     static let hundredBytes = Data((0..<100).map { UInt8($0) })
 
     func continuationKeys(of version: String?, _ count: Int) -> [String] {
@@ -325,7 +327,8 @@ import Testing
         #expect(pds.keys(in: Lexicon.chunks) == continuationKeys(of: version, 7))
         let first = try #require(
             pds.rawRecord(rkey: Lexicon.continuationKey(of: version, 1), collection: Lexicon.chunks))
-        #expect(Set(first.keys) == ["$type", "chunks", "sealed"] && (first["chunks"] as? [Any])?.count == 2)
+        #expect(Set(first.keys) == (TestMode.encrypted ? ["$type", "chunks", "sealed"] : ["$type", "chunks"]))
+        #expect((first["chunks"] as? [Any])?.count == 2)
 
         // Read back: listing the nodes, listing everything, the change feed, a saved snapshot.
         #expect(try await phone.tree().nodes[node.id]?.record == node.record)
@@ -405,7 +408,7 @@ import Testing
     @Test func chunksRecordsTooBigForOneTransactionGoFirst() async throws {
         let clock = TestClock(HistoryTests.start)
         var options = Self.tiny
-        options.transactionLimit = 2_500
+        options.transactionLimit = TestMode.encrypted ? 2_500 : 1_500  // a few chunks records to a transaction
         let drive = device("tiny transactions", options, clock: clock)
         pds.requestLimit = options.transactionLimit + 500
 

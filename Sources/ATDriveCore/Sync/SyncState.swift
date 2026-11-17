@@ -149,10 +149,13 @@ struct StateFolder {
         }
     }
 
-    /// Replaces a file atomically.
+    /// Replaces a file atomically, readable only by its owner.
     private func write(_ data: Data, to file: String) throws {
         let temporary = "\(path)/.\(URL(fileURLWithPath: file).lastPathComponent).tmp"
-        guard FileManager.default.createFile(atPath: temporary, contents: data) else {
+        guard
+            FileManager.default.createFile(
+                atPath: temporary, contents: data, attributes: [.posixPermissions: 0o600])
+        else {
             throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: temporary])
         }
         try replace(URL(fileURLWithPath: file), with: URL(fileURLWithPath: temporary))

@@ -79,6 +79,7 @@ extension Drive {
                 record.chunks = lost.chunks
                 record.contentsFrom = lost.contentsFrom
                 record.continuations = lost.continuations
+                record.continuationsFrom = lost.continuationsFrom
                 record.modifiedAt = lost.modifiedAt
                 written = try await commit(
                     [change(.update, node: race.node, record: record, .edited, prev: current?.record.version)]
@@ -420,6 +421,7 @@ struct Restoration {
                 record.chunks = target.chunks
                 record.contentsFrom = target.contentsFrom
                 record.continuations = target.continuations
+                record.continuationsFrom = target.continuationsFrom
                 record.modifiedAt = target.modifiedAt
             }
             if record != current.record || place[id]?.parent != parent {

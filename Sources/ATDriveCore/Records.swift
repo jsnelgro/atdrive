@@ -39,28 +39,39 @@ public struct BlobRef: Codable, Sendable, Hashable {
     }
 }
 
-/// One chunk of a file: the blob holding its ciphertext, and the ID that decrypts it
-/// (`DriveKey.encryptChunk`). In a stored record the two are apart: the blob refs stay readable,
-/// so the PDS keeps the blobs, and the IDs are sealed, in the same order.
+/// One chunk of a file: the blob holding it, and, if it's encrypted, the ID that decrypts it
+/// (`DriveKey.encryptChunk`) and the key that ID was made with.
+///
+/// A plain chunk is the file's bytes as they are, and its blob's CID names it. An encrypted
+/// chunk's blob is ciphertext. In a stored record the blob refs always stay readable, so the PDS
+/// keeps the blobs; the IDs sit beside them in a plain record, or sealed in a sealed one, in the
+/// same order.
 public struct ChunkRef: Codable, Sendable, Hashable {
     public var blob: BlobRef
-    public var id: ChunkID
+    /// `nil` for a plain chunk.
+    public var id: ChunkID?
+    /// Encrypted chunks: the drive key the ID was made with (the keyring's first key when it was
+    /// stored). It says whether the chunk still belongs to the drive's current keys, or is left
+    /// from before encryption was turned off and on again (`Drive.convert`).
+    public var key: KeyID?
 
-    public init(blob: BlobRef, id: ChunkID) {
+    public init(blob: BlobRef, id: ChunkID? = nil, key: KeyID? = nil) {
         self.blob = blob
         self.id = id
+        self.key = id == nil ? nil : key
     }
 
-    /// The blob's CID: of the ciphertext.
+    /// The blob's CID: of the bytes as stored (the ciphertext, if encrypted).
     public var cid: String { blob.cid }
-    /// The chunk's contents' size. The blob stored is 16 bytes longer: AES-GCM's tag.
-    public var size: Int { max(blob.size - Self.overhead, 0) }
+    /// The chunk's contents' size. An encrypted chunk's blob is 16 bytes longer: AES-GCM's tag.
+    public var size: Int { isEncrypted ? max(blob.size - Self.overhead, 0) : blob.size }
+    public var isEncrypted: Bool { id != nil }
 
     static let overhead = 16
 }
 
-/// One file or folder in a drive: the `me.jsnelgro.atdrive.node` record, as it reads once
-/// unsealed. Stored, all of it but the chunks' blob refs is sealed (`SealedRecord`).
+/// One file or folder in a drive: the `me.jsnelgro.atdrive.node` record, as it reads whether
+/// it's stored plain or sealed (`StoredRecords.swift`).
 ///
 /// Files and folders reference their parent by ID rather than storing a path, so renaming or
 /// moving anything (even a folder with thousands of files inside) is a single record update.
@@ -81,7 +92,8 @@ public struct NodeRecord: Codable, Sendable, Equatable {
     public var size: Int?
     /// Files only: hex SHA-256 of the whole file, checked after every download.
     public var sha256: String?
-    /// Files only: the content, in order. Decrypted and concatenated, they are the file.
+    /// Files only: the content, in order. Decrypted (if encrypted) and concatenated, they are
+    /// the file.
     public var chunks: [ChunkRef]?
     public var createdAt: String
     /// Files only: the file's own modification time, restored on download.
@@ -96,6 +108,9 @@ public struct NodeRecord: Codable, Sendable, Equatable {
     /// too long for a record. They're the ones of the version `contentsFrom`, and then neither
     /// that version nor this record holds the chunks itself. `nil`: the list is in the record.
     public var continuations: Int?
+    /// The number of the first of those records, when it isn't 1 (see
+    /// `VersionRecord.continuationsFrom`).
+    public var continuationsFrom: Int?
 
     public init(
         name: String, parent: String?, kind: Kind, size: Int? = nil, sha256: String? = nil,
@@ -115,16 +130,16 @@ public struct NodeRecord: Codable, Sendable, Equatable {
     public var createdDate: Date? { Timestamp.parse(createdAt) }
 }
 
-/// One change to a file or folder: the `me.jsnelgro.atdrive.version` record, as it reads once
-/// unsealed. Its record key is a TID made when the change was, so it also says when
+/// One change to a file or folder: the `me.jsnelgro.atdrive.version` record, as it reads whether
+/// it's stored plain or sealed. Its record key is a TID made when the change was, so it also says when
 /// (`TID.date`).
 ///
 /// It holds the node's state after the change (none after a delete), so the drive as it was at
 /// any time can be put together again, and `prev`, the version the change was based on. Two
 /// versions with the same `prev` are a race; `DriveHistory` finds the one that lost.
 ///
-/// Stored, all of it but the chunks' blob refs is sealed (`SealedRecord`): the server has to see
-/// blob refs to keep the blobs alive, and nothing else.
+/// Sealed, all of it but the chunks' blob refs is encrypted: the server has to see blob refs to
+/// keep the blobs alive, and nothing else.
 public struct VersionRecord: Codable, Sendable, Equatable {
     public enum Change: String, Codable, Sendable {
         case created, edited, moved, deleted, restored
@@ -156,6 +171,10 @@ public struct VersionRecord: Codable, Sendable, Equatable {
     /// long for this record (see `NodeRecord.continuations`). Their keys start with this
     /// version's (`Lexicon.continuationKey`), and they go when it does.
     public var continuations: Int?
+    /// The number of the first of those records, when it isn't 1. Rewriting a long chunk list
+    /// (`Drive.convert`) writes the new records after the old ones, then switches the version to
+    /// them in one write, so the list is whole at every moment.
+    public var continuationsFrom: Int?
 
     /// A version recording `state` (`nil` for a delete). `holdsContents` puts the chunk list in
     /// it; otherwise it points to the version that has them, `state.contentsFrom`.
@@ -178,6 +197,7 @@ public struct VersionRecord: Codable, Sendable, Equatable {
             if holdsContents || state.contentsFrom == nil {
                 chunks = state.chunks ?? []
                 continuations = state.continuations
+                continuationsFrom = state.continuationsFrom
             } else {
                 contentsFrom = state.contentsFrom
             }
@@ -194,70 +214,93 @@ public struct VersionRecord: Codable, Sendable, Equatable {
         record.createdAt = createdAt ?? record.createdAt
         record.modifiedAt = modifiedAt
         record.continuations = continuations
+        record.continuationsFrom = continuationsFrom
         return record
     }
 }
 
 /// The drive's settings, which every device follows: the `me.jsnelgro.atdrive.settings` record,
-/// key `self`, as it reads once unsealed. Written when the drive is created, and when a device
-/// is approved or removed (`roster`).
+/// key `self`. Written when the drive is created, and whenever encryption is turned on or off.
 ///
-/// It's sealed like the rest, so the PDS can't change it: with a readable retention, it could set
-/// it to a day and have every device prune the history.
+/// How it's stored says whether the drive is encrypted: sealed on an encrypted drive, plain on
+/// one that isn't (`Drive.mode`). Sealed, the PDS can't change it: with a readable retention, it
+/// could set it to a day and have every device prune the history. On a plain drive the PDS is
+/// trusted with everything anyway.
 public struct DriveSettings: Codable, Sendable, Equatable {
     public static let defaultRetentionDays = 30
 
     /// How long history is kept (versions, and the trash).
     public var retentionDays: Int
     /// Random, made when the drive is created. A drive with another ID was wiped and created
-    /// again, even if it's in the same place: what a device synced before isn't in it.
+    /// again, even if it's in the same place: what a device synced before isn't in it. Turning
+    /// encryption on or off keeps it.
     public var driveID: String?
-    /// The devices approved to hold the drive's key. Their public keys are the ones keyrings are
-    /// wrapped for, and the senders a device accepts a keyring from (see `KeyTrust`): unlike a
-    /// device record, the PDS can't change these.
-    public var roster: [RosterEntry]
+    /// Encrypted drives: records that aren't sealed with the drive's keys are still read. That's
+    /// so while what was there before encryption was turned on is being encrypted
+    /// (`Drive.convert`), and it ends when that's done: from then on, such a record is one the
+    /// PDS could have made, and is ignored.
+    public var converting: Bool
+    /// The drive's keys from when it was last encrypted, published when encryption was turned
+    /// off, so everything sealed with them stays readable. They're no secret any more. Holding
+    /// them also proves the drive's own devices turned encryption off, not the PDS
+    /// (`Drive.open`). Dropped once nothing is sealed with them.
+    public var retiredKeys: [Bytes]
+    /// Counts the changes to these settings. On an encrypted drive, a device refuses settings
+    /// older than ones it has read (`DeviceTrust.settingsGeneration`): the PDS can't forge sealed
+    /// settings, but it could serve an old copy, say one from while `converting` was on.
+    public var generation: Int
 
     public init(
         retentionDays: Int = defaultRetentionDays, driveID: String? = DriveSettings.newDriveID(),
-        roster: [RosterEntry] = []
+        converting: Bool = false, retiredKeys: [Bytes] = [], generation: Int = 0
     ) {
         self.retentionDays = retentionDays
         self.driveID = driveID
-        self.roster = roster
+        self.generation = generation
+        self.converting = converting
+        self.retiredKeys = retiredKeys
     }
 
     public var retention: TimeInterval { Double(max(retentionDays, 1)) * 24 * 60 * 60 }
 
     /// 128 random bits, as hex.
     public static func newDriveID() -> String {
-        (0..<16).map { _ in UInt8.random(in: 0...255) }.hexString
+        var generator = SystemRandomNumberGenerator()
+        return (0..<16).map { _ in UInt8.random(in: 0...255, using: &generator) }.hexString
+    }
+
+    /// The retired keys as a keyring, oldest first; `nil` if there are none, or they aren't keys.
+    public var retiredKeyring: Keyring? {
+        guard !retiredKeys.isEmpty else { return nil }
+        return try? Keyring(retiredKeys.map { try DriveKey(rawRepresentation: $0.data) })
     }
 
     private enum CodingKeys: String, CodingKey {
-        case retentionDays, driveID, roster
+        case retentionDays, driveID, converting, retiredKeys, generation
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         retentionDays = try container.decodeIfPresent(Int.self, forKey: .retentionDays) ?? Self.defaultRetentionDays
         driveID = try container.decodeIfPresent(String.self, forKey: .driveID)
-        roster = try container.decodeIfPresent([RosterEntry].self, forKey: .roster) ?? []
+        converting = try container.decodeIfPresent(Bool.self, forKey: .converting) ?? false
+        retiredKeys = try container.decodeIfPresent([Bytes].self, forKey: .retiredKeys) ?? []
+        generation = try container.decodeIfPresent(Int.self, forKey: .generation) ?? 0
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(retentionDays, forKey: .retentionDays)
         try container.encodeIfPresent(driveID, forKey: .driveID)
-        try container.encode(roster, forKey: .roster)
-    }
-
-    /// The roster entry for a public key.
-    public func member(_ publicKey: Data) -> RosterEntry? {
-        roster.first { $0.publicKey.data == publicKey }
+        if converting { try container.encode(converting, forKey: .converting) }
+        if !retiredKeys.isEmpty { try container.encode(retiredKeys, forKey: .retiredKeys) }
+        try container.encode(generation, forKey: .generation)
     }
 }
 
-/// A device approved to hold the drive's key, as the drive's sealed settings list it.
+/// A device approved to hold the drive's keys: what its device record's `member` seals, with
+/// the drive's current key, so only a device that holds the keys can add one, and the PDS can't
+/// change it or bring back an old one (`Drive.roster`).
 public struct RosterEntry: Codable, Sendable, Equatable {
     /// The device's ID: the key of its device record.
     public var id: String
@@ -275,10 +318,15 @@ public struct RosterEntry: Codable, Sendable, Equatable {
 /// A device that holds the drive's key, or asks for it: the `me.jsnelgro.atdrive.device`
 /// record, keyed by the device's ID.
 ///
-/// It isn't sealed. A device asks for the key before it has one, and the others read its public
-/// key to wrap the keyring for it. What it holds is public, or wrapped already. The PDS can
-/// change it, so nothing here is trusted on its own: keyrings are wrapped for the public keys
-/// in the sealed roster, and a pairing code is compared before a new one is added.
+/// It isn't sealed as a whole. A device asks for the key before it has one, and the others read
+/// its public key to wrap the keyring for it. What it holds is public, or wrapped already. The
+/// PDS can change it, so nothing here is trusted on its own, but for `member`: keyrings are
+/// wrapped only for devices whose `member` opens, and a pairing code is compared before one is
+/// added.
+///
+/// One record per device, each written only when that device is approved, or when the keys
+/// change (which rewrites them all), so two devices approving different devices at the same
+/// moment don't overwrite each other.
 public struct DeviceRecord: Codable, Sendable, Equatable {
     public var name: String
     /// The device's raw Curve25519 public key.
@@ -287,22 +335,26 @@ public struct DeviceRecord: Codable, Sendable, Equatable {
     public var keyring: WrappedKeyring?
     /// The device that approved this one (wrapped its first keyring), if it wasn't itself.
     public var approvedBy: String?
+    /// That this device is approved: its `RosterEntry`, sealed with the drive's current key for
+    /// this record. `nil` while it waits.
+    public var member: SealedValue?
     public var createdAt: String
 
     public init(
         name: String, publicKey: Bytes, keyring: WrappedKeyring? = nil, approvedBy: String? = nil,
-        createdAt: Date = Date()
+        member: SealedValue? = nil, createdAt: Date = Date()
     ) {
         self.name = name
         self.publicKey = publicKey
         self.keyring = keyring
         self.approvedBy = approvedBy
+        self.member = member
         self.createdAt = Timestamp.format(createdAt)
     }
 
     private enum CodingKeys: String, CodingKey {
         case type = "$type"
-        case name, publicKey, keyring, approvedBy, createdAt
+        case name, publicKey, keyring, approvedBy, member, createdAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -311,6 +363,7 @@ public struct DeviceRecord: Codable, Sendable, Equatable {
         publicKey = try container.decode(Bytes.self, forKey: .publicKey)
         keyring = try container.decodeIfPresent(WrappedKeyring.self, forKey: .keyring)
         approvedBy = try container.decodeIfPresent(String.self, forKey: .approvedBy)
+        member = try container.decodeIfPresent(SealedValue.self, forKey: .member)
         createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
     }
 
@@ -321,6 +374,7 @@ public struct DeviceRecord: Codable, Sendable, Equatable {
         try container.encode(publicKey, forKey: .publicKey)
         try container.encodeIfPresent(keyring, forKey: .keyring)
         try container.encodeIfPresent(approvedBy, forKey: .approvedBy)
+        try container.encodeIfPresent(member, forKey: .member)
         try container.encode(createdAt, forKey: .createdAt)
     }
 }

@@ -6,8 +6,9 @@ import Testing
 
 /// Known answers, so the formats can't drift without a test failing: what's stored has to stay
 /// readable. Expected values were computed independently with Python's `cryptography` (HKDF,
-/// HMAC, AES-GCM, X25519), and HPKE's auth mode with a separate implementation of RFC 9180 checked
-/// against that library's base mode.
+/// HMAC, AES-GCM, X25519), and HPKE's auth mode with a separate implementation of RFC 9180 on
+/// top of it: `Tests/vectors/crypto_vectors.py` prints the sealing, recovery-wrap and
+/// device-wrap values below.
 @Suite struct CryptoVectorTests {
     private struct Sample: Codable, Equatable {
         var name: String
@@ -33,11 +34,13 @@ import Testing
         #expect(
             String(decoding: try Sealing.encoder.encode(value), as: UTF8.self) == #"{"name":"notes.txt","size":42}"#)
         let sealed = try key.seal(
-            value, collection: "me.jsnelgro.atdrive.node", rkey: "3jzfcijpj2z2a",
+            value, space: FakePDS.space, collection: "me.jsnelgro.atdrive.node", rkey: "3jzfcijpj2z2a",
             nonce: AES.GCM.Nonce(data: Self.bytes(0xa0..<0xac)))
-        let expected = "oKGio6SlpqeoqaqrVgWNW76n6K8RN+nPsSg4pGsH2DBDWLKZ7L+FeP09p2BgvDq2M4meMSY36yXqoA"
+        let expected = "oKGio6SlpqeoqaqrVgWNW76n6K8RN+nPsSg4pGsH2DBDWLKZ7L+FeP09QlHbM0HIq5FNCcKawSR3tA"
         #expect(sealed == SealedValue(keyID: KeyID(rawValue: "19a109e328d0060e"), sealed: Bytes(Self.base64(expected))))
-        #expect(try key.open(sealed, collection: "me.jsnelgro.atdrive.node", rkey: "3jzfcijpj2z2a") == value)
+        #expect(
+            try key.open(sealed, space: FakePDS.space, collection: "me.jsnelgro.atdrive.node", rkey: "3jzfcijpj2z2a")
+                == value)
     }
 
     @Test func chunks() throws {
@@ -55,11 +58,12 @@ import Testing
 
     @Test func recoveryWrap() throws {
         let keyring = try Keyring([key, secondKey])
-        let wrapped = try keyring.wrapped(for: recoveryKey, nonce: AES.GCM.Nonce(data: Self.bytes(0xb0..<0xbc)))
+        let wrapped = try keyring.wrapped(
+            for: recoveryKey, space: FakePDS.space, nonce: AES.GCM.Nonce(data: Self.bytes(0xb0..<0xbc)))
         let expected =
-            "sLGys7S1tre4ubq7surOhXaASA0i+YRvE67fiKhkH9pNLk6FBBqqAy2JiCj/ZztusZ6BYJNd3mjWi4XFU6zpiVhHwxbpGkT7kgt9mmiaTWZbe05MmSy+Y5af0DQ"
+            "sLGys7S1tre4ubq7surOhXaASA0i+YRvE67fiKhkH9pNLk6FBBqqAy2JiCj/ZztusZ6BYJNd3mjWi4XFU6zpiVhHwxbpGkT7kgt9mgG5IKc7+ksEyvXbA3ax8JQ"
         #expect(wrapped.sealed.data == Self.base64(expected))
-        #expect(try Keyring(unwrapping: wrapped, with: recoveryKey) == keyring)
+        #expect(try Keyring(unwrapping: wrapped, with: recoveryKey, space: FakePDS.space) == keyring)
     }
 
     @Test func deviceWrap() throws {
@@ -69,11 +73,11 @@ import Testing
             encapsulatedKey: Bytes(Self.base64("YFpyXSpK3+6xop4X7dYhwbdZPujNvESsbEq24vgF0jw")),
             ciphertext: Bytes(
                 Self.base64(
-                    "8CFL2gMlvLtMU3bDBS7JeIrRGS7W53D+virKRS4oGAhG2h9hYsvbGsclyyT956ORl32n+y5gvrW36XlCFcGVR9YwiB9AdlfCdapTf1H9Y38"
+                    "KdhVAuSyJd0aAfypXbVjXspmYm2AW2+YgUofLFT+QrP+YpnHQKyGKsca0Cjy0hAsYoUElsG5TInIqQs86SOG/D84Mm06q2jxulAJGq3f10I"
                 )))
         let sender = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: Self.bytes(128..<160))
         #expect(wrapped.sender.data == sender.publicKey.rawRepresentation)
-        let keyring = try Keyring(unwrapping: wrapped, with: device)
+        let keyring = try Keyring(unwrapping: wrapped, with: device, space: FakePDS.space)
         #expect(keyring.keys == [key, secondKey])
         #expect(keyring.current == secondKey)
     }

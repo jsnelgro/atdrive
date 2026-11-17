@@ -20,7 +20,7 @@ import Testing
         let record = NodeRecord(
             name: name, parent: parent, kind: folder ? .folder : .file, size: folder ? nil : 1,
             sha256: folder ? nil : sha, chunks: folder ? nil : [])
-        if !pds.spaceExists { _ = try await drive.create() }
+        if !pds.spaceExists { _ = try await drive.create(encrypted: TestMode.encrypted) }
         return try await drive.client.putSpaceRecord(
             space: drive.space, repo: drive.owner, collection: Lexicon.node, rkey: id,
             record: try drive.stored(record, id: id))
@@ -289,7 +289,9 @@ import Testing
         pds.insertRawRecord(rkey: "3aaaaaaaaaaa5", collection: "me.jsnelgro.atdrive.version", ["n": 1])
         let calls = pds.calls.count
         snapshot = try await drive.update(snapshot)
-        #expect(listings(since: calls) == 0)
+        // No listing of the drive. The settings record changed, so the drive is opened again:
+        // that reads the settings and the device records, and nothing else.
+        #expect(listings(since: calls) == 2 && fullListings(since: calls) == 0)
         let latest = try await latestCommit()
         #expect(snapshot.repo.check(latest) && snapshot.verified)
         #expect(!snapshot.repo.check(listed))
@@ -395,8 +397,7 @@ import Testing
     @Test func unreadableRecordsAreKeptNotDropped() async throws {
         try await put("3aaaaaaaaaaa2", "folder", folder: true)
         var snapshot = try await drive.update(nil)
-        pds.insertRawRecord(
-            rkey: "3aaaaaaaaaaa3", ["$type": Lexicon.node, "name": "x", "kind": "package", "createdAt": "2026"])
+        try pds.insert(rkey: "3aaaaaaaaaaa3", ["name": "x", "kind": "package", "createdAt": "2026"], as: drive)
         try await put("3aaaaaaaaaaa4", "inside.txt", in: "3aaaaaaaaaaa3")
         snapshot = try await drive.update(snapshot)
 

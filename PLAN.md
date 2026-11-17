@@ -55,9 +55,8 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
   - **Later:** a FUSE mount, for drives too big to keep a full copy of (files fetched on demand).
 - [ ] **Phase 4, iOS:** the same extension code with an iOS host app.
 - [x] **Storage v2** (see *Storage v2* below): incremental sync; 30 days of history (edits,
-  renames, moves, deletes) that also stops races from losing edits; an encrypted drive; and
-  transferring only changed chunks. Built encrypted-only; making encryption optional is the next
-  step.
+  renames, moves, deletes) that also stops races from losing edits; optional encryption (off by
+  default, switchable at any time); and transferring only changed chunks.
   - **Tested** with unit tests against `FakePDS` on Linux, also with a 512 KiB stack (what Apple
     platforms give threads other than the main one). macOS CI builds the app.
   - **Not yet exercised:** any of it against the live alpha PDS, and the Mac app's new screens on a
@@ -74,10 +73,10 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
       - `item(for:)` answers `noSuchItem` for records it can't read.
       - Deleting a folder in Finder ignores unreadable items inside it.
       - Log when the drive doesn't match its commit.
-    - **Encryption:** see *Step 3, open problems*. The roster can lose a concurrent change, a
+    - **Mac:** turning encryption on and off from the app (the CLI does it today), and a way
+      out of "the drive's settings can't be believed" other than the CLI.
+    - **Encryption:** see *Step 3, open problems*, and `docs/SECURITY.md` for the review. A
       removed device keeps its session, and `.atdrive/drive.json` holds decrypted metadata.
-- [ ] **Optional encryption** (see *Storage v2 → Optional encryption*): encrypted or not, chosen
-  per drive. Tracked in #29.
 - [ ] **Phase 5, sharing** (see *Sharing* below): share a file or folder with specific people, or
   with anyone who has its link, read-only, from Finder and the CLI, on encrypted and unencrypted
   drives alike. Tracked in #26.
@@ -151,8 +150,9 @@ Goals:
 - Fetch only what changed, and upload only what changed.
 - Keep 30 days of history: edits, renames, moves and deletes. The trash is part of it.
 - Never lose an edit to two devices writing at once.
-- Keep file contents and names unreadable to whoever runs the PDS, for drives that want it.
-  Encryption is a choice made per drive (see *Optional encryption*).
+- Let people keep file contents and names unreadable to whoever runs the PDS, if they want that
+  and are willing to look after keys. Encryption is optional, off by default, and can be turned
+  on or off at any time (see *Encryption is optional*).
 
 There are no users yet, so none of this is backward compatible. The format changes in place, and
 existing test drives are wiped, not migrated. Built in four steps, in this order. Steps 2 and 3
@@ -300,14 +300,15 @@ Thirty days of every change: edits, renames, moves and deletes.
 
 ### Step 3: encryption
 
-Built encrypted-only; see *Optional encryption* for drives without it. Spaces' access control
-still applies; encryption protects against the
-PDS operator.
+How an encrypted drive works. Whether a drive is one is the next section, *Encryption is
+optional*. Spaces' access control applies either way; encryption protects against the PDS
+operator.
 
 - **Records** (`node`, `version`, and `chunks` from step 4):
   - Only what the PDS needs stays readable: `chunks` (so blobs are kept) and a key ID.
   - Everything else, `parent` included, is `sealed`: AES-GCM under a key derived from the drive
-    key. The collection and rkey are associated data, so the PDS can't swap records between files.
+    key. The space, collection and rkey are associated data, so the PDS can't swap records
+    between files, or between drives.
   - There's no plaintext `sha256`: it would let the server confirm you hold a known file.
 - **Chunks: keyed convergent encryption,** as in Tahoe-LAFS and borg:
   - A chunk's ID is HMAC(drive key, plaintext), and its key is derived from that ID. Each key
@@ -335,7 +336,9 @@ PDS operator.
   - **One record per device** (`me.jsnelgro.atdrive.device`) holds the keyring wrapped for that
     device's public key. One more (rkey `recovery`) wraps it for the recovery key. They're separate
     records because two devices editing one shared keyring record would overwrite each other.
-  - **Wrapping uses HPKE in auth mode,** so a device can tell which device wrapped its keyring.
+  - **Wrapping uses HPKE in auth mode** (X25519, HKDF-SHA256, AES-256-GCM: all in WebCrypto, so
+    a browser can be a device), bound to the space, so a device can tell which device wrapped its
+    keyring.
     Anyone can wrap a keyring for a public key, the PDS included. A device accepts one only from
     itself or from a device it has confirmed, so the PDS can't get it to seal new records under a
     key the PDS knows.
@@ -368,9 +371,17 @@ PDS operator.
 - **As built:**
   - **Only `create()` makes a drive,** from `atdrive login` or the Mac app's first sign-in. Writes
     never do, and `atdrive sync` and `put` on an account with no drive say to run `atdrive login`.
-  - **The roster** (the approved devices' public keys) is sealed in the settings record. When keys
-    rotate, the keyring is wrapped only for keys in the roster, never for keys read from device
-    records, which the PDS can change.
+  - **The roster** (the approved devices) is one sealed membership per device, in its own device
+    record (`member`: its ID, name and public key, sealed with the drive's *current* key for that
+    record). When keys rotate, the keyring is wrapped only for devices whose membership opens,
+    never for keys merely read from device records, which the PDS can change.
+    - It was first built as a list in the settings record, where two approvals at once could
+      overwrite each other (#13). One record per device fixes that: an approval writes only the
+      new device's record.
+    - Removing a device rotates the key and seals every remaining membership again, so the PDS
+      can't bring a removed device back by restoring its old record.
+    - A device approved at the very moment another is removed is left with the old keys, and has
+      to be approved again. That fails safe.
   - **A device takes a keyring only if** it holds every key the device accepted before (devices
     keep fingerprints of past keys, so made-up or replayed keyrings are refused), and it was
     wrapped by the device itself, by its confirmed approver (its first keyring only), or by a
@@ -386,11 +397,80 @@ PDS operator.
   - **Approving and removing devices** is CLI-only for now. The Mac app can create a drive, show
     the recovery key, unlock with it, and be approved.
   - **Open problems:**
-    - The roster is one record, so two approvals or removals at once can overwrite each other.
     - A removed device keeps an account session, and records it writes with old keys are still
       read.
     - `.atdrive/drive.json` holds decrypted metadata next to the synced files.
 
+
+### Encryption is optional
+
+Decided after step 3 was built encrypted-only: encryption is off by default, for people who'd
+rather trust whoever runs their PDS than risk losing keys, and can be turned on or off at any
+time. The format is specified in `docs/FORMAT.md`.
+
+- **Each record is plain or sealed, and says which** (a sealed one has a `sealed` field). Every
+  client reads both. So a drive can be a mix while it's converted, a conversion can stop and
+  resume, and nothing depends on one big atomic switch, which spaces couldn't give us anyway.
+- **The drive's mode is how its settings record is stored:** plain, or sealed. A device reads it
+  when it opens the drive (`Drive.open`) and again whenever that record changes, and writes in
+  that form. A drive can't be written to before it's opened.
+- **A plain drive** stores records' fields and files' bytes as they are. Chunks are named by
+  their blob CIDs, and the chunker's seed is fixed. It has no keys, devices or recovery key, and
+  a device needs no identity. History, the trash, the change feed, the LtHash check, FastCDC and
+  skipping chunks already uploaded all work the same: `scripts/test.sh` runs the drive-logic
+  suites on both.
+- **Turning it off is one write.** The settings become plain and publish the drive's keys
+  (`retiredKeys`); the device records go.
+  - Everything sealed stays readable with the published keys, to every device and to the PDS,
+    so nothing has to be rewritten and no device can be left holding records nobody can read.
+  - The published keys are also the proof. A device that held the keys believes the drive
+    stopped being encrypted only if the settings publish them: its own devices can, the PDS
+    can't. Otherwise it refuses to write (`encryptionRemoved`), so the PDS can't get a device to
+    start writing in the clear by swapping the settings record.
+  - `convert` then rewrites records as plain ones, for clients that can't decrypt. Optional.
+- **Turning it on is the expensive direction.** New keys, a recovery key, and the settings
+  sealed with `converting` set, in one write. Then `convert` rewrites every record and stores
+  every file again, encrypted, history included (versions keep their IDs), and clears
+  `converting`.
+  - The CLI says how much there is and asks first. It can be interrupted and resumed, on any
+    device with the keys.
+  - While `converting`, devices still read plain records. Once it's cleared they don't: on an
+    encrypted drive, a record that isn't sealed with its keys could be the PDS's.
+  - A device that hadn't noticed the switch may write plain records after that. They're held as
+    unreadable, never taken for deletions, and `atdrive encryption on` offers to adopt them.
+  - Settings carry a `generation`, and a device refuses sealed settings older than ones it has
+    read, so the PDS can't replay the `converting` settings to get its own records read.
+  - Other devices must be approved again: the keys are new.
+- **Chunks say which key named them** (`chunkKey`), so a conversion can tell a chunk encrypted
+  under the current keyring from one left over from before, whatever record now points at it.
+- **Long chunk lists** are rewritten into new `chunks` records numbered after the old ones
+  (`continuationsFrom`), and the version and node switch to them in one write.
+- **A race during conversion** (another device edits a file as its record is rewritten) shows
+  up as a lost change and is settled like any other. Nothing is lost.
+
+### What this means for sharing and the web
+
+Checked against the sharing plan (#26, #27) and the web milestone while reworking the format:
+
+- **One `Drive` is one space,** with its own mode, keyring, history and change feed. A drive
+  made of several spaces (mounts, #19) is several of them; nothing in the core assumes the
+  space is the account's own, or its only one.
+- **Sealing and key wrapping are bound to the space,** so a record or a wrapped keyring can't be
+  replayed from the home drive into a shared space or back, even if they ever share a key.
+- **Device trust is kept per space,** not one per device.
+- **Each space has its own mode,** so an encrypted drive can hold a plain share. Not the other
+  way round: a plain drive's mount would hold the share's keyring readable (see *Sharing →
+  Encrypted and plain shares*).
+- **Memberships are one sealed record each.** Member records for shares (#22) should take the
+  same shape: one record per member, sealed with the share's current key, re-sealed on rotation.
+- **Turning a share's encryption off** publishes that share's keys, not the drive's.
+- **Turning the home drive's encryption off** publishes the home keys, and with them what's
+  sealed in the home drive: the keyrings of encrypted shares (in mounts) and the account's
+  sharing key. *Sharing → Encrypted and plain shares* says what happens to each first.
+- **A web client** needs no cryptography for a plain drive, which is the default, and only
+  WebCrypto for an encrypted one. See `docs/FORMAT.md`, *A web client*.
+- **Not done here:** node IDs as (space, rkey), mounts, credentials for other accounts' spaces.
+  Those are #18 and #19.
 
 ### Step 4: transfer only changed chunks
 
@@ -414,33 +494,11 @@ PDS operator.
   1 MiB average, with chunk IDs). Past that, the chunk list continues in
   `me.jsnelgro.atdrive.chunks` records, written in the same `applyWrites`.
 
-### Optional encryption
-
-Decided after step 3 was built: encryption is a choice made per drive, for people who'd rather
-not look after keys and risk losing them. Tracked in #29.
-
-- **Each space records its mode,** `encrypted` or `plain`, in its `settings` record. It's set when
-  the space is created and never changes in place.
-- **`atdrive login` asks** when it creates a drive, and says what each choice means:
-  - Encrypted: keep the recovery key safe; lose it and every device, and the drive is lost.
-  - Plain: whoever runs the PDS can read the files.
-  - The Mac's first-run window asks the same.
-- **A plain drive skips sealing.** Records are stored readable, with a plain `sha256`, and chunks
-  are uploaded unencrypted. A chunk's ID is its SHA-256, and the chunker uses a fixed seed.
-- **Everything else is the same:** history, the trash, the change feed, the LtHash check, FastCDC,
-  and skipping chunks already uploaded.
-- **A plain drive has no keys:** no devices, approvals or recovery key. `devices`, `unlock` and
-  `recovery-key` say the drive isn't encrypted.
-- **One code path.** Sealing takes the mode, and for a plain drive it passes records through
-  unchanged. The drive-logic tests run in both modes.
-- **Switching modes isn't supported:** make a new drive and copy. If it's added later, switching
-  re-uploads every chunk. Going to encrypted also leaves old versions readable on the PDS until
-  they're pruned or purged.
-
 ### Lexicons
 
 Add `version`, `settings`, `device` and `chunks` to `lexicons/`, to `drive.json`'s
-`collections`, and to the narrow OAuth scope.
+`collections`, and to the narrow OAuth scope. The schemas describe the plain form; a sealed
+record has only `chunks` and `sealed`.
 
 ### CLI
 
@@ -456,7 +514,8 @@ Add `version`, `settings`, `device` and `chunks` to `lexicons/`, to `drive.json`
 | `trash empty` | Purge everything in the trash |
 | `du` | Space used by current files and by history, and what they share |
 | `prune` | Apply the retention now |
-| `devices` | The devices that hold the drive key |
+| `encryption` / `encryption on` / `encryption off` | Whether the drive is encrypted; turn it on (and convert what's there) or off |
+| `devices` | The devices that hold an encrypted drive's key |
 | `devices approve <code>` / `devices remove <name>` | Add or remove one |
 | `unlock` / `recovery-key` | Set up this device with the recovery key / make a new recovery key |
 
@@ -536,8 +595,8 @@ Checked against the reference branch at `83d473d` (2026-11-13):
   uploads nothing. Still to be checked on the live PDS (#17).
 - **Each writer has their own repo in a space,** on their own PDS, and can't change anyone else's
   records. That matters only once others can edit.
-- **Sealing binds a record to its collection and rkey, not its space.** Records moved to an
-  encrypted space are sealed again under its keyring anyway.
+- **Sealing binds a record to its space, collection and rkey.** Records moved to an encrypted
+  space are sealed again under its keyring, for that space.
 
 ### Shared folders are drives
 
@@ -573,7 +632,18 @@ Checked against the reference branch at `83d473d` (2026-11-13):
 - **A share takes its drive's mode** by default.
 - **From an encrypted drive, `--plain`** makes a plain share: its files are decrypted and uploaded
   again, readable by the PDS. It's an explicit choice, with a warning.
-- **A plain drive makes plain shares only:** its owner has no keys to protect an encrypted one.
+- **A plain drive makes plain shares only:** its owner has no keys to protect an encrypted one
+  (the mount that would hold the share's keyring is readable).
+- **A share keeps its mode when the drive's changes,** and has to be dealt with first:
+  - **Turning the drive's encryption off** publishes the drive's keys, and with them the keyrings
+    of encrypted shares in its mounts, and the sharing key. So it lists those shares and asks:
+    make each plain too (the same switch, on that space), or stop sharing it. For shares other
+    people own, the mount is removed, and can be opened again afterwards as a plain drive does.
+  - **Turning it on** leaves plain shares plain. Each can be switched by its owner like a
+    drive (`atdrive encryption on <path>`), which converts it and re-wraps for its members.
+- **A share's mode is switched like a drive's:** its settings record says which it is, and
+  `convert` rewrites what's there. Members follow as devices do: they believe a share stopped
+  being encrypted only if its settings publish the keys they held.
 - **Anyone can open either kind,** whatever their own drive's mode. When an encrypted share goes to
   someone with a plain drive, their sharing key (below) is stored readable on their PDS, so
   whoever runs that PDS could read the share. ATDrive warns the owner when adding them, and marks
@@ -612,6 +682,9 @@ Checked against the reference branch at `83d473d` (2026-11-13):
   - **The private key** is kept with the home drive's keyring on an encrypted drive. On a plain
     drive it's kept in the drive's `settings`, readable: that's the case the owner is warned
     about.
+  - **When the drive's encryption is turned on or off,** the account gets a new sharing key (the
+    old one was, or becomes, readable), published with its new `protected` value. Owners of
+    shares it's a member of wrap their keyrings for it again, as after a device removal.
   - **The public key** is published in the account's public repo (`me.jsnelgro.atdrive.shareKey`,
     rkey `self`), with whether the private key is kept encrypted. Anyone can find it from a
     handle.
@@ -620,7 +693,8 @@ Checked against the reference branch at `83d473d` (2026-11-13):
 - **Member records** (`me.jsnelgro.atdrive.member`, rkey = the member's DID) are in the shared
   space. Each holds the space's keyring, wrapped for that member's sharing key with HPKE in auth
   mode from the owner's sharing key. The member accepts it only if the sender is the key the owner
-  published.
+  published. Like device records, each also seals its membership with the share's current key,
+  so the PDS can't restore a removed member's record.
 - **The link record** (rkey `link`) holds the keyring sealed with a random 256-bit link key. The
   link carries that key after the `#`, and ATDrive never sends it to any server.
 - **Removing a member, or turning the link off,** adds a new key for what's written afterwards. As
@@ -706,15 +780,14 @@ Checked against the reference branch at `83d473d` (2026-11-13):
 
 ### Order
 
-Storage v2 (#7) merges first, then optional encryption (#29), then sharing. Each step has an
-issue; #26 tracks them all.
+Storage v2 (#7) merges first: it includes optional encryption (#29 was folded into it). Then
+sharing. Each step has an issue; #26 tracks them all.
 
 | Step | Issue | Waits for |
 |---|---|---|
-| Optional encryption: encrypted or plain, per drive | #29 | #7 |
 | Check the protocol on the live alpha PDS | #17 | — |
 | Spaces client: members, and reading other accounts' spaces | #18 | #7, #17 (scope string, signature details) |
-| Mounts: a drive made of several spaces | #19 | #29 |
+| Mounts: a drive made of several spaces | #19 | #7 |
 | `atdrive share`: move a file or folder into its own space | #20 | #17, #18, #19 |
 | Links (`atdrive://`), and opening them | #21 | #20 |
 | Share with specific people | #22 | #21 |
@@ -723,7 +796,7 @@ issue; #26 tracks them all.
 | Shared folders others can edit (later) | #25 | #22 |
 | `x-callback-url` actions (later) | #31 | #23 |
 
-#17 can start now. Once #7 is in, #29 and #18 can go in parallel.
+#17 can start now. Once #7 is in, #18 and #19 can go in parallel.
 
 ## Protocol notes (alpha, as of 2026-11-05)
 

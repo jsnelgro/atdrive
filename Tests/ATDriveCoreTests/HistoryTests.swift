@@ -38,7 +38,7 @@ final class TestClock: @unchecked Sendable {
             pds.device(name, tids: TIDSource(clockID: clockID) { clock.now }, keyring: keyring)
         }
         laptop = device("laptop", 1)
-        _ = try await laptop.create()
+        _ = try await laptop.create(encrypted: TestMode.encrypted)
         phone = device("phone", 2, keyring: laptop.keyring)
         directory = try temporaryDirectory()
     }

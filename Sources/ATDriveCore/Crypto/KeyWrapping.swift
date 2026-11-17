@@ -5,7 +5,7 @@ import Foundation
 ///
 /// Each device has a Curve25519 key pair, made on the device and stored with its session (the raw
 /// representations are what's stored). Wrapping is HPKE (RFC 9180) with X25519, HKDF-SHA256 and
-/// ChaCha20-Poly1305, in auth mode: only the device can unwrap it, and unwrapping proves it was
+/// AES-256-GCM (every primitive is in WebCrypto, so a browser can be a device), in auth mode: only the device can unwrap it, and unwrapping proves it was
 /// wrapped by whoever holds the private key for `sender`.
 ///
 /// That proof is the point. Anyone, the PDS included, can wrap a keyring of their own for a
@@ -46,12 +46,14 @@ public struct RecoveryWrappedKeyring: Codable, Sendable, Equatable {
 }
 
 extension Keyring {
-    /// Wraps every key for `device`, authenticated as `sender` (this device's private key).
+    /// Wraps every key for `device`, authenticated as `sender` (this device's private key), as
+    /// the keyring of `space`: it won't unwrap as any other space's.
     public func wrapped(
-        for device: Curve25519.KeyAgreement.PublicKey, from sender: Curve25519.KeyAgreement.PrivateKey
+        for device: Curve25519.KeyAgreement.PublicKey, from sender: Curve25519.KeyAgreement.PrivateKey,
+        space: String
     ) throws -> WrappedKeyring {
         var hpke = try HPKE.Sender(
-            recipientKey: device, ciphersuite: KeyWrapping.ciphersuite, info: KeyWrapping.info,
+            recipientKey: device, ciphersuite: KeyWrapping.ciphersuite, info: KeyWrapping.info(space: space),
             authenticatedBy: sender)
         let ciphertext = try hpke.seal(rawRepresentation)
         return WrappedKeyring(
@@ -59,14 +61,17 @@ extension Keyring {
             ciphertext: Bytes(ciphertext))
     }
 
-    /// Unwraps a keyring wrapped for this device. Throws `DriveCryptoError.authenticationFailed`
-    /// if it's for another device, was changed, or wasn't wrapped by `wrapped.sender`. Whether to
-    /// trust that sender is the caller's decision (see `WrappedKeyring`).
-    public init(unwrapping wrapped: WrappedKeyring, with device: Curve25519.KeyAgreement.PrivateKey) throws {
+    /// Unwraps a keyring wrapped for this device, as `space`'s. Throws
+    /// `DriveCryptoError.authenticationFailed` if it's for another device or space, was changed,
+    /// or wasn't wrapped by `wrapped.sender`. Whether to trust that sender is the caller's
+    /// decision (see `WrappedKeyring`).
+    public init(
+        unwrapping wrapped: WrappedKeyring, with device: Curve25519.KeyAgreement.PrivateKey, space: String
+    ) throws {
         let plaintext: Data
         do {
             var hpke = try HPKE.Recipient(
-                privateKey: device, ciphersuite: KeyWrapping.ciphersuite, info: KeyWrapping.info,
+                privateKey: device, ciphersuite: KeyWrapping.ciphersuite, info: KeyWrapping.info(space: space),
                 encapsulatedKey: wrapped.encapsulatedKey.data, authenticatedBy: try wrapped.senderKey)
             plaintext = try hpke.open(wrapped.ciphertext.data)
         } catch {
@@ -75,25 +80,29 @@ extension Keyring {
         try self.init(rawRepresentation: plaintext)
     }
 
-    /// Wraps every key with the recovery key.
-    public func wrapped(for recoveryKey: RecoveryKey) throws -> RecoveryWrappedKeyring {
-        try wrapped(for: recoveryKey, nonce: AES.GCM.Nonce())
+    /// Wraps every key with the recovery key, as the keyring of `space`.
+    public func wrapped(for recoveryKey: RecoveryKey, space: String) throws -> RecoveryWrappedKeyring {
+        try wrapped(for: recoveryKey, space: space, nonce: AES.GCM.Nonce())
     }
 
     /// With a chosen nonce, for known-answer tests only.
-    func wrapped(for recoveryKey: RecoveryKey, nonce: AES.GCM.Nonce) throws -> RecoveryWrappedKeyring {
+    func wrapped(for recoveryKey: RecoveryKey, space: String, nonce: AES.GCM.Nonce) throws
+        -> RecoveryWrappedKeyring
+    {
         let box = try AES.GCM.seal(
-            rawRepresentation, using: recoveryKey.wrappingKey, nonce: nonce, authenticating: KeyWrapping.info)
+            rawRepresentation, using: recoveryKey.wrappingKey, nonce: nonce,
+            authenticating: KeyWrapping.info(space: space))
         return RecoveryWrappedKeyring(sealed: Bytes(box.combined!))  // non-nil: the nonce is 12 bytes
     }
 
     /// Unwraps with the recovery key. Throws `DriveCryptoError.authenticationFailed` if it's the
-    /// wrong recovery key, or the record was changed.
-    public init(unwrapping wrapped: RecoveryWrappedKeyring, with recoveryKey: RecoveryKey) throws {
+    /// wrong recovery key, the record was changed, or it's another space's.
+    public init(unwrapping wrapped: RecoveryWrappedKeyring, with recoveryKey: RecoveryKey, space: String) throws {
         let plaintext: Data
         do {
             let box = try AES.GCM.SealedBox(combined: wrapped.sealed.data)
-            plaintext = try AES.GCM.open(box, using: recoveryKey.wrappingKey, authenticating: KeyWrapping.info)
+            plaintext = try AES.GCM.open(
+                box, using: recoveryKey.wrappingKey, authenticating: KeyWrapping.info(space: space))
         } catch {
             throw DriveCryptoError.authenticationFailed
         }
@@ -118,7 +127,19 @@ extension Keyring {
 }
 
 enum KeyWrapping {
-    static var ciphersuite: HPKE.Ciphersuite { .Curve25519_SHA256_ChachaPoly }
-    /// HPKE's `info`, and the recovery wrap's associated data: what's wrapped, and in which format.
-    static let info = Data("atdrive keyring v1".utf8)
+    /// DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, AES-256-GCM. Not ChaCha20-Poly1305: WebCrypto has
+    /// no ChaCha, and a browser should be able to be a device with nothing but WebCrypto.
+    static var ciphersuite: HPKE.Ciphersuite {
+        HPKE.Ciphersuite(kem: .Curve25519_HKDF_SHA256, kdf: .HKDF_SHA256, aead: .AES_GCM_256)
+    }
+
+    /// HPKE's `info`, and the recovery wrap's associated data: what's wrapped, in which format,
+    /// and for which space (its URI), each ended by a zero byte.
+    static func info(space: String) -> Data {
+        var data = Data("atdrive keyring v2".utf8)
+        data.append(0)
+        data.append(contentsOf: space.utf8)
+        data.append(0)
+        return data
+    }
 }

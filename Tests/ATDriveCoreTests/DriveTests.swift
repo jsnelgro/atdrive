@@ -10,7 +10,7 @@ import Testing
 
     init() async throws {
         drive = pds.device()
-        _ = try await drive.create()
+        _ = try await drive.create(encrypted: TestMode.encrypted)
         directory = try temporaryDirectory()
     }
 
@@ -26,7 +26,7 @@ import Testing
         #expect(pds.spaceExists)
     }
 
-    /// Only `create` makes a drive: it has a recovery key to show. A write doesn't.
+    /// Only `create` makes a drive: whether it's encrypted is someone's decision. A write doesn't.
     @Test func writesDontCreateADrive() async throws {
         let empty = FakePDS()
         let device = empty.device(keyring: Keyring(DriveKey()))
@@ -77,9 +77,9 @@ import Testing
             try localFile("a.txt", "two, longer"), as: "a.txt", in: nil, replacing: first)
         #expect(second.id == first.id)
         #expect(second.record.createdAt == first.record.createdAt)
-        // The settings, this device's record and the recovery record; the node, and a version for
-        // each write.
-        #expect(pds.recordCount == 6)
+        // The settings (and, encrypted, this device's record and the recovery record); the node,
+        // and a version for each write.
+        #expect(pds.recordCount == (TestMode.encrypted ? 6 : 4))
         #expect(second.record.version != first.record.version)
     }
 
@@ -108,17 +108,15 @@ import Testing
     }
 
     @Test func oddRecordsAreUnreadableNotFatalOrDropped() async throws {
-        let keyring = try #require(drive.keyring)
-        try pds.insertSealed(
+        try pds.insert(
             rkey: "3aaaaaaaaaaa2", ["name": "future", "kind": "symlink", "createdAt": "2026-01-01T00:00:00Z"],
-            keyring: keyring)
-        try pds.insertSealed(
-            rkey: "3aaaaaaaaaaa3", ["name": "ok", "kind": "folder", "createdAt": "2026-01-01T00:00:00Z"],
-            keyring: keyring)
-        try pds.insertSealed(
-            rkey: "3aaaaaaaaaaa4", ["name": "..", "kind": "file", "createdAt": "2026-01-01T00:00:00Z"],
-            keyring: keyring)
-        // Not sealed at all: from before drives were encrypted, or made up by the PDS.
+            as: drive)
+        try pds.insert(
+            rkey: "3aaaaaaaaaaa3", ["name": "ok", "kind": "folder", "createdAt": "2026-01-01T00:00:00Z"], as: drive)
+        try pds.insert(
+            rkey: "3aaaaaaaaaaa4", ["name": "..", "kind": "file", "createdAt": "2026-01-01T00:00:00Z"], as: drive)
+        // Not sealed at all. On a plain drive that's how records are. On an encrypted one, the
+        // PDS could have made it up, so it isn't read.
         pds.insertRawRecord(
             rkey: "3aaaaaaaaaaa5",
             ["$type": Lexicon.node, "name": "plain", "kind": "folder", "createdAt": "2026-01-01T00:00:00Z"])
@@ -127,12 +125,16 @@ import Testing
             rkey: "3aaaaaaaaaaa6", ["name": "secret", "kind": "folder", "createdAt": "2026-01-01T00:00:00Z"],
             keyring: Keyring(DriveKey()))
         let tree = try await drive.tree()
-        #expect(tree.children(of: nil).map(\.name) == ["ok"])
-        #expect(
-            tree.unreadable.mapValues(\.reason) == [
-                "3aaaaaaaaaaa2": .newerFormat, "3aaaaaaaaaaa4": .invalidName, "3aaaaaaaaaaa5": .newerFormat,
-                "3aaaaaaaaaaa6": .missingKey,
-            ])
+        var expected: [String: UnreadableNode.Reason] = [
+            "3aaaaaaaaaaa2": .newerFormat, "3aaaaaaaaaaa4": .invalidName, "3aaaaaaaaaaa6": .missingKey,
+        ]
+        if TestMode.encrypted {
+            expected["3aaaaaaaaaaa5"] = .notSealed
+            #expect(tree.children(of: nil).map(\.name) == ["ok"])
+        } else {
+            #expect(tree.children(of: nil).map(\.name) == ["ok", "plain"])
+        }
+        #expect(tree.unreadable.mapValues(\.reason) == expected)
         #expect(tree.unreadable["3aaaaaaaaaaa2"]?.cid == pds.cid(of: "3aaaaaaaaaaa2"))
     }
 

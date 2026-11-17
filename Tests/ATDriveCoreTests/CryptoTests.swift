@@ -88,15 +88,15 @@ private func randomData(_ count: Int) -> Data {
     @Test func rotationKeepsOldKeysForReading() throws {
         var keyring = Keyring(DriveKey())
         let first = keyring.current
-        let old = try keyring.seal("old", collection: node, rkey: "a")
+        let old = try keyring.seal("old", space: FakePDS.space, collection: node, rkey: "a")
         let second = keyring.rotate()
         #expect(keyring.current == second)
         #expect(keyring.keys == [first, second])
-        let new = try keyring.seal("new", collection: node, rkey: "b")
+        let new = try keyring.seal("new", space: FakePDS.space, collection: node, rkey: "b")
         #expect(old.keyID == first.id)
         #expect(new.keyID == second.id)
-        #expect(try keyring.open(old, as: String.self, collection: node, rkey: "a") == "old")
-        #expect(try keyring.open(new, as: String.self, collection: node, rkey: "b") == "new")
+        #expect(try keyring.open(old, as: String.self, space: FakePDS.space, collection: node, rkey: "a") == "old")
+        #expect(try keyring.open(new, as: String.self, space: FakePDS.space, collection: node, rkey: "b") == "new")
         #expect(keyring.key(id: first.id) == first)
     }
 
@@ -127,15 +127,17 @@ private func randomData(_ count: Int) -> Data {
         name: "notes.txt", parent: "3jzfcijpj2z2a", chunks: [DriveKey().chunkID(for: Data("hi".utf8))])
 
     @Test func roundTrips() throws {
-        let sealed = try keyring.seal(value, collection: node, rkey: "3jzfcijpj2z2b")
+        let sealed = try keyring.seal(value, space: FakePDS.space, collection: node, rkey: "3jzfcijpj2z2b")
         #expect(sealed.keyID == keyring.current.id)
-        #expect(try keyring.open(sealed, as: Metadata.self, collection: node, rkey: "3jzfcijpj2z2b") == value)
+        #expect(
+            try keyring.open(sealed, as: Metadata.self, space: FakePDS.space, collection: node, rkey: "3jzfcijpj2z2b")
+                == value)
         // nonce (12) + JSON + tag (16)
         #expect(sealed.sealed.data.count == 12 + (try Sealing.encoder.encode(value)).count + 16)
     }
 
     @Test func recordJSON() throws {
-        let sealed = try keyring.seal(value, collection: node, rkey: "r")
+        let sealed = try keyring.seal(value, space: FakePDS.space, collection: node, rkey: "r")
         let json = try XRPCClient.encoder.encode(sealed)
         let object = try JSONSerialization.jsonObject(with: json) as! [String: Any]
         #expect(object["keyID"] as? String == keyring.current.id.rawValue)
@@ -144,62 +146,63 @@ private func randomData(_ count: Int) -> Data {
     }
 
     @Test func usesAFreshNonceEachTime() throws {
-        let a = try keyring.seal(value, collection: node, rkey: "r")
-        let b = try keyring.seal(value, collection: node, rkey: "r")
+        let a = try keyring.seal(value, space: FakePDS.space, collection: node, rkey: "r")
+        let b = try keyring.seal(value, space: FakePDS.space, collection: node, rkey: "r")
         #expect(a.sealed != b.sealed)
     }
 
     @Test func detectsEveryFlippedBit() throws {
-        let sealed = try keyring.seal(value, collection: node, rkey: "r")
+        let sealed = try keyring.seal(value, space: FakePDS.space, collection: node, rkey: "r")
         // Every byte: the nonce, the ciphertext and the tag.
         for index in 0..<sealed.sealed.data.count {
             var tampered = sealed
             tampered.sealed = Bytes(flipping(sealed.sealed.data, at: index))
             #expect(throws: DriveCryptoError.authenticationFailed) {
-                try keyring.open(tampered, as: Metadata.self, collection: node, rkey: "r")
+                try keyring.open(tampered, as: Metadata.self, space: FakePDS.space, collection: node, rkey: "r")
             }
         }
         var truncated = sealed
         truncated.sealed = Bytes(sealed.sealed.data.prefix(20))
         #expect(throws: DriveCryptoError.authenticationFailed) {
-            try keyring.open(truncated, as: Metadata.self, collection: node, rkey: "r")
+            try keyring.open(truncated, as: Metadata.self, space: FakePDS.space, collection: node, rkey: "r")
         }
     }
 
     @Test func cantBeMovedToAnotherRecord() throws {
-        let sealed = try keyring.seal(value, collection: node, rkey: "3jzfcijpj2z2a")
+        let sealed = try keyring.seal(value, space: FakePDS.space, collection: node, rkey: "3jzfcijpj2z2a")
         #expect(throws: DriveCryptoError.authenticationFailed) {
-            try keyring.open(sealed, as: Metadata.self, collection: node, rkey: "3jzfcijpj2z2b")
+            try keyring.open(sealed, as: Metadata.self, space: FakePDS.space, collection: node, rkey: "3jzfcijpj2z2b")
         }
         #expect(throws: DriveCryptoError.authenticationFailed) {
             try keyring.open(
-                sealed, as: Metadata.self, collection: "me.jsnelgro.atdrive.version", rkey: "3jzfcijpj2z2a")
+                sealed, as: Metadata.self, space: FakePDS.space, collection: "me.jsnelgro.atdrive.version",
+                rkey: "3jzfcijpj2z2a")
         }
         // The separator keeps collection and rkey apart: "ab" + "c" isn't "a" + "bc".
-        let split = try keyring.seal(value, collection: "ab", rkey: "c")
+        let split = try keyring.seal(value, space: FakePDS.space, collection: "ab", rkey: "c")
         #expect(throws: DriveCryptoError.authenticationFailed) {
-            try keyring.open(split, as: Metadata.self, collection: "a", rkey: "bc")
+            try keyring.open(split, as: Metadata.self, space: FakePDS.space, collection: "a", rkey: "bc")
         }
     }
 
     @Test func unknownKeyIsNotTampering() throws {
         let stranger = Keyring(DriveKey())
-        let sealed = try stranger.seal(value, collection: node, rkey: "r")
+        let sealed = try stranger.seal(value, space: FakePDS.space, collection: node, rkey: "r")
         #expect(throws: DriveCryptoError.unknownKeyID(stranger.current.id)) {
-            try keyring.open(sealed, as: Metadata.self, collection: node, rkey: "r")
+            try keyring.open(sealed, as: Metadata.self, space: FakePDS.space, collection: node, rkey: "r")
         }
         #expect(throws: DriveCryptoError.unknownKeyID(stranger.current.id)) {
-            try keyring.current.open(sealed, as: Metadata.self, collection: node, rkey: "r")
+            try keyring.current.open(sealed, as: Metadata.self, space: FakePDS.space, collection: node, rkey: "r")
         }
     }
 
     @Test func wrongKeyIDFailsAuthentication() throws {
         var rotated = keyring
         rotated.rotate()
-        var sealed = try rotated.seal(value, collection: node, rkey: "r")
+        var sealed = try rotated.seal(value, space: FakePDS.space, collection: node, rkey: "r")
         sealed.keyID = rotated.keys[0].id  // names a key the reader has, but not the one used
         #expect(throws: DriveCryptoError.authenticationFailed) {
-            try rotated.open(sealed, as: Metadata.self, collection: node, rkey: "r")
+            try rotated.open(sealed, as: Metadata.self, space: FakePDS.space, collection: node, rkey: "r")
         }
     }
 }
@@ -286,51 +289,64 @@ private func randomData(_ count: Int) -> Data {
 
     @Test func wrapsForADevice() throws {
         let keyring = keyring
-        let wrapped = try keyring.wrapped(for: device.publicKey, from: approver)
-        let unwrapped = try Keyring(unwrapping: wrapped, with: device)
+        let wrapped = try keyring.wrapped(for: device.publicKey, from: approver, space: FakePDS.space)
+        let unwrapped = try Keyring(unwrapping: wrapped, with: device, space: FakePDS.space)
         #expect(unwrapped == keyring)
         #expect(unwrapped.current == keyring.current)
         #expect(try wrapped.senderKey.rawRepresentation == approver.publicKey.rawRepresentation)
         // A device can wrap for itself, which is what its own record holds.
-        #expect(try Keyring(unwrapping: keyring.wrapped(for: device.publicKey, from: device), with: device) == keyring)
+        let own = try keyring.wrapped(for: device.publicKey, from: device, space: FakePDS.space)
+        #expect(try Keyring(unwrapping: own, with: device, space: FakePDS.space) == keyring)
     }
 
     @Test func survivesStorage() throws {
         let keyring = keyring
-        let wrapped = try keyring.wrapped(for: device.publicKey, from: approver)
+        let wrapped = try keyring.wrapped(for: device.publicKey, from: approver, space: FakePDS.space)
         let stored = try JSONDecoder().decode(WrappedKeyring.self, from: XRPCClient.encoder.encode(wrapped))
         let restored = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: device.rawRepresentation)
-        #expect(try Keyring(unwrapping: stored, with: restored) == keyring)
+        #expect(try Keyring(unwrapping: stored, with: restored, space: FakePDS.space) == keyring)
     }
 
     @Test func onlyThatDeviceCanUnwrap() throws {
-        let wrapped = try keyring.wrapped(for: device.publicKey, from: approver)
+        let wrapped = try keyring.wrapped(for: device.publicKey, from: approver, space: FakePDS.space)
         #expect(throws: DriveCryptoError.authenticationFailed) {
-            try Keyring(unwrapping: wrapped, with: Curve25519.KeyAgreement.PrivateKey())
+            try Keyring(unwrapping: wrapped, with: Curve25519.KeyAgreement.PrivateKey(), space: FakePDS.space)
         }
-        #expect(throws: DriveCryptoError.authenticationFailed) { try Keyring(unwrapping: wrapped, with: approver) }
+        // Nor as another space's keyring.
+        #expect(throws: DriveCryptoError.authenticationFailed) {
+            try Keyring(unwrapping: wrapped, with: device, space: "at://did:plc:test/space/x/other")
+        }
+        #expect(throws: DriveCryptoError.authenticationFailed) {
+            try Keyring(unwrapping: wrapped, with: approver, space: FakePDS.space)
+        }
     }
 
     @Test func detectsTampering() throws {
-        let wrapped = try keyring.wrapped(for: device.publicKey, from: approver)
+        let wrapped = try keyring.wrapped(for: device.publicKey, from: approver, space: FakePDS.space)
         for index in [0, 31, 50, wrapped.ciphertext.data.count - 1] {
             var tampered = wrapped
             tampered.ciphertext = Bytes(flipping(wrapped.ciphertext.data, at: index))
-            #expect(throws: DriveCryptoError.authenticationFailed) { try Keyring(unwrapping: tampered, with: device) }
+            #expect(throws: DriveCryptoError.authenticationFailed) {
+                try Keyring(unwrapping: tampered, with: device, space: FakePDS.space)
+            }
         }
         var tampered = wrapped
         tampered.encapsulatedKey = Bytes(flipping(wrapped.encapsulatedKey.data, at: 3))
-        #expect(throws: DriveCryptoError.authenticationFailed) { try Keyring(unwrapping: tampered, with: device) }
+        #expect(throws: DriveCryptoError.authenticationFailed) {
+            try Keyring(unwrapping: tampered, with: device, space: FakePDS.space)
+        }
     }
 
     /// The PDS can wrap a keyring of its own for any device. It can't make it look like a device
     /// the reader trusts wrapped it.
     @Test func theSenderCantBeForged() throws {
         let pds = Curve25519.KeyAgreement.PrivateKey()
-        var forged = try Keyring(DriveKey()).wrapped(for: device.publicKey, from: pds)
+        var forged = try Keyring(DriveKey()).wrapped(for: device.publicKey, from: pds, space: FakePDS.space)
         #expect(try forged.senderKey.rawRepresentation != approver.publicKey.rawRepresentation)
         forged.sender = Bytes(approver.publicKey.rawRepresentation)
-        #expect(throws: DriveCryptoError.authenticationFailed) { try Keyring(unwrapping: forged, with: device) }
+        #expect(throws: DriveCryptoError.authenticationFailed) {
+            try Keyring(unwrapping: forged, with: device, space: FakePDS.space)
+        }
     }
 
     /// Both devices show the same code, each from its own key and the other's; a key the PDS
@@ -412,13 +428,20 @@ private func randomData(_ count: Int) -> Data {
         var keyring = Keyring(DriveKey())
         keyring.rotate()
         let recoveryKey = RecoveryKey()
-        let wrapped = try keyring.wrapped(for: recoveryKey)
+        let wrapped = try keyring.wrapped(for: recoveryKey, space: FakePDS.space)
         let stored = try JSONDecoder().decode(RecoveryWrappedKeyring.self, from: XRPCClient.encoder.encode(wrapped))
         let typedIn = try RecoveryKey(parsing: recoveryKey.formatted.lowercased())
-        #expect(try Keyring(unwrapping: stored, with: typedIn) == keyring)
-        #expect(throws: DriveCryptoError.authenticationFailed) { try Keyring(unwrapping: wrapped, with: RecoveryKey()) }
+        #expect(try Keyring(unwrapping: stored, with: typedIn, space: FakePDS.space) == keyring)
+        #expect(throws: DriveCryptoError.authenticationFailed) {
+            try Keyring(unwrapping: wrapped, with: RecoveryKey(), space: FakePDS.space)
+        }
+        #expect(throws: DriveCryptoError.authenticationFailed) {
+            try Keyring(unwrapping: wrapped, with: recoveryKey, space: "at://did:plc:test/space/x/other")
+        }
         var tampered = wrapped
         tampered.sealed = Bytes(flipping(wrapped.sealed.data, at: 20))
-        #expect(throws: DriveCryptoError.authenticationFailed) { try Keyring(unwrapping: tampered, with: recoveryKey) }
+        #expect(throws: DriveCryptoError.authenticationFailed) {
+            try Keyring(unwrapping: tampered, with: recoveryKey, space: FakePDS.space)
+        }
     }
 }

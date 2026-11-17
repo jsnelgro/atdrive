@@ -6,7 +6,10 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
 
 ## Commands
 
-- `scripts/test.sh`: unit tests (`--filter Name` to run some). They hit a real PDS only when
+- `scripts/test.sh`: unit tests (`--filter Name` to run some), run twice: the drive-logic suites
+  on a plain drive, then on an encrypted one (`ATDRIVE_TEST_MODE=plain` or `=encrypted` runs one;
+  `TestMode` in `FakePDS.swift`). Anything about how the drive behaves has to pass on both. They
+  hit a real PDS only when
   enabled: `OAuthLiveTests` with `ATDRIVE_LIVE_HANDLE`, and `LiveTests` with that plus
   `ATDRIVE_LIVE_PASSWORD`.
 - `scripts/build.sh`: release binary at `build/atdrive`. The Swift runtime is static on Linux.
@@ -29,6 +32,13 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
     contained here.
   - `Records.swift`, `Lexicon.swift`: the `me.jsnelgro.atdrive.*` record model (matches `lexicons/`).
   - `DriveTree.swift`: in-memory tree and path lookup. `Drive.swift`: upload, download, move, delete.
+    One `Drive` is one space; a drive made of several spaces (shared folders) is several of them.
+  - `StoredRecords.swift`: the **only** place records become stored values and back. A record is
+    plain or sealed and says which; `Drive.mode` (from the settings record) picks the form for
+    writes. `DriveKeys.swift`: opening a drive, keys, devices. `Encryption.swift`: turning
+    encryption on and off, and converting what's there. `Crypto/`: the primitives. The formats
+    are specified in `docs/FORMAT.md` (for other clients, e.g. a web app): change them together,
+    with the vectors in `CryptoVectorTests`.
   - `ConflictRules.swift`: what happens when something changed in two places (edits, moves,
     deletes, deleted folders). **Both** `SyncPlan` and the Mac extension decide with it, so the
     platforms agree; change the rules there, not in either caller. `ConflictName.swift`: copy names.

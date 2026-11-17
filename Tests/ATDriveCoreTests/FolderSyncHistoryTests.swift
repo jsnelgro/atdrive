@@ -19,15 +19,21 @@ extension FolderSyncTests {
 
         // Wiped, and then another device made a new drive in the same place (with new keys).
         pds.wipe()
-        _ = try await other.create()
+        _ = try await other.create(encrypted: TestMode.encrypted)
         try await other.createFolder(named: "new", in: nil)
         #expect(try await drive.settings()?.driveID != id)
+        if let keyring = other.keyring {
+            // An encrypted drive's ID is sealed: without the new drive's keys this device can only
+            // tell that it can't read the drive, and stops for that. With them, it sees the rest.
+            await #expect(throws: DriveAccessError.notApproved(pending: false)) { try await sync.sync() }
+            #expect(read("a.txt") == "the only copy")
+            drive.use(keyring)
+        }
         await #expect(throws: SyncError.driveMissing(sync.root)) { try await sync.sync() }
         #expect(read("a.txt") == "the only copy")
         #expect(try await driveFiles() == ["new/"])  // and nothing from here went into it
 
-        // Starting over (once this device has the new drive's keys) merges the folder into it.
-        drive.use(try #require(other.keyring))
+        // Starting over merges the folder into the new drive.
         try FileManager.default.removeItem(at: folder.appendingPathComponent(".atdrive"))
         let fresh = try open()
         try await fresh.sync()
@@ -36,7 +42,7 @@ extension FolderSyncTests {
         try await expectSettled(fresh)
     }
 
-    /// Creating a drive shows its recovery key, so only `atdrive login` does: never sync.
+    /// Creating a drive decides whether it's encrypted, so only `atdrive login` does: never sync.
     @Test func syncNeverCreatesTheDrive() async throws {
         pds.wipe()
         let sync = try open()

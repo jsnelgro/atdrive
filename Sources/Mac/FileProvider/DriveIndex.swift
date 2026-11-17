@@ -20,10 +20,10 @@ actor DriveIndex {
     /// Anchor for a drive nothing has been written to yet.
     static let emptyRevision = "empty"
 
-    /// The logged-in account's drive, unlocked with this Mac's keys. Read lazily, so signing in
-    /// (and getting the keys) after the extension starts works. Until the app has set this Mac
-    /// up with the drive's keys, it's "not signed in". The extension never creates a drive: the
-    /// app does, as it shows the recovery key.
+    /// The logged-in account's drive, opened (with this Mac's keys, if it's encrypted). Read
+    /// lazily, so signing in (and getting the keys) after the extension starts works. Until the
+    /// app has opened the drive on this Mac, it's "not signed in". The extension never creates
+    /// a drive: the app does.
     func drive() async throws -> Drive {
         if let cachedDrive { return cachedDrive }
         guard let store = AppGroup.sessionStore(), let session = try store.load(),
@@ -37,7 +37,7 @@ actor DriveIndex {
             device: identity.name, identity: identity
         ) { updated in try? devices.save(updated) }
         do {
-            try await drive.unlock()
+            try await drive.open()
         } catch is DriveAccessError {
             throw NSFileProviderError(.notAuthenticated)
         }
@@ -49,6 +49,17 @@ actor DriveIndex {
     func refresh() async throws -> (revision: String, tree: DriveTree) {
         let drive = try await drive()
         var updated = try await drive.update(snapshot)
+        if let problem = drive.accessProblem,
+            problem == .encryptionRemoved || problem == .settingsRolledBack
+                || (drive.mode == .encrypted && drive.keyring == nil)
+        {
+            // Encryption was turned on and this Mac has no keys yet, or the drive's settings
+            // can't be believed. Carrying on would write in the wrong form, or show what can't
+            // be read as gone. The app sorts it out; then the drive is opened again.
+            cachedDrive = nil
+            snapshot = nil
+            throw NSFileProviderError(.notAuthenticated)
+        }
         if updated.revision == nil, let current, current.revision != Self.emptyRevision {
             // Gone since we last saw it (say the server was wiped). Showing it as empty would
             // delete everything here, which may be the only copy left.

@@ -79,6 +79,9 @@ public final class FolderSync {
         self.log = log
         folder = StateFolder(root: root)
         if !LocalFS.makeFolder(folder.path) { throw SyncError.notAFolder(folder.path) }
+        // Only this user: it holds the drive's metadata (names, history, and on an encrypted
+        // drive the keys to chunks), and downloads in progress.
+        chmod(folder.path, 0o700)
         lockDescriptor = try folder.lock()
         do {
             if let saved = try folder.load() {
@@ -127,6 +130,16 @@ public final class FolderSync {
             try await fetch()
             checked = true
         }
+        // The drive's mode or keys changed and this device couldn't follow: encryption was turned
+        // on and it has no keys yet, it was removed, or the settings can't be believed. Syncing on
+        // would write in the wrong form, or treat what it can't read as gone, so it waits.
+        if let problem = drive.accessProblem,
+            problem == .encryptionRemoved || problem == .settingsRolledBack
+                || (drive.mode == .encrypted && drive.keyring == nil)
+                || (remote?.settings == nil && remote?.repo.cid(Lexicon.settings, Lexicon.settingsKey) != nil)
+        {
+            throw problem
+        }
         try checkDrive()
         if checked, let revision = remote!.revision {
             if revision != settledAt {
@@ -142,7 +155,7 @@ public final class FolderSync {
         }
         if remote!.revision == nil, !local.entries.isEmpty {
             // A first sync, with something to put in a drive the account doesn't have yet. Only
-            // `atdrive login` creates one: it has a recovery key to show.
+            // `atdrive login` creates one: a background sync shouldn't decide how.
             throw DriveAccessError.noDrive
         }
         let snapshot = remote!
