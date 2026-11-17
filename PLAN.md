@@ -454,15 +454,15 @@ Checked against the sharing plan (#26, #27) and the web milestone while reworkin
 - **Sealing and key wrapping are bound to the space,** so a record or a wrapped keyring can't be
   replayed from the home drive into a shared space or back, even if they ever share a key.
 - **Device trust is kept per space,** not one per device.
-- **Each space has its own mode,** so an encrypted drive can hold a plain share and the other way
-  round (#27 had a plain drive make plain shares only; nothing forces that now).
+- **Each space has its own mode,** so an encrypted drive can hold a plain share. Not the other
+  way round: a plain drive's mount would hold the share's keyring readable (see the sharing
+  plan, #27).
 - **Memberships are one sealed record each.** Member records for shares (#22) should take the
   same shape: one record per member, sealed with the share's current key, re-sealed on rotation.
 - **Turning a share's encryption off** publishes that share's keys, not the drive's.
-- **To settle with mounts (#19):** a mount node holds an encrypted share's keyring, sealed in
-  the home drive. Turning the home drive's encryption off publishes the home keys, and with them
-  those keyrings. It has to say so and ask first, or move them somewhere else. The same goes for
-  the account's sharing key (#22), which is kept with the home keyring.
+- **Turning the home drive's encryption off** publishes the home keys, and with them what's
+  sealed in the home drive: the keyrings of encrypted shares (in mounts) and the account's
+  sharing key. The sharing plan (#27) and #19 say what happens to each first.
 - **A web client** needs no cryptography for a plain drive, which is the default, and only
   WebCrypto for an encrypted one. See `docs/FORMAT.md`, *A web client*.
 - **Not done here:** node IDs as (space, rkey), mounts, credentials for other accounts' spaces.
