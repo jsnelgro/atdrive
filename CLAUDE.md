@@ -30,8 +30,10 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
 
 - `Sources/ATDriveCore`: everything except the CLI, so the macOS/iOS File Provider extension and
   the Linux synced folder can reuse it.
-  - `XRPC.swift`, `Session.swift`: HTTP API client; `SessionManager` signs requests (Bearer, or
-    DPoP for OAuth), tracks DPoP nonces and refreshes tokens.
+  - `XRPC.swift`, `Session.swift`: HTTP API client; `SessionManager` signs requests (DPoP),
+    tracks DPoP nonces and refreshes tokens. A client made with `SpaceCredentials` reads another
+    account's space instead (`SpaceCredentials.swift`: delegation token, credential, request
+    signatures and commit MACs; the primitives are in `Crypto/SpaceAuth.swift`).
   - `OAuth.swift`, `DPoP.swift`, `LoopbackServer.swift`: atproto OAuth sign-in (PAR + PKCE +
     DPoP, loopback client ID, browser redirect caught on 127.0.0.1). The only way to sign in:
     atproto spaces refuse app passwords.
@@ -41,6 +43,14 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
   - `Records.swift`, `Lexicon.swift`: the `me.jsnelgro.atdrive.*` record model (matches `lexicons/`).
   - `DriveTree.swift`: in-memory tree and path lookup. `Drive.swift`: upload, download, move, delete.
     One `Drive` is one space; a drive made of several spaces (shared folders) is several of them.
+  - `Mounts.swift`: `JoinedDrive` / `JoinedSnapshot`, the home drive with the spaces mounted in
+    it, as one tree. Node IDs are the home record key, or `<mount>/<rkey>` (`NodeID`). Sync, the
+    CLI's file commands and the Mac extension all use it. A mount that can't be read is held,
+    never taken for empty.
+  - Sharing: `Sharing.swift` (share, unshare, ending sharing when encryption switches),
+    `Links.swift` (links, opening them), `People.swift` (members, the account's sharing key),
+    `ShareKeys.swift` (member and link records), `Verification.swift` (verification codes).
+    `Reset.swift`: `atdrive reset`.
   - `StoredRecords.swift`: the **only** place records become stored values and back. A record is
     plain or sealed and says which; `Drive.mode` (from the settings record) picks the form for
     writes. `DriveKeys.swift`: opening a drive, keys, devices. `Encryption.swift`: turning
@@ -64,11 +74,15 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
   - `App/`: SwiftUI `MenuBarExtra`. Signs in, adds the File Provider domain, polls with
     `signalEnumerator`.
   - `Support/`: shared by both. App Group container (the ID comes from Info.plist
-    `ATDriveAppGroup`, filled in at build time) and the domain.
+    `ATDriveAppGroup`, filled in at build time) and the domain. `SharingRequests.swift`: how
+    Finder's sharing actions reach the app (the extension can't show windows): a request in the
+    App Group container plus a Darwin notification. The app's sharing windows and `atdrive://`
+    handling are in `App/Sharing.swift`.
 - `Resources/{App,FileProvider}`: Info.plists and entitlements templates (`__BUNDLE_ID__`,
   `__APP_GROUP__`).
 - `Tests/ATDriveCoreTests`: Swift Testing. `FakePDS` is an in-memory transport for drive-logic
-  tests.
+  tests: several accounts (`addAccount`, `as(did)`), spaces with policies and members,
+  credentials, MACs, DID documents and public repos.
 - `lexicons/`: schemas for our NSIDs. Update them together with `Records.swift`.
 
 ## Conventions

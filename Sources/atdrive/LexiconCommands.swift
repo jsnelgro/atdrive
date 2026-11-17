@@ -21,18 +21,26 @@ struct LexiconsPublish: AsyncParsableCommand {
     @Option(help: "The folder of lexicon JSON files.")
     var directory = "lexicons"
 
-    func run() async throws {
+    /// Every lexicon in the folder, as a schema record, by NSID. (Synchronous: the directory
+    /// enumerator can't be iterated from async code on macOS.)
+    static func schemas(in directory: String) throws -> [(id: String, value: JSONValue)] {
         let root = URL(fileURLWithPath: directory)
         guard let walker = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else {
             throw ValidationError("no folder at \(directory)")
         }
         var schemas: [(id: String, value: JSONValue)] = []
-        for case let file as URL in walker where file.pathExtension == "json" {
+        while let file = walker.nextObject() as? URL {
+            guard file.pathExtension == "json" else { continue }
             let value = try JSONValue(parsing: Data(contentsOf: file))
             guard case .object(var object) = value, let id = object["id"]?.string else { continue }
             object["$type"] = .string("com.atproto.lexicon.schema")
             schemas.append((id, .object(object)))
         }
+        return schemas
+    }
+
+    func run() async throws {
+        let schemas = try Self.schemas(in: directory)
         guard !schemas.isEmpty else { throw ValidationError("no lexicons in \(directory)") }
         let scope = "atproto repo:com.atproto.lexicon.schema"
         let session = try await OAuthLogin.signIn(

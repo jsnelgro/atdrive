@@ -49,15 +49,17 @@ can't read is **never treated as deleted**: it's left alone, on the drive and lo
 ## Records
 
 `node` (key: a TID, the file or folder's permanent ID):
-`name`, `parent?` (a node key), `kind` (`file` or `folder`), `createdAt`, `version?` (key of its
-current version), and for files `size`, `sha256` (hex, of the whole file), `modifiedAt?`,
-`chunks`, `chunkIDs?`, `chunkKey?`, `contentsFrom?`, `continuations?`, `continuationsFrom?`.
+`name`, `parent?` (a node key), `kind` (`file`, `folder` or `mount`), `createdAt`, `version?` (key
+of its current version), for files `size`, `sha256` (hex, of the whole file), `modifiedAt?`,
+`chunks`, `chunkIDs?`, `chunkKey?`, `contentsFrom?`, `continuations?`, `continuationsFrom?`, and
+for mounts `mount` (see *Sharing*).
 
 `version` (key: a TID made when the change was): `node`, `change` (`created`, `edited`, `moved`,
-`deleted`, `restored`), `device` (a name), `prev?` (the version the change was based on), and the
-node's state after the change (none after a delete): `name`, `parent`, `kind`, `size`, `sha256`,
-`createdAt`, `modifiedAt`, and either the chunk list (`chunks`, `chunkIDs?`, `chunkKey?`,
-`continuations?`, `continuationsFrom?`) or `contentsFrom`, the version that holds it.
+`deleted`, `restored`, `shared`), `device` (a name), `prev?` (the version the change was based
+on), and the node's state after the change (none after a delete, or `shared`): `name`, `parent`,
+`kind`, `size`, `sha256`, `createdAt`, `modifiedAt`, `mount`, and either the chunk list (`chunks`,
+`chunkIDs?`, `chunkKey?`, `continuations?`, `continuationsFrom?`) or `contentsFrom`, the version
+that holds it.
 
 - Every change to a node writes its `version` in the same `applyWrites`. Two versions with the
   same `prev` are a race; the loser is settled by `ConflictRules`.
@@ -75,7 +77,9 @@ Chunk lists:
 
 `settings` (key `self`): `retentionDays` (default 30), `driveID` (random; a different one means
 the drive was wiped and created again), `generation` (incremented on every change), `converting`
-(encrypted drives), `retiredKeys` (raw drive keys, published when encryption was turned off).
+(encrypted drives), `retiredKeys` (raw drive keys, published when encryption was turned off),
+`sharingKey?` (home drives: the account's raw X25519 sharing key), `name?` (shares: the shared
+file's or folder's name).
 
 `device` (encrypted drives; key: the device's ID, a TID): `name`, `publicKey` (raw X25519),
 `keyring?` (the keyring wrapped for it), `member?` (sealed `{id, name, publicKey}`),
@@ -157,6 +161,39 @@ the first 3 bytes of `SHA-256("atdrive recovery key checksum v1" || key)`.
   accepted before (compare fingerprints). The PDS can make settings plain, but can't publish
   keys it never had. It also refuses sealed settings whose `generation` is lower than one it has
   read.
+
+## Sharing
+
+A share is a drive of its own: a space of the same type (`me.jsnelgro.atdrive.drive`), its key
+26 base32 characters (128 random bits), under the `memberspace` policy, with the records above.
+Its owner's drive mounts it where the folder was.
+
+- **`mount`** (in a `node` of kind `mount`): `space` (its `at://` address), `keyring?` (raw keys,
+  oldest first: an encrypted space the drive's owner shared; only ever in a sealed record),
+  `linkKey?` (32 bytes: an encrypted share opened from its link, or the owner's while its link is
+  on). Its children are the mounted space's top-level nodes. Node IDs across spaces are
+  `<mount key>/<rkey>`.
+- **`me.jsnelgro.atdrive.shareKey`** (public repo, key `self`): `publicKey` (raw X25519),
+  `protected` (whether the private key is kept sealed), `createdAt`.
+- **`member`** (in an encrypted share; key: the member's DID): `keyring` (the share's keyring
+  wrapped as a device's is, HPKE auth mode, X25519 / HKDF-SHA256 / AES-256-GCM, `info` the
+  keyring info for the share's space, from the owner's sharing key to the member's), `membership`
+  (sealed `{did, publicKey}`, for this record), `createdAt`. A member accepts it only if `sender`
+  is the owner's published sharing key, and `membership` opens and names them.
+- **`link`** (in an encrypted share with its link on; key `self`): `keyring`, bytes: AES-256-GCM
+  (12-byte nonce, ciphertext, 16-byte tag) of the raw keys, under
+  `HKDF-SHA256(ikm: link key, info: "atdrive link key v1", 32 bytes)`, with the keyring info as
+  associated data.
+- **`contact`** (home drive; key: a DID): `publicKey`, `verifiedAt`: a sharing key verified with a
+  code. Sealed on an encrypted drive.
+- **Links:** `atdrive://open?at=<the address, percent-encoded>`, plus `#<link key, base64url>` for
+  an encrypted share's public link.
+- **Verification code:** as the pairing code, with the label `atdrive sharing key verification v1`
+  and both sharing keys.
+- **Reading a share** follows the spaces protocol (0016): a delegation token from your PDS (none
+  for a public share), `authorizeSpaceSync` at the owner's PDS with a fresh P-256 `did:key`, reads
+  signed per RFC 9421 over `authorization` and `atproto-space-audience`, and commits checked with
+  their MAC (HPKE export-only secret from the owner's `#atproto_kem` key, HMAC-SHA256).
 
 ## A web client
 
