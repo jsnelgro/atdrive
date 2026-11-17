@@ -79,6 +79,9 @@ public final class FolderSync {
         self.log = log
         folder = StateFolder(root: root)
         if !LocalFS.makeFolder(folder.path) { throw SyncError.notAFolder(folder.path) }
+        // Only this user: it holds the drive's metadata (names, history, and on an encrypted
+        // drive the keys to chunks), and downloads in progress.
+        chmod(folder.path, 0o700)
         lockDescriptor = try folder.lock()
         do {
             if let saved = try folder.load() {

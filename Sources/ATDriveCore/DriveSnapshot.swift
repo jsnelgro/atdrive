@@ -292,7 +292,7 @@ public struct DriveSnapshot: Sendable {
     // MARK: Saving
 
     /// Bumped whenever what's saved, or how records are read, changes: older saves are ignored.
-    static let savedVersion = 4
+    static let savedVersion = 5
 
     private struct Saved: Codable {
         struct SavedContinuation: Codable {
