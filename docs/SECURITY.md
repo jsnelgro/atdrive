@@ -7,7 +7,7 @@ live alpha PDS.
 
 This is one reviewer reading the code that same reviewer had just reworked. It's a careful pass
 with a list of what was looked at, not an independent audit: get one before trusting an
-encrypted drive with anything that matters.
+encrypted drive with anything that matters (#41).
 
 ## What's being protected, and from whom
 
@@ -69,49 +69,50 @@ Ordered by how much they matter. None is new on this branch unless it says so.
   keys, which other devices still read. Fix: revoke its OAuth session as part of `devices
   remove` if the PDS offers that, and have devices that have seen a rotation refuse records
   sealed with an older key that are newer than the rotation.
-- **Secrets are plain files** (`session.json`, `device.json`, mode 600; on the Mac, in the App
+- **Secrets are plain files** (#32: `session.json`, `device.json`, mode 600; on the Mac, in the App
   Group container). Anything running as the user can read the OAuth tokens and the device key.
   Fix: the Keychain on Apple platforms (shared access group for the extension); on Linux,
   the Secret Service where there is one.
 
 **Medium**
 
-- **A device that never held the keys can't tell an encrypted drive from a plain one** (new).
+- **A device that never held the keys can't tell an encrypted drive from a plain one** (#35, new).
   The PDS decides what a new device sees first: shown plain settings, it will use the drive
   unencrypted, and what it writes is readable. Other devices then ignore those records, which
   is how it shows. `atdrive login` says which kind of drive it opened; nothing more can be done
   without a secret the new device already shares with the drive. Related: a device that was
   offline while encryption was turned off and on again can be shown the old, genuine "off"
   settings.
-- **The OAuth scope is `space:*`**: every space the account has, not just ATDrive's. It's that
+- **The OAuth scope is `space:*`** (#33): every space the account has, not just ATDrive's. It's that
   way until the lexicons are published (PLAN.md, *Protocol notes*). Narrow it then.
 - **`.atdrive/drive.json` holds decrypted metadata** for an encrypted drive, including chunk
   IDs, which decrypt chunks (#15). Now owner-only, but still in backups of the folder.
-- **Converting writes each file to the system's temporary folder** in the clear (mode 600,
+- **Converting writes each file to the system's temporary folder** in the clear (#15; mode 600,
   deleted afterwards; left behind by a crash). Use a private folder beside the session.
-- **Rollback.** The PDS can serve an older copy of the whole drive, or of single records. The
+- **Rollback** (#36). The PDS can serve an older copy of the whole drive, or of single records. The
   settings' generation covers only the settings, and only on devices that have seen newer ones.
   A drive-wide fix needs a signed head that every write advances, which spaces can't do without
   compare-and-swap.
-- **Two devices turning encryption on at the same moment** each make a keyring; the last
-  settings write wins, and what the other device sealed meanwhile is unreadable to everyone
-  else (it's held, not lost, while that device still runs). Rare; a re-read after the write
-  would catch it.
+- **Two devices changing the keys at the same moment** (#37). Turning encryption on: each makes
+  a keyring; the last settings write wins, and what the other device sealed meanwhile is
+  unreadable to everyone else (it's held, not lost, while that device still runs). Removing
+  devices: two rotations can leave a device refusing its keyring, until the recovery key gets
+  it out. Rare; a re-read after the write would catch both.
 
 **Low**
 
-- **The `iss` check at sign-in is skipped when the response has no `iss`.** atproto servers
+- **The `iss` check at sign-in is skipped when the response has no `iss`** (#34). atproto servers
   must send it; require it.
-- **Settings sealed when encryption is turned on come from the plain record,** which the PDS
+- **Settings sealed when encryption is turned on come from the plain record** (#38), which the PDS
   could have changed (a short retention, say) beforehand. Show them when turning it on.
-- **Times come from device clocks** (TIDs), and decide which side of a race lost and what
+- **Times come from device clocks** (#40: TIDs), and decide which side of a race lost and what
   pruning keeps. A device with a wrong clock, or a removed one, can skew both.
-- **Device names are readable** on an encrypted drive.
+- **Device names are readable** on an encrypted drive (#39).
 - **Pairing codes are 16 digits compared by eye.** Sound (see `PairingCode`), but people skip
   comparing. The recovery key path avoids it.
-- **Turning encryption off publishes every key the drive has had.** That's the design. When
-  shared folders exist, a drive that holds the keyrings of encrypted shares (in mount records)
-  would expose those too: turning encryption off has to handle that first (PLAN.md).
+- **Turning encryption off publishes every key the drive has had.** That's the design. Once
+  shared folders exist, that would expose the keyrings of encrypted shares too, so switching a
+  drive's encryption either way ends its sharing first (the sharing plan, #27).
 
 ## What was checked
 

@@ -464,9 +464,10 @@ Checked against the sharing plan (#26, #27) and the web milestone while reworkin
 - **Memberships are one sealed record each.** Member records for shares (#22) should take the
   same shape: one record per member, sealed with the share's current key, re-sealed on rotation.
 - **Turning a share's encryption off** publishes that share's keys, not the drive's.
-- **Turning the home drive's encryption off** publishes the home keys, and with them what's
-  sealed in the home drive: the keyrings of encrypted shares (in mounts) and the account's
-  sharing key. *Sharing → Encrypted and plain shares* says what happens to each first.
+- **Switching a drive's encryption, either way, ends its sharing.** Turning it off publishes the
+  home keys, and with them what's sealed in the home drive: the keyrings of encrypted shares (in
+  mounts) and the account's sharing key. Rather than handle each case, a switch stops all
+  sharing first, and the user shares again afterwards (*Sharing → Encrypted and plain shares*).
 - **A web client** needs no cryptography for a plain drive, which is the default, and only
   WebCrypto for an encrypted one. See `docs/FORMAT.md`, *A web client*.
 - **Not done here:** node IDs as (space, rkey), mounts, credentials for other accounts' spaces.
@@ -634,16 +635,19 @@ Checked against the reference branch at `83d473d` (2026-11-13):
   again, readable by the PDS. It's an explicit choice, with a warning.
 - **A plain drive makes plain shares only:** its owner has no keys to protect an encrypted one
   (the mount that would hold the share's keyring is readable).
-- **A share keeps its mode when the drive's changes,** and has to be dealt with first:
-  - **Turning the drive's encryption off** publishes the drive's keys, and with them the keyrings
-    of encrypted shares in its mounts, and the sharing key. So it lists those shares and asks:
-    make each plain too (the same switch, on that space), or stop sharing it. For shares other
-    people own, the mount is removed, and can be opened again afterwards as a plain drive does.
-  - **Turning it on** leaves plain shares plain. Each can be switched by its owner like a
-    drive (`atdrive encryption on <path>`), which converts it and re-wraps for its members.
-- **A share's mode is switched like a drive's:** its settings record says which it is, and
-  `convert` rewrites what's there. Members follow as devices do: they believe a share stopped
-  being encrypted only if its settings publish the keys they held.
+- **A share's mode is set when it's shared, and doesn't change.** To change it, stop sharing and
+  share again.
+- **Switching the drive's encryption, either way, ends its sharing.** It's a rare thing to do,
+  and resetting is simpler and safer than carrying each share across:
+  - Everything the account shares is unshared (members and links removed, as `unshare` does),
+    and converted with the rest of the drive, so every space in the drive ends up in its new
+    mode. The folders stay where they are.
+  - Mounts of other people's shares are removed. Open their links again afterwards.
+  - The account gets a new sharing key (below).
+  - The warning before switching lists what will stop being shared, and with whom. Afterwards,
+    share again.
+  - Why not carry them across: turning encryption off publishes the drive's keys, which open
+    the keyrings in its mounts and the sharing key. Turning it on makes both anew.
 - **Anyone can open either kind,** whatever their own drive's mode. When an encrypted share goes to
   someone with a plain drive, their sharing key (below) is stored readable on their PDS, so
   whoever runs that PDS could read the share. ATDrive warns the owner when adding them, and marks
@@ -683,8 +687,8 @@ Checked against the reference branch at `83d473d` (2026-11-13):
     drive it's kept in the drive's `settings`, readable: that's the case the owner is warned
     about.
   - **When the drive's encryption is turned on or off,** the account gets a new sharing key (the
-    old one was, or becomes, readable), published with its new `protected` value. Owners of
-    shares it's a member of wrap their keyrings for it again, as after a device removal.
+    old one was, or becomes, readable), published with its new `protected` value. Shares it was
+    a member of stop working until their owners add it again.
   - **The public key** is published in the account's public repo (`me.jsnelgro.atdrive.shareKey`,
     rkey `self`), with whether the private key is kept encrypted. Anyone can find it from a
     handle.
