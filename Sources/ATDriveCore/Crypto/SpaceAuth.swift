@@ -220,7 +220,9 @@ enum StructuredField {
         }
 
         mutating func key() -> String? {
-            guard let first = current, (first >= 0x61 && first <= 0x7A) || first == UInt8(ascii: "*") else { return nil }
+            guard let first = current, (first >= 0x61 && first <= 0x7A) || first == UInt8(ascii: "*") else {
+                return nil
+            }
             let start = position
             while let byte = current,
                 (byte >= 0x61 && byte <= 0x7A) || (byte >= 0x30 && byte <= 0x39) || "_-.*".utf8.contains(byte)
@@ -335,7 +337,8 @@ public struct SpaceRequestSigner: Sendable {
         guard let authorization = header("Authorization"), let audience = header("Atproto-Space-Audience"),
             let input = header("Signature-Input").flatMap(StructuredField.parseDictionary),
             let signatures = header("Signature").flatMap(StructuredField.parseDictionary),
-            let tagged = input.first(where: { $0.member.parameters.contains { $0.0 == "tag" && $0.1 == .string(tag) } }),
+            let tagged = input.first(where: { $0.member.parameters.contains { $0.0 == "tag" && $0.1 == .string(tag) } }
+            ),
             case .bytes(let raw)? = signatures.first(where: { $0.key == tagged.key })?.member.item,
             let signature = try? P256.Signing.ECDSASignature(rawRepresentation: raw)
         else { return false }

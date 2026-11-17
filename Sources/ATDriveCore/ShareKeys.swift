@@ -85,7 +85,9 @@ public struct SharingKeyRecord: Codable, Sendable, Equatable {
     {
         let pds = try await resolver.resolve(did).pds
         let client = XRPCClient(service: pds, transport: transport)
-        guard let value = try await client.getPublicRecord(repo: did, collection: Lexicon.shareKey, rkey: Lexicon.shareKeyKey)
+        guard
+            let value = try await client.getPublicRecord(
+                repo: did, collection: Lexicon.shareKey, rkey: Lexicon.shareKeyKey)
         else { return nil }
         return try? value.decode(as: SharingKeyRecord.self)
     }
@@ -202,7 +204,9 @@ public enum MemberKeys {
             published.publicKey == record.keyring.sender
         else { throw MemberKeyProblem.wrongSender }
         let keyring = try Keyring(unwrapping: record.keyring, with: keys.privateKey, space: space)
-        guard let entry = try? keyring.open(record.membership, as: MemberEntry.self, space: space, collection: Lexicon.member, rkey: me),
+        guard
+            let entry = try? keyring.open(
+                record.membership, as: MemberEntry.self, space: space, collection: Lexicon.member, rkey: me),
             entry.did == me, entry.publicKey.data == keys.publicKey.rawRepresentation
         else { throw MemberKeyProblem.wrongSender }
         return keyring

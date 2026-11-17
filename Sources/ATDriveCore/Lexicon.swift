@@ -31,6 +31,9 @@ public enum Lexicon {
     public static let link = "me.jsnelgro.atdrive.link"
     /// Record key of the link record.
     public static let linkKey = "self"
+    /// Record collection, in the home drive, holding one record per person (keyed by their DID)
+    /// whose sharing key was verified with a code (`VerifiedKey`).
+    public static let contact = "me.jsnelgro.atdrive.contact"
     /// Space key of the default drive.
     public static let defaultDriveKey = "default"
 

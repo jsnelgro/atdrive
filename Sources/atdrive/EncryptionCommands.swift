@@ -180,7 +180,9 @@ enum SharingNotice {
             print("  - \(share.path): stops being shared (with \(who)); its files stay where they are")
         }
         for mount in others {
-            print("  - \(snapshot.tree.path(of: mount)): shared with you; removed from your drive (open its link again later)")
+            print(
+                "  - \(snapshot.tree.path(of: mount)): shared with you; removed from your drive (open its link again later)"
+            )
         }
         guard yes || Prompt.confirm("Stop sharing these?") else { return false }
         for path in try await joined.endSharing() { print("✓ \(path): no longer shared") }

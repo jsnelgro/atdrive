@@ -150,7 +150,9 @@ extension JoinedDrive {
 
     /// Opens a link to look at what's shared: its owner, name and mode, and its drive to read.
     /// Works signed out for a public link (`access` with no account).
-    public static func open(_ link: ShareLinkAddress, access: SpaceAccess, sharingKeys: SharingKeyPair? = nil, me: String? = nil)
+    public static func open(
+        _ link: ShareLinkAddress, access: SpaceAccess, sharingKeys: SharingKeyPair? = nil, me: String? = nil
+    )
         async throws -> OpenedShare
     {
         guard link.isDrive else { throw LinkError.notADrive(link.space) }
@@ -165,7 +167,8 @@ extension JoinedDrive {
                 keyring = try await ShareLink.keyring(space: link.space, owner: owner, linkKey: key, client: client)
             } else if let sharingKeys, let me {
                 keyring = try await MemberKeys.keyring(
-                    space: link.space, owner: owner, me: me, keys: sharingKeys, client: client, resolver: access.resolver)
+                    space: link.space, owner: owner, me: me, keys: sharingKeys, client: client,
+                    resolver: access.resolver)
             } else {
                 throw SharingError.linkKeyMissing
             }
@@ -181,7 +184,8 @@ extension JoinedDrive {
     @discardableResult
     public func add(_ link: ShareLinkAddress) async throws -> Node {
         var snapshot = try await update(nil)
-        if let existing = snapshot.tree.nodes.values.first(where: { $0.isMount && $0.record.mount?.space == link.space }) {
+        if let existing = snapshot.tree.nodes.values.first(where: { $0.isMount && $0.record.mount?.space == link.space }
+        ) {
             return existing
         }
         guard let access else { throw MountUnavailable() }

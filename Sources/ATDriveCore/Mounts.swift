@@ -32,6 +32,8 @@ public enum SharingError: Error, Equatable, CustomStringConvertible {
     case linkKeyWrong
     /// The person has no sharing key: they haven't used ATDrive yet.
     case noSharingKey(String)
+    /// Their sharing key changed since it was verified, or last wrapped for: check it first.
+    case keyChanged(String)
 
     public var description: String {
         switch self {
@@ -48,6 +50,8 @@ public enum SharingError: Error, Equatable, CustomStringConvertible {
         case .linkKeyWrong: "this link's key doesn't open the share: it's mistyped, or the link was turned off"
         case .noSharingKey(let who):
             "\(who) hasn't set up ATDrive yet, so there's no key to share encrypted files with; send a link instead"
+        case .keyChanged(let who):
+            "\(who)'s sharing key changed: compare verification codes (`atdrive share verify`) before sharing with them"
         }
     }
 }
@@ -304,7 +308,8 @@ public final class JoinedDrive: Sendable {
         }
         let probe = Drive(client: client, owner: info.owner, space: info.space)
         guard let settings = try await probe.settingsRecord() else {
-            throw XRPCError(method: "com.atproto.space.listRecords", status: 400, body: Data(#"{"error":"SpaceNotFound"}"#.utf8))
+            throw XRPCError(
+                method: "com.atproto.space.listRecords", status: 400, body: Data(#"{"error":"SpaceNotFound"}"#.utf8))
         }
         let encrypted = settings.value.flatMap(SealedRecord.init) != nil
         var keyring: Keyring?
@@ -326,11 +331,13 @@ public final class JoinedDrive: Sendable {
     /// the link key in the mount. (Member records are read in `Sharing.swift`.)
     func keyring(for info: MountInfo, client: XRPCClient, sharingKeys: SharingKeyPair?) async throws -> Keyring {
         if let linkKey = info.linkKey {
-            return try await ShareLink.keyring(space: info.space, owner: info.owner, linkKey: linkKey.data, client: client)
+            return try await ShareLink.keyring(
+                space: info.space, owner: info.owner, linkKey: linkKey.data, client: client)
         }
         guard let sharingKeys else { throw SharingError.linkKeyMissing }
         return try await MemberKeys.keyring(
-            space: info.space, owner: info.owner, me: owner, keys: sharingKeys, client: client, resolver: access?.resolver)
+            space: info.space, owner: info.owner, me: owner, keys: sharingKeys, client: client,
+            resolver: access?.resolver)
     }
 
     struct MountUnavailable: Error, CustomStringConvertible {
@@ -452,12 +459,15 @@ public final class JoinedDrive: Sendable {
         if node.isFolder {
             written = try await target.writeCopy(of: local.record, id: id, in: parent, as: name)
             for child in tree.children(of: node.id) {
-                _ = try await copy(child, in: tree, from: source, to: target, parent: written.id, as: child.name, keepingIDs: keepingIDs)
+                _ = try await copy(
+                    child, in: tree, from: source, to: target, parent: written.id, as: child.name,
+                    keepingIDs: keepingIDs)
             }
         } else if source.mode == target.mode {
             written = try await target.writeCopy(of: local.record, id: id, in: parent, as: name)
         } else {
-            let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("atdrive-copy-\(UUID().uuidString)")
+            let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
+                "atdrive-copy-\(UUID().uuidString)")
             defer { try? FileManager.default.removeItem(at: scratch) }
             try await source.download(local, to: scratch)
             let uploaded = try await target.upload(
@@ -488,7 +498,9 @@ public final class JoinedDrive: Sendable {
         }
     }
 
-    public func read(_ node: Node, previous: URL? = nil, progress: Drive.Progress? = nil, into write: (Data) throws -> Void)
+    public func read(
+        _ node: Node, previous: URL? = nil, progress: Drive.Progress? = nil, into write: (Data) throws -> Void
+    )
         async throws
     {
         let (drive, local, _) = try self.local(node, writing: false)
@@ -511,7 +523,8 @@ public final class JoinedDrive: Sendable {
     /// Settles races in every space this account writes (see `Drive.settleRaces`).
     public func settleRaces(in snapshot: JoinedSnapshot, now: Date = Date()) async throws -> [Drive.SettledRace] {
         var settled = try await home.settleRaces(in: snapshot.home, now: now)
-        for (id, state) in snapshot.mounts.sorted(by: { $0.key < $1.key }) where !state.readOnly && state.problem == nil {
+        for (id, state) in snapshot.mounts.sorted(by: { $0.key < $1.key }) where !state.readOnly && state.problem == nil
+        {
             guard let mounted = state.snapshot, let drive = opened.value[id]?.drive else { continue }
             settled += try await drive.settleRaces(in: mounted, now: now).map { race in
                 var race = race
@@ -526,7 +539,8 @@ public final class JoinedDrive: Sendable {
     /// Prunes the history of every space this account writes (see `Drive.prune`).
     public func prune(_ snapshot: JoinedSnapshot, now: Date = Date()) async throws -> Int {
         var pruned = try await home.prune(snapshot.home, now: now)
-        for (id, state) in snapshot.mounts.sorted(by: { $0.key < $1.key }) where !state.readOnly && state.problem == nil {
+        for (id, state) in snapshot.mounts.sorted(by: { $0.key < $1.key }) where !state.readOnly && state.problem == nil
+        {
             guard let mounted = state.snapshot, let drive = opened.value[id]?.drive else { continue }
             pruned += try await drive.prune(mounted, now: now)
         }
@@ -537,8 +551,9 @@ public final class JoinedDrive: Sendable {
     /// don't nest). Returns the mount node.
     @discardableResult
     public func mount(_ info: MountInfo, named name: String, in parent: String?) async throws -> Node {
-        if let parent, NodeID.split(parent).mount != nil || opened.value[parent] != nil
-            || latest.value?.mounts[parent] != nil
+        if let parent,
+            NodeID.split(parent).mount != nil || opened.value[parent] != nil
+                || latest.value?.mounts[parent] != nil
         {
             throw SharingError.nested(name)
         }

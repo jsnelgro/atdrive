@@ -186,7 +186,9 @@ import Testing
             _ = try await member.add(address)
             #expect(try await contents(member, "/photos/trip/b.txt") == "bbb")
         }
-        let dave = JoinedDrive(home: pds.device("dave's", account: pds.addAccount("dave"), mode: .plain), access: pds.access(as: "did:plc:dave"))
+        let dave = JoinedDrive(
+            home: pds.device("dave's", account: pds.addAccount("dave"), mode: .plain),
+            access: pds.access(as: "did:plc:dave"))
         _ = try await dave.home.create(encrypted: false)
         await #expect { _ = try await dave.add(address) } throws: { SpaceAccessProblem($0) == .notShared }
         #expect(Set(try await owner.members(of: mount).map(\.did)) == [bobDID, carolDID])
@@ -284,5 +286,66 @@ extension JSONValue {
     /// As Foundation JSON, for `FakePDS.insertRawRecord`.
     var anyValue: [String: Any] {
         (try? JSONSerialization.jsonObject(with: Data(serialized()))) as? [String: Any] ?? [:]
+    }
+}
+
+/// Verification codes for sharing keys (#30).
+@Suite struct VerificationTests {
+    let pds = FakePDS()
+    let alice: JoinedDrive
+    let bob: JoinedDrive
+    let bobDID: String
+
+    init() async throws {
+        bobDID = pds.addAccount("bob")
+        let home = pds.device("here")
+        _ = try await home.create(encrypted: TestMode.encrypted)
+        alice = JoinedDrive(home: home, access: pds.access())
+        let bobs = pds.unopened("bob's", account: bobDID)
+        _ = try await bobs.create(encrypted: true)
+        bob = JoinedDrive(home: bobs, access: pds.access(as: bobDID))
+        try await alice.ensureSharingKey()
+        try await bob.ensureSharingKey()
+    }
+
+    @Test func bothSidesGetTheSameCode() async throws {
+        let (mine, theirs) = try await alice.verificationCode(with: bobDID)
+        let (bobs, _) = try await bob.verificationCode(with: FakePDS.defaultDID)
+        #expect(mine == bobs)
+        #expect(mine.split(separator: " ").count == 4 && mine.filter(\.isNumber).count == 16)
+        #expect(try await !alice.isVerified(bobDID, key: theirs))
+        try await alice.markVerified(bobDID, key: theirs)
+        #expect(try await alice.isVerified(bobDID, key: theirs))
+        // Every device of Alice's sees it: it's in her drive.
+        let other = JoinedDrive(home: pds.device("other", keyring: alice.keyring), access: pds.access())
+        #expect(try await other.verifiedKeys()[bobDID] == theirs.publicKey.data)
+    }
+
+    @Test func aSwappedKeyIsCaughtBeforeAnyKeyringIsWrapped() async throws {
+        guard TestMode.encrypted else { return }
+        let photos = try await alice.createFolder(named: "photos", in: nil)
+        let mount = try await alice.share(photos)
+        let (_, theirs) = try await alice.verificationCode(with: bobDID)
+        try await alice.markVerified(bobDID, key: theirs)
+
+        // Bob's PDS publishes a key of its own.
+        let swapped = SharingKeyPair(protected: true)
+        try await pds.client(as: bobDID).putPublicRecord(
+            repo: bobDID, collection: Lexicon.shareKey, rkey: Lexicon.shareKeyKey,
+            record: try JSONValue(encoding: SharingKeyRecord(publicKey: swapped.publicKey, protected: true)))
+        let warnings = try await alice.memberWarnings([bobDID], for: mount)
+        #expect(warnings.contains { if case .keyChanged(bobDID, _, _) = $0 { true } else { false } })
+        await #expect(throws: SharingError.keyChanged(bobDID)) { try await alice.addMembers([bobDID], to: mount) }
+        #expect(pds.keys(in: Lexicon.member, space: mount.record.mount!.space).isEmpty, "nothing wrapped for it")
+        #expect(
+            try await !alice.isVerified(
+                bobDID, key: SharingKeyRecord.fetch(bobDID, resolver: pds.resolver, transport: pds)))
+    }
+
+    @Test func rotatingTheSharingKeyPublishesANewOne() async throws {
+        let before = try #require(try await SharingKeyRecord.fetch(bobDID, resolver: pds.resolver, transport: pds))
+        try await bob.rotateSharingKey()
+        let after = try #require(try await SharingKeyRecord.fetch(bobDID, resolver: pds.resolver, transport: pds))
+        #expect(before.publicKey != after.publicKey)
     }
 }

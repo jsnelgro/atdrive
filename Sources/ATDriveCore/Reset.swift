@@ -20,7 +20,8 @@ public enum AccountReset {
         }
         for space in spaces { try await client.deleteSpace(space) }
         let published =
-            try await client.getPublicRecord(repo: owner, collection: Lexicon.shareKey, rkey: Lexicon.shareKeyKey) != nil
+            try await client.getPublicRecord(repo: owner, collection: Lexicon.shareKey, rkey: Lexicon.shareKeyKey)
+            != nil
         if published {
             try await client.deletePublicRecord(repo: owner, collection: Lexicon.shareKey, rkey: Lexicon.shareKeyKey)
         }

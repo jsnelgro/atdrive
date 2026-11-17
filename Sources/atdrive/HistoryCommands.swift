@@ -416,11 +416,14 @@ extension Context {
     /// History is per space: the space a path is in (the home drive, or a shared folder mounted
     /// in it), its snapshot, and the path within it. `writing`: for a change, which a folder
     /// shared with you can't take.
-    func space(of path: DrivePath, writing: Bool) async throws -> (drive: Drive, snapshot: DriveSnapshot, path: DrivePath) {
+    func space(of path: DrivePath, writing: Bool) async throws -> (
+        drive: Drive, snapshot: DriveSnapshot, path: DrivePath
+    ) {
         let joined = try await self.joined.update(nil)
         for length in stride(from: path.components.count, through: 1, by: -1) {
             let prefix = DrivePath(components: Array(path.components.prefix(length)))
-            guard case .node(let node)? = try? joined.tree.find(prefix), node.isMount, let state = joined.mounts[node.id]
+            guard case .node(let node)? = try? joined.tree.find(prefix), node.isMount,
+                let state = joined.mounts[node.id]
             else { continue }
             if writing, state.readOnly { throw ATDriveError.readOnly(path: path.description, owner: state.owner) }
             guard let drive = self.joined.drive(ofMount: node.id), let snapshot = state.snapshot else {

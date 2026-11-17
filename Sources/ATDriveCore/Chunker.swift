@@ -23,7 +23,8 @@ public struct Chunker: Sendable {
         public init(minSize: Int, averageSize: Int, maxSize: Int) {
             precondition(0 < minSize && minSize <= averageSize && averageSize <= maxSize, "chunk sizes out of order")
             precondition(
-                averageSize.nonzeroBitCount == 1 && averageSize >= 8, "average chunk size isn't a power of two, 8 or more")
+                averageSize.nonzeroBitCount == 1 && averageSize >= 8,
+                "average chunk size isn't a power of two, 8 or more")
             self.minSize = minSize
             self.averageSize = averageSize
             self.maxSize = maxSize

@@ -244,9 +244,12 @@ public final class FolderSync {
             guard let problem = state.problem, let node = snapshot.tree.nodes[id] else { continue }
             let path = snapshot.tree.path(of: node).description
             if problem.isDeletion {
-                report(SyncEvent(.skipped, path, "its owner deleted this shared folder, so its files are gone here too"))
+                report(
+                    SyncEvent(.skipped, path, "its owner deleted this shared folder, so its files are gone here too"))
             } else {
-                report(SyncEvent(.skipped, path, "can't read this shared folder (\(problem)); its files here stay as they are"))
+                report(
+                    SyncEvent(
+                        .skipped, path, "can't read this shared folder (\(problem)); its files here stay as they are"))
             }
         }
     }
@@ -626,7 +629,10 @@ final class SyncRun {
             doomed.remove(id)
             blocked.insert(id)
             if remote.entries[id]?.parent.map(doomed.contains) != true, let node = nodes[id] {
-                log(SyncEvent(.skipped, remote.tree.path(of: node).description, "read-only, shared by \(owner): not deleted from the drive"))
+                log(
+                    SyncEvent(
+                        .skipped, remote.tree.path(of: node).description,
+                        "read-only, shared by \(owner): not deleted from the drive"))
             }
         }
         var holding = Set(plan.merged.keys.compactMap { nodes[created[$0] ?? $0]?.record.parent })

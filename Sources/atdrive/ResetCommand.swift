@@ -28,7 +28,9 @@ struct Reset: AsyncParsableCommand {
         let context = try await Context.locked()
         let session = await context.session.session
         if !yes {
-            print("This deletes everything in @\(session.handle)'s drive, and every folder it shared. It can't be undone.")
+            print(
+                "This deletes everything in @\(session.handle)'s drive, and every folder it shared. It can't be undone."
+            )
             guard Prompt.isInteractive else {
                 throw ValidationError("not on a terminal to confirm: pass --yes")
             }

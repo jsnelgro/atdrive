@@ -124,7 +124,8 @@ import Testing
         let (_, mount) = try await mountSpace("shared")
         _ = try await joined.update(nil)
         let other = try await Drive.createSpace(
-            client: home.client, owner: home.owner, key: newShareKey(), encrypted: TestMode.encrypted, policy: .personal)
+            client: home.client, owner: home.owner, key: newShareKey(), encrypted: TestMode.encrypted, policy: .personal
+        )
         await #expect(throws: SharingError.self) {
             try await joined.mount(MountInfo(space: other.space, keyring: other.keyring), named: "in", in: mount.id)
         }
@@ -186,7 +187,9 @@ import Testing
         _ = try await space.createFolder(named: "new", in: nil)
         try await sync.sync()
         var isFolder: ObjCBool = false
-        #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("shared/new").path, isDirectory: &isFolder))
+        #expect(
+            FileManager.default.fileExists(
+                atPath: folder.appendingPathComponent("shared/new").path, isDirectory: &isFolder))
         #expect(isFolder.boolValue)
     }
 

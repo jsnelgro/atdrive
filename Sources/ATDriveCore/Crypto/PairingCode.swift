@@ -14,12 +14,13 @@ import Foundation
 /// would need a commit-then-reveal exchange, as Bluetooth pairing does.
 public enum PairingCode {
     public static func make(
-        for publicKey: Curve25519.KeyAgreement.PublicKey, and other: Curve25519.KeyAgreement.PublicKey
+        for publicKey: Curve25519.KeyAgreement.PublicKey, and other: Curve25519.KeyAgreement.PublicKey,
+        label: String = "atdrive pairing code v2"
     ) -> String {
         let keys = [publicKey.rawRepresentation, other.rawRepresentation].sorted {
             $0.lexicographicallyPrecedes($1)
         }
-        let digest = SHA256.hash(data: Data("atdrive pairing code v2".utf8) + keys[0] + keys[1])
+        let digest = SHA256.hash(data: Data(label.utf8) + keys[0] + keys[1])
         let number = digest.prefix(8).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) } % 10_000_000_000_000_000
         let digits = Array(String(number))
         let padded = Array(repeating: Character("0"), count: 16 - digits.count) + digits

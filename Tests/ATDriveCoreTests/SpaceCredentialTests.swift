@@ -118,9 +118,12 @@ import Testing
 
     @Test func publicRecords() async throws {
         let client = pds.client()
-        try await client.putPublicRecord(repo: owner, collection: "com.example.thing", rkey: "self", record: .object(["a": .integer(1)]))
+        try await client.putPublicRecord(
+            repo: owner, collection: "com.example.thing", rkey: "self", record: .object(["a": .integer(1)]))
         let reader = pds.client(as: pds.addAccount("bob"))
-        #expect(try await reader.getPublicRecord(repo: owner, collection: "com.example.thing", rkey: "self")?["a"] == .integer(1))
+        #expect(
+            try await reader.getPublicRecord(repo: owner, collection: "com.example.thing", rkey: "self")?["a"]
+                == .integer(1))
         try await client.deletePublicRecord(repo: owner, collection: "com.example.thing", rkey: "self")
         #expect(try await reader.getPublicRecord(repo: owner, collection: "com.example.thing", rkey: "self") == nil)
     }
@@ -133,7 +136,8 @@ import Testing
         _ = try await drive.create(encrypted: TestMode.encrypted)
         _ = try await drive.createFolder(named: "photos", in: nil)
         let client = pds.client()
-        let shared = try await client.createSpace(type: Lexicon.driveSpace, key: "s1", policy: .members(publicRead: true))
+        let shared = try await client.createSpace(
+            type: Lexicon.driveSpace, key: "s1", policy: .members(publicRead: true))
         let other = try await client.createSpace(type: "com.example.board", key: "b1", policy: .personal)
         // Someone else's space stays.
         let bob = pds.addAccount("bob")

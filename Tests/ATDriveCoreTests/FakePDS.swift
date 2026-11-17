@@ -211,10 +211,14 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
             guard let account = accounts[did] else { return error(404, "NotFound") }
             return json([
                 "id": did, "alsoKnownAs": ["at://\(account.handle)"],
-                "service": [["id": "#atproto_pds", "type": "AtprotoPersonalDataServer", "serviceEndpoint": "https://pds.test"]],
+                "service": [
+                    ["id": "#atproto_pds", "type": "AtprotoPersonalDataServer", "serviceEndpoint": "https://pds.test"]
+                ],
                 "verificationMethod": [
-                    ["id": "\(did)#atproto_kem", "type": "Multikey", "controller": did,
-                     "publicKeyMultibase": P256DIDKey.multikey(account.kem.publicKey)],
+                    [
+                        "id": "\(did)#atproto_kem", "type": "Multikey", "controller": did,
+                        "publicKeyMultibase": P256DIDKey.multikey(account.kem.publicKey),
+                    ]
                 ],
             ])
         }
@@ -284,7 +288,9 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
             guard let state = spaces[space], !state.deleted, state.authority == caller else {
                 return error(400, "SpaceNotFound")
             }
-            return json(["space": space, "policy": try! JSONSerialization.jsonObject(with: JSONEncoder().encode(state.policy))])
+            return json([
+                "space": space, "policy": try! JSONSerialization.jsonObject(with: JSONEncoder().encode(state.policy)),
+            ])
 
         case "com.atproto.space.listSpaces":
             guard let caller else { return error(401, "AuthRequired") }
@@ -462,7 +468,9 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
         }
     }
 
-    private func write(_ method: String, body: [String: Any], request: URLRequest, key: RepoKey) -> (Data, HTTPURLResponse) {
+    private func write(_ method: String, body: [String: Any], request: URLRequest, key: RepoKey) -> (
+        Data, HTTPURLResponse
+    ) {
         let records = repos[key]?.records ?? [:]
         switch method {
         case "com.atproto.space.putRecord":
@@ -886,7 +894,8 @@ extension FakePDS {
     /// Every record and blob as stored: all the PDS has.
     var everythingStored: [Data] {
         lock.withLock {
-            repos.values.flatMap { $0.records.values.map(\.json) } + publicRecords.values.flatMap { $0.values.map(\.json) }
+            repos.values.flatMap { $0.records.values.map(\.json) }
+                + publicRecords.values.flatMap { $0.values.map(\.json) }
                 + Array(blobs.values)
         }
     }

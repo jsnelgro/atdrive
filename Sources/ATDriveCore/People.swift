@@ -41,13 +41,16 @@ public struct ShareMember: Sendable, Equatable {
     /// Their sharing key changed since their keyring was wrapped: they get none for what's new
     /// until they're added again.
     public var keyChanged: Bool
+    /// Their published sharing key is the one you verified with a code (`atdrive share verify`).
+    public var verified: Bool = false
 }
 
 /// Something to know before someone is added to an encrypted share.
 public enum MemberWarning: Sendable, Equatable, CustomStringConvertible {
     /// Their drive isn't encrypted: their PDS could read the share.
     case unprotected(String)
-    /// Their sharing key isn't the one their keyring was wrapped for last time.
+    /// Their sharing key isn't the one their keyring was wrapped for last time, or the one you
+    /// verified.
     case keyChanged(String, from: String, to: String)
 
     public var description: String {
@@ -75,7 +78,9 @@ extension JoinedDrive {
             let key = Curve25519.KeyAgreement.PrivateKey()
             settings = try await home.updateSettings { $0.sharingKey = Bytes(key.rawRepresentation) }
         }
-        guard let pair = settings?.sharingKeyPair(encrypted: encrypted) else { throw DriveAccessError.damaged("settings") }
+        guard let pair = settings?.sharingKeyPair(encrypted: encrypted) else {
+            throw DriveAccessError.damaged("settings")
+        }
         let published = try await home.client.getPublicRecord(
             repo: owner, collection: Lexicon.shareKey, rkey: Lexicon.shareKeyKey
         ).flatMap { try? $0.decode(as: SharingKeyRecord.self) }
@@ -96,12 +101,15 @@ extension JoinedDrive {
         let (info, share) = try await ownShare(mount)
         guard share.keyring != nil, let resolver = access?.resolver else { return [] }
         let existing = try await memberEntries(share)
+        let verified = try await verifiedKeys()
         var warnings: [MemberWarning] = []
         for did in dids {
-            guard let published = try await SharingKeyRecord.fetch(did, resolver: resolver, transport: home.client.transport)
+            guard
+                let published = try await SharingKeyRecord.fetch(
+                    did, resolver: resolver, transport: home.client.transport)
             else { throw SharingError.noSharingKey(did) }
             if !published.protected { warnings.append(.unprotected(did)) }
-            if let known = existing[did]?.publicKey, known != published.publicKey {
+            if let known = verified[did].map(Bytes.init) ?? existing[did]?.publicKey, known != published.publicKey {
                 warnings.append(
                     .keyChanged(
                         did, from: SharingKeyRecord.fingerprint(of: known.data), to: published.fingerprint))
@@ -113,9 +121,16 @@ extension JoinedDrive {
 
     /// Adds people (by DID), read-only. For an encrypted share, each gets the keyring wrapped for
     /// the sharing key they published (check `memberWarnings` first). Already members: their
-    /// keyring is wrapped again, for the key they publish now.
-    public func addMembers(_ dids: [String], to mount: Node) async throws {
+    /// keyring is wrapped again, for the key they publish now. A key that changed since it was
+    /// verified or last wrapped for is refused (`keyChanged`) unless `allowingChangedKeys`: the
+    /// owner checked it.
+    public func addMembers(_ dids: [String], to mount: Node, allowingChangedKeys: Bool = false) async throws {
         let (info, share) = try await ownShare(mount)
+        if !allowingChangedKeys {
+            for warning in try await memberWarnings(dids, for: mount) {
+                if case .keyChanged(let did, _, _) = warning { throw SharingError.keyChanged(did) }
+            }
+        }
         try await home.client.putMembers(info.space, dids.map { SpaceMember(did: $0) })
         guard let keyring = share.keyring else { return }
         guard let resolver = access?.resolver else { throw MountUnavailable() }
@@ -123,7 +138,9 @@ extension JoinedDrive {
         var writes: [SpaceWrite] = []
         let existing = try await memberEntries(share)
         for did in dids {
-            guard let published = try await SharingKeyRecord.fetch(did, resolver: resolver, transport: home.client.transport),
+            guard
+                let published = try await SharingKeyRecord.fetch(
+                    did, resolver: resolver, transport: home.client.transport),
                 let key = published.key
             else { throw SharingError.noSharingKey(did) }
             let value = try MemberKeys.record(keyring: keyring, for: did, key: key, from: mine, space: info.space)
@@ -156,18 +173,21 @@ extension JoinedDrive {
             return listed.map { ShareMember(did: $0.did, fingerprint: nil, protected: nil, keyChanged: false) }
         }
         let entries = try await memberEntries(share)
+        let verified = try await verifiedKeys()
         var members: [ShareMember] = []
         for member in listed {
             var published: SharingKeyRecord?
             if let resolver = access?.resolver {
-                published = try? await SharingKeyRecord.fetch(member.did, resolver: resolver, transport: home.client.transport)
+                published = try? await SharingKeyRecord.fetch(
+                    member.did, resolver: resolver, transport: home.client.transport)
             }
             let wrappedFor = entries[member.did]?.publicKey
             members.append(
                 ShareMember(
                     did: member.did, fingerprint: (wrappedFor?.data).map(SharingKeyRecord.fingerprint(of:)),
                     protected: published?.protected,
-                    keyChanged: published.map { $0.publicKey != wrappedFor } ?? false))
+                    keyChanged: published.map { $0.publicKey != wrappedFor } ?? false,
+                    verified: published.map { verified[member.did] == $0.publicKey.data } ?? false))
         }
         return members
     }
@@ -197,12 +217,16 @@ extension JoinedDrive {
     func rotateAndRewrap(_ mount: Node) async throws {
         let share = try await drive(forShare: mount)
         let entries = try await memberEntries(share)
-        guard let keyring = try await rotateKey(of: mount), let info = latestMount(mount.id)?.record.mount else { return }
+        guard let keyring = try await rotateKey(of: mount), let info = latestMount(mount.id)?.record.mount else {
+            return
+        }
         let rotated = try await drive(forShare: latestMount(mount.id) ?? mount)
         let mine = try await ensureSharingKey()
         var writes: [SpaceWrite] = []
         for (did, entry) in entries.sorted(by: { $0.key < $1.key }) {
-            guard let key = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: entry.publicKey.data) else { continue }
+            guard let key = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: entry.publicKey.data) else {
+                continue
+            }
             writes.append(
                 .update(
                     collection: Lexicon.member, rkey: did,

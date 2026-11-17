@@ -192,7 +192,9 @@ public final class XRPCClient: Sendable {
 
     /// Checks the MAC on a response that carries a commit (`SpaceMAC`). A response without a
     /// commit (a page of the change feed short of its head) has nothing to check.
-    private static func verifyMAC(_ data: Data, response: HTTPURLResponse, request: SpaceMAC.Request, repo: String, space: String)
+    private static func verifyMAC(
+        _ data: Data, response: HTTPURLResponse, request: SpaceMAC.Request, repo: String, space: String
+    )
         throws
     {
         struct Output: Decodable { var commit: RepoCommit? }

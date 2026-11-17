@@ -415,6 +415,18 @@ extension Drive {
 
     // MARK: Storing records
 
+    /// Any other record of the drive's, as it's stored: sealed on an encrypted drive.
+    func stored<Payload: Encodable>(_ payload: Payload, collection: String, rkey: String) throws -> JSONValue {
+        try store(payload, collection: collection, rkey: rkey, chunks: nil)
+    }
+
+    /// Such a record, read back; `nil` if it doesn't read here.
+    func read<Payload: Decodable>(_ value: JSONValue?, as type: Payload.Type, collection: String, rkey: String)
+        -> Payload?
+    {
+        try? unseal(value, as: type, collection: collection, rkey: rkey).payload
+    }
+
     /// A node record as it's stored. A mount holding a keyring is refused unless it's sealed: on a
     /// plain drive, the keyring would be readable.
     func stored(_ record: NodeRecord, id: String) throws -> JSONValue {

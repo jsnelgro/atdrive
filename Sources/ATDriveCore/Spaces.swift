@@ -92,7 +92,8 @@ extension XRPCClient {
         }
         for start in stride(from: 0, to: members.count, by: 100) {
             let batch = Array(members[start..<min(start + 100, members.count)])
-            let _: Empty = try await procedure("com.atproto.memberspace.putMembers", Input(space: space, members: batch))
+            let _: Empty = try await procedure(
+                "com.atproto.memberspace.putMembers", Input(space: space, members: batch))
         }
     }
 
@@ -104,7 +105,8 @@ extension XRPCClient {
         }
         for start in stride(from: 0, to: dids.count, by: 100) {
             let batch = Array(dids[start..<min(start + 100, dids.count)])
-            let _: Empty = try await procedure("com.atproto.memberspace.removeMembers", Input(space: space, dids: batch))
+            let _: Empty = try await procedure(
+                "com.atproto.memberspace.removeMembers", Input(space: space, dids: batch))
         }
     }
 

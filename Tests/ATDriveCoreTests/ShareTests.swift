@@ -74,8 +74,10 @@ import Testing
         let before = try await listing()
         let mount = try await joined.share(notes)
         #expect(mount.name == "notes.txt" && mount.isMount)
-        #expect(try await listing() == before.merging(["/notes.txt": "/"]) { _, new in new }.merging(
-            ["/notes.txt/notes.txt": "notes!"]) { _, new in new })
+        #expect(
+            try await listing()
+                == before.merging(["/notes.txt": "/"]) { _, new in new }.merging(
+                    ["/notes.txt/notes.txt": "notes!"]) { _, new in new })
     }
 
     @Test func aPlainShareFromAnEncryptedDriveUploadsAgain() async throws {

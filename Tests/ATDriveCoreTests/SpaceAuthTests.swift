@@ -9,9 +9,10 @@ import Testing
 /// Python (`cryptography`, `hmac`).
 @Suite struct SpaceAuthTests {
     static func hex(_ text: String) -> Data {
-        Data(stride(from: 0, to: text.count, by: 2).map {
-            UInt8(text[text.index(text.startIndex, offsetBy: $0)...].prefix(2), radix: 16)!
-        })
+        Data(
+            stride(from: 0, to: text.count, by: 2).map {
+                UInt8(text[text.index(text.startIndex, offsetBy: $0)...].prefix(2), radix: 16)!
+            })
     }
 
     static let kemPrivate = hex("62c3868357a464f8461d03aa0182c7cebcde841036aea7230ddc7339f1088346")
@@ -61,9 +62,11 @@ import Testing
     @Test func verifiesCommitMACsAndRefusesForgeries() throws {
         let author = P256.KeyAgreement.PrivateKey()
         let space = "at://did:plc:alice/space/me.jsnelgro.atdrive.drive/abc"
-        let commit = RepoCommit(rev: "3kbcq3p7ad400", data: Data(repeating: 7, count: 32), ver: 1, repo: "did:plc:alice", space: space)
+        let commit = RepoCommit(
+            rev: "3kbcq3p7ad400", data: Data(repeating: 7, count: 32), ver: 1, repo: "did:plc:alice", space: space)
         let request = try SpaceMAC.request(kemKey: author.publicKey)
-        let headers = try SpaceMAC.responseHeaders(for: commit, acceptSignature: request.acceptSignature, kemKey: author)
+        let headers = try SpaceMAC.responseHeaders(
+            for: commit, acceptSignature: request.acceptSignature, kemKey: author)
         let lookup = { (name: String) in headers.first { $0.key.lowercased() == name.lowercased() }?.value }
         try SpaceMAC.verify(commit, headers: lookup, request: request, repo: "did:plc:alice", space: space)
 

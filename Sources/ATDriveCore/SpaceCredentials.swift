@@ -158,8 +158,9 @@ public struct SpaceAccess: Sendable {
     public let resolver: IdentityResolver
     public let transport: any HTTPTransport
 
-    public init(ownClient: XRPCClient?, resolver: IdentityResolver, transport: any HTTPTransport = URLSessionTransport())
-    {
+    public init(
+        ownClient: XRPCClient?, resolver: IdentityResolver, transport: any HTTPTransport = URLSessionTransport()
+    ) {
         self.ownClient = ownClient
         self.resolver = resolver
         self.transport = transport

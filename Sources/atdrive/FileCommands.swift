@@ -228,6 +228,10 @@ struct Get: AsyncParsableCommand {
               atdrive get -r /Photos ~/Pictures     → ~/Pictures/Photos/...
               atdrive get -r / ./backup             → everything, into ./backup
             Files that are already identical locally are skipped.
+
+            Given a link someone shared (atdrive://…), downloads what it shares into the folder:
+              atdrive get 'atdrive://open?at=…' ~/Downloads
+            That works signed out, for a link that's on.
             """
     )
 
@@ -245,6 +249,11 @@ struct Get: AsyncParsableCommand {
     }
 
     func run() async throws {
+        if let first = paths.first, first.hasPrefix("atdrive://") || first.hasPrefix("at://") {
+            // A link: download what it shares, once (signed out for a public link).
+            guard paths.count <= 2 else { throw ValidationError("one link at a time") }
+            return try await LinkDownload.run(first, to: URL(fileURLWithPath: paths.count == 2 ? paths[1] : "."))
+        }
         let context = try await Context.load()
         let drive = context.joined
         let tree = try await context.tree(at: at)
@@ -272,7 +281,9 @@ struct Get: AsyncParsableCommand {
         }
     }
 
-    private func downloadFolder(_ folder: String?, at path: DrivePath, to local: URL, tree: DriveTree, drive: JoinedDrive)
+    private func downloadFolder(
+        _ folder: String?, at path: DrivePath, to local: URL, tree: DriveTree, drive: JoinedDrive
+    )
         async throws
     {
         try FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)

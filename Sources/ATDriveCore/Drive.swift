@@ -477,7 +477,8 @@ public final class Drive: Sendable {
         copy.createdAt = record.createdAt
         copy.modifiedAt = record.modifiedAt
         copy.mount = record.mount
-        return try await commit(change(.create, node: id ?? tids.next(), record: copy, .created, prev: nil, newContents: true))!
+        return try await commit(
+            change(.create, node: id ?? tids.next(), record: copy, .created, prev: nil, newContents: true))!
     }
 
     /// Deletes nodes that moved to another space: recorded as `kind` (`.shared` keeps them out of

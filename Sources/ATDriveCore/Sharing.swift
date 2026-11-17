@@ -35,7 +35,8 @@ extension Drive {
 
     /// Writes a mount node: `info`'s space appears as `name` in `parent`.
     @discardableResult
-    func createMount(_ info: MountInfo, named name: String, in parent: String?, id: String? = nil) async throws -> Node {
+    func createMount(_ info: MountInfo, named name: String, in parent: String?, id: String? = nil) async throws -> Node
+    {
         try DrivePath.validate(name: name)
         var record = NodeRecord(name: name, parent: parent, kind: .mount)
         record.mount = info
@@ -132,7 +133,9 @@ extension JoinedDrive {
 
     /// Copies a node of the home drive (and what's in it) into a share's space, keeping record
     /// keys, skipping what's there already (an interrupted share, run again).
-    private func copyForSharing(_ node: Node, in tree: DriveTree, to target: Drive, parent: String?, existing: DriveTree)
+    private func copyForSharing(
+        _ node: Node, in tree: DriveTree, to target: Drive, parent: String?, existing: DriveTree
+    )
         async throws
     {
         let done =
@@ -148,7 +151,8 @@ extension JoinedDrive {
                 return
             }
         } else {
-            let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("atdrive-share-\(UUID().uuidString)")
+            let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
+                "atdrive-share-\(UUID().uuidString)")
             defer { try? FileManager.default.removeItem(at: scratch) }
             try await home.download(node, to: scratch)
             written = try await target.upload(scratch, as: node.name, in: parent, modified: node.record.modifiedDate)
@@ -180,7 +184,8 @@ extension JoinedDrive {
     func shareRecords(_ share: Drive) async throws -> [(collection: String, rkey: String)] {
         var found: [(String, String)] = []
         for collection in [Lexicon.member, Lexicon.link] {
-            let page = try await share.client.listRawSpaceRecords(space: share.space, repo: share.owner, collection: collection)
+            let page = try await share.client.listRawSpaceRecords(
+                space: share.space, repo: share.owner, collection: collection)
             found += page.records.map { (collection, $0.rkey) }
         }
         return found
@@ -249,7 +254,8 @@ extension JoinedDrive {
                 try await home.delete([try homeNode(mount)])
             } else {
                 guard state.problem == nil, let share = drive(ofMount: id), let tree = state.snapshot?.tree else {
-                    throw ATDriveError.mountUnavailable(path: path, why: state.problem?.description ?? "it can't be read")
+                    throw ATDriveError.mountUnavailable(
+                        path: path, why: state.problem?.description ?? "it can't be read")
                 }
                 try await unmount(mount, share: share, shareTree: tree, joined: snapshot.tree)
             }
