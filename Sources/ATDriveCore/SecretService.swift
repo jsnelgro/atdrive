@@ -81,39 +81,52 @@ enum SecretTool {
         process.standardOutput = standardOutput
         process.standardError = standardError
         try process.run()
-        // Stops one that's waiting on a prompt nobody answers.
-        let running = RunningProcess(process)
-        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { running.stop() }
+        // Read both while it runs, so neither pipe fills up while it waits on the other.
+        let output = PipeReader(standardOutput)
+        let error = PipeReader(standardError)
         if let input { standardInput.fileHandleForWriting.write(input) }
         try? standardInput.fileHandleForWriting.close()
-        // Small, both: the secret, or a line of error. Neither fills a pipe while the other waits.
-        let output = standardOutput.fileHandleForReading.readDataToEndOfFile()
-        let error = standardError.fileHandleForReading.readDataToEndOfFile()
+        // Its output ends when it exits. This thread waits for that, with a deadline: one that's
+        // waiting on a prompt nobody answers is killed. SIGKILL, not terminate()'s SIGTERM: a child
+        // keeps a parent's ignored or blocked signals, so SIGTERM can go unheard. Nothing's lost:
+        // it was only waiting.
+        let deadline = DispatchTime.now() + timeout
+        guard output.finished(by: deadline), error.finished(by: deadline) else {
+            kill(process.processIdentifier, SIGKILL)
+            process.waitUntilExit()
+            throw SecretServiceError.timedOut(timeout)
+        }
         process.waitUntilExit()
-        if running.stopped { throw SecretServiceError.timedOut(timeout) }
         return Result(
-            status: process.terminationStatus, output: output,
-            error: String(decoding: error, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
+            status: process.terminationStatus, output: output.data(),
+            error: String(decoding: error.data(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
-    /// A process, for stopping it from another thread.
-    private final class RunningProcess: @unchecked Sendable {
-        private let process: Process
-        private let lock = NSLock()
-        private var didStop = false
+    /// Reads a pipe to its end on another thread.
+    private final class PipeReader: @unchecked Sendable {
+        private let done = DispatchSemaphore(value: 0)
+        private var read = Data()
 
-        init(_ process: Process) { self.process = process }
-
-        var stopped: Bool { lock.withLock { didStop } }
-
-        func stop() {
-            lock.withLock {
-                guard process.isRunning else { return }
-                didStop = true
-                // SIGKILL, not terminate()'s SIGTERM: a child keeps a parent's ignored or blocked
-                // signals, so SIGTERM can go unheard. Nothing's lost: it was only waiting.
-                kill(process.processIdentifier, SIGKILL)
+        init(_ pipe: Pipe) {
+            let handle = pipe.fileHandleForReading
+            DispatchQueue.global().async {
+                self.read = handle.readDataToEndOfFile()
+                self.done.signal()
             }
+        }
+
+        /// Whether the other end has closed (the process has exited) by `deadline`.
+        func finished(by deadline: DispatchTime) -> Bool {
+            guard done.wait(timeout: deadline) == .success else { return false }
+            done.signal()  // for data()
+            return true
+        }
+
+        /// Everything, once the other end is closed.
+        func data() -> Data {
+            done.wait()
+            done.signal()
+            return read
         }
     }
 }
