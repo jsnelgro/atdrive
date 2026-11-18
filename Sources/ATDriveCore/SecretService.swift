@@ -102,17 +102,19 @@ enum SecretTool {
             error: String(decoding: error.data(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
-    /// Reads a pipe to its end on another thread.
+    /// Reads a pipe to its end on a thread of its own. Not a Dispatch global queue: those have
+    /// about a thread per core and don't add more for work that blocks, so with the cores busy
+    /// (tests in parallel, say) the read might not start until it's too late.
     private final class PipeReader: @unchecked Sendable {
         private let done = DispatchSemaphore(value: 0)
         private var read = Data()
 
         init(_ pipe: Pipe) {
             let handle = pipe.fileHandleForReading
-            DispatchQueue.global().async {
+            Thread {
                 self.read = handle.readDataToEndOfFile()
                 self.done.signal()
-            }
+            }.start()
         }
 
         /// Whether the other end has closed (the process has exited) by `deadline`.
