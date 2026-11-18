@@ -17,6 +17,8 @@ final class AppModel {
         case signingIn
         /// Signed in; opening the drive (with this Mac's keys, if it's encrypted).
         case openingDrive(handle: String)
+        /// The account has no drive yet: the user chooses whether to encrypt the one made now.
+        case choosingEncryption(handle: String)
         /// An encrypted drive just created: its recovery key, shown until the user says they've
         /// saved it.
         case showingRecoveryKey(handle: String, key: String)
@@ -55,6 +57,11 @@ final class AppModel {
 
     /// How often to check the drive for changes made elsewhere.
     private let pollInterval: Duration = .seconds(30)
+
+    /// The account, once the drive is open.
+    var signedInHandle: String? {
+        if case .signedIn(let handle) = state { handle } else { nil }
+    }
 
     /// This Mac's name, as other devices list it.
     var deviceName: String { drive?.identity?.name ?? DeviceName.current }
@@ -136,9 +143,8 @@ final class AppModel {
 
     // MARK: The drive's keys
 
-    /// Opens the drive. With no drive yet, creates one: not encrypted, which is the default
-    /// (`atdrive encryption on` turns encryption on, and shows the recovery key). For an
-    /// encrypted drive this Mac has no keys for, asks how to get them. Only this, never the
+    /// Opens the drive. With no drive yet, asks whether to encrypt it (`createDrive`). For an
+    /// encrypted drive this Mac has no keys for, asks how to get them. Only the app, never the
     /// extension, creates a drive.
     private func openDrive(handle: String) async {
         let drive: Drive
@@ -155,18 +161,8 @@ final class AppModel {
             try await drive.open()
             await finishOpening(handle: handle)
         } catch DriveAccessError.noDrive {
-            do {
-                if let key = try await drive.create() {
-                    state = .showingRecoveryKey(handle: handle, key: key.formatted)
-                } else {
-                    await finishOpening(handle: handle)
-                }
-            } catch DriveAccessError.driveExists {
-                state = .needsKeys(handle: handle)  // another device made it a moment ago
-            } catch {
-                message = String(describing: error)
-                state = .needsKeys(handle: handle)
-            }
+            message = nil
+            state = .choosingEncryption(handle: handle)
         } catch let error as DriveAccessError {
             if case .notApproved = error {} else { message = error.description }
             state = .needsKeys(handle: handle)
@@ -174,6 +170,30 @@ final class AppModel {
             // Offline, say: carry on, and the extension tries again.
             logger.error("opening the drive failed: \(String(describing: error), privacy: .public)")
             await finishOpening(handle: handle)
+        }
+    }
+
+    /// The user chose, for a new drive, whether to encrypt it. An encrypted one's recovery key is
+    /// shown next.
+    func createDrive(encrypted: Bool) {
+        guard let drive, case .choosingEncryption(let handle) = state, !busy else { return }
+        busy = true
+        message = nil
+        Task {
+            defer { busy = false }
+            do {
+                if let key = try await drive.create(encrypted: encrypted) {
+                    state = .showingRecoveryKey(handle: handle, key: key.formatted)
+                } else {
+                    await finishOpening(handle: handle)
+                }
+            } catch DriveAccessError.driveExists {
+                // Another device made it a moment ago: open that one.
+                state = .openingDrive(handle: handle)
+                await openDrive(handle: handle)
+            } catch {
+                message = String(describing: error)
+            }
         }
     }
 
@@ -263,11 +283,12 @@ final class AppModel {
         await addToFinder(handle: handle)
     }
 
-    /// The drive with what's mounted in it, opened, for sharing: `nil` until signed in.
+    /// The drive with what's mounted in it, opened, for sharing and settings: `nil` until signed
+    /// in. It's the drive the app opened, so there's one copy of this Mac's identity in the app.
     func joinedDrive() async -> JoinedDrive? {
         guard case .signedIn = state else { return nil }
         if let joined { return joined }
-        guard let drive = try? await makeDrive(), (try? await drive.open()) != nil else { return nil }
+        guard let drive = self.drive, (try? await drive.open()) != nil else { return nil }
         let joined = JoinedDrive(
             home: drive, access: SpaceAccess(ownClient: drive.client, resolver: IdentityResolver()))
         self.joined = joined

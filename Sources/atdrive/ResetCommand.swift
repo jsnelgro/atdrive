@@ -13,9 +13,10 @@ struct Reset: AsyncParsableCommand {
             - your published sharing key, and this device's identity.
             Folders other people shared with you aren't touched; they're no longer in your drive.
 
-            Then it makes a new, empty drive (encrypted with --encrypted). Your other devices
-            have to sign in again, and a synced folder of the old drive stops syncing (its
-            files stay where they are).
+            Then it makes a new, empty drive (encrypted with --encrypted), or none with
+            --no-drive: the next sign-in makes one (the Mac app asks whether to encrypt it). Your
+            other devices have to sign in again, and a synced folder of the old drive stops
+            syncing (its files stay where they are).
             """)
 
     @Flag(help: "Don't ask: delete straight away.")
@@ -23,6 +24,13 @@ struct Reset: AsyncParsableCommand {
 
     @Flag(help: "Make the new drive encrypted.")
     var encrypted = false
+
+    @Flag(help: "Don't make a new drive: the next sign-in makes one.")
+    var noDrive = false
+
+    func validate() throws {
+        if encrypted && noDrive { throw ValidationError("--encrypted and --no-drive don't go together") }
+    }
 
     func run() async throws {
         let context = try await Context.locked()
@@ -48,6 +56,10 @@ struct Reset: AsyncParsableCommand {
         }
         let shared = result.spaces.filter { $0 != context.drive.space }.count
         print("✓ Deleted your drive\(shared > 0 ? " and \(shared) shared folder\(shared == 1 ? "" : "s")" : "").")
-        try await KeySetup.run(encrypted: encrypted)
+        if noDrive {
+            print("Your account has no drive now. Signing in (the Mac app, or `atdrive login`) makes one.")
+        } else {
+            try await KeySetup.run(encrypted: encrypted)
+        }
     }
 }
