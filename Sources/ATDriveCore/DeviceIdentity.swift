@@ -48,11 +48,24 @@ public struct DeviceIdentity: Codable, Sendable, Equatable, CustomStringConverti
         id = try container.decode(String.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
         privateKeyData = try container.decode(Bytes.self, forKey: .privateKeyData)
-        trust = try container.decodeIfPresent([String: DeviceTrust].self, forKey: .trust) ?? [:]
+        do {
+            trust = try container.decodeIfPresent([String: DeviceTrust].self, forKey: .trust) ?? [:]
+        } catch DecodingError.typeMismatch where Self.isSingleDriveTrust(container) {
+            // From before trust was kept per drive: one drive's, without saying which. Dropped.
+            // That fails closed: an encrypted drive asks to approve this device again.
+            trust = [:]
+        }
         guard (try? Curve25519.KeyAgreement.PrivateKey(rawRepresentation: privateKeyData.data)) != nil else {
             throw DecodingError.dataCorruptedError(
                 forKey: .privateKeyData, in: container, debugDescription: "not a Curve25519 private key")
         }
+    }
+
+    /// Whether `trust` has the shape it had before it was kept per drive: one `DeviceTrust`.
+    private static func isSingleDriveTrust(_ container: KeyedDecodingContainer<CodingKeys>) -> Bool {
+        enum Old: CodingKey { case knownKeys }
+        guard let old = try? container.nestedContainer(keyedBy: Old.self, forKey: .trust) else { return false }
+        return (try? old.decode([String].self, forKey: .knownKeys)) != nil
     }
 
     /// Never the private key, so logging one by mistake is harmless.
