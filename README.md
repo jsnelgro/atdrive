@@ -177,26 +177,23 @@ atdrive rm -r /archive/taxes
 
 | Command | What it does |
 |---|---|
-| `login <handle>` / `logout` / `whoami` | Start, end, or show the session. `login` also creates the drive, or gets this device its keys |
+| `login <handle>` / `logout` / `whoami` | Start, end, or show the session. `login` also creates the drive (asking whether to encrypt it), or gets this device its keys |
 | `ls [-l] [path]`, `tree [path]` | Browse the drive |
 | `put [-r] <local>… [dest]` | Upload. Works like `cp`. Existing files are replaced in place, and unchanged ones are skipped |
-| `get [-r] <path>… [local]` | Download. Works like `cp`. Files that are already identical locally are skipped |
+| `get [-r] <path>… [local]` | Download. Works like `cp`. Files that are already identical locally are skipped. Also takes a share link |
 | `cat <path>` | Print a file to stdout |
 | `mkdir [-p] <path>…`, `mv <from> <to>`, `rm [-r] <path>…` | What you'd expect. `rm` puts things in the trash |
 | `sync [folder]` | Keep a folder in sync with the drive (see [claude notes here](#a-synced-folder-linux)) |
+| `share <path> [people…]`, `unshare <path> [people…]` | Share with people, or naming nobody, with a public link; take people off, or naming nobody, stop sharing (see [Sharing](#sharing)) |
+| `shares`, `open-share <link>`, `verify <person>` | What you share and what's shared with you; put something shared with you in your drive; check someone's key |
 | `ls`, `tree`, `get`, `cat` with `--at <when>` | The drive as it was then (see [History and trash](#history-and-trash)) |
 | `history [path]` | What changed, when, and on which device: for a file, a folder, or the whole drive |
-| `restore <path> --at <when>` | Put a file or folder back as it was then: contents, name and place |
-| `restore <path> --previous` | Undo its latest change |
-| `trash`, `trash restore <path>…` | What was deleted in the last 30 days, and bring it back where it was |
-| `trash empty`, `purge [-r] <path>…` | Delete everything in the trash, or anything, for good, with its history |
-| `du` | Space used by current files and by history |
-| `prune` | Delete history older than 30 days now (`sync` does it once a day) |
+| `restore <path> [--at <when>]` | Bring something back from the trash, or undo its latest change; with `--at`, as it was then |
+| `trash`, `trash empty [path…]` | What was deleted in the last 30 days; delete it (or just these) for good, with its history |
 | `encryption`, `encryption on`, `encryption off` | Whether the drive is encrypted, and turning encryption on or off (see [Encryption](#encryption)) |
-| `devices` | An encrypted drive's devices: those that hold its keys, and those asking for them |
-| `devices approve [name]`, `devices remove <name>` | Give a new device the keys (after comparing a code), or take a device's access away (see [Encryption](#encryption)) |
-| `unlock` | Give this device the drive's keys with the recovery key |
-| `recovery-key` | Make a new recovery key. The old one stops working |
+| `encryption unlock`, `encryption rotate-recovery-key` | Give this device the drive's keys with the recovery key; replace the recovery key |
+| `devices`, `devices approve [name]`, `devices rm <name>` | An encrypted drive's devices; give a new one the keys (after comparing a code), or take one off |
+| `dev reset`, `dev du`, `dev lexicons publish` | For development: delete everything, as if ATDrive had never been used; space used by files and history; publish the schemas |
 
 Paths in the drive always start from the top (`/photos/cat.jpg`).
 
@@ -204,8 +201,8 @@ Paths in the drive always start from the top (`/photos/cat.jpg`).
 and ATDrive never sees your password.
 - **What it gets:** tokens that are tied to a key only it holds, saved in
   `~/.config/atdrive/session.json` (mode 600) for the CLI, or in the app's container on the Mac.
-- **Then it opens your drive:** the first `atdrive login` creates it (`--encrypted` makes it
-  encrypted, and shows its recovery key). For an encrypted drive this device doesn't have the
+- **Then it opens your drive:** the first `atdrive login` creates it, asking whether to encrypt
+  it (an encrypted drive's recovery key is shown then). For an encrypted drive this device doesn't have the
   keys of yet, it asks how to get them (see [Encryption](#encryption)).
 - **What it keeps beside them, for an encrypted drive:** this device's own key pair, which the
   drive's keys are wrapped for (`device.json`, also mode 600). `atdrive logout` leaves it, so
@@ -234,10 +231,10 @@ The drive keeps 30 days of history: every edit, rename, move and delete, whereve
 ```bash
 atdrive history /docs/notes.txt             # its changes, newest first
 atdrive cat /docs/notes.txt --at 2d         # as it was two days ago
-atdrive restore /docs/notes.txt --previous  # undo its latest change
+atdrive restore /docs/notes.txt             # undo its latest change
 atdrive restore /docs --at 3d               # a folder as it was 3 days ago
 atdrive trash                               # what was deleted
-atdrive trash restore /photos               # bring it back
+atdrive restore /photos                     # bring it back from the trash
 ```
 
 - **`--at <when>`** works with `ls`, `tree`, `get`, `cat` and `restore`. It takes `2h` or `3d`
@@ -246,16 +243,18 @@ atdrive trash restore /photos               # bring it back
   or moved since is found under its old path.
 - **Restoring** puts back contents, name and place. A folder gets back what was in it then, and
   keeps what was added since. A restore is a change like any other, so it can be undone too.
-- **The trash** holds what was deleted in the last 30 days. `trash restore` brings something back
-  where it was, with the folders it was in. If the name is taken by now, it comes back as a
-  conflicted copy.
-- **For good:** `atdrive purge` deletes something now, with all its history, and `trash empty` does
-  that to everything in the trash. Both ask first (`--yes` skips the question).
+- **The trash** holds what was deleted in the last 30 days. `restore` brings something deleted
+  back where it was, with the folders it was in. If the name is taken by now, it comes back as a
+  conflicted copy. (On something that isn't deleted, `restore` without `--at` undoes its latest
+  change. It says which it did.)
+- **For good:** `atdrive trash empty` deletes everything in the trash, with all its history, and
+  `trash empty <path>` just that. To get rid of something right away, `rm` it, then `trash empty`
+  it. It asks first (`--yes` skips the question).
 - **Two devices changing the same file at once** don't lose an edit: both versions are kept, and
   `history` marks the one that "lost a race". Syncing brings a lost edit back as a conflicted copy.
 - **Space:** history costs only what changed, since a chunk is stored once however many files and
-  versions use it. `atdrive du` shows how much is current files and how much is history.
-  `atdrive sync` deletes history older than 30 days once a day; `atdrive prune` does it now.
+  versions use it. `atdrive dev du` shows how much is current files and how much is history.
+  `atdrive sync` and the Mac app delete history older than 30 days once a day.
 
 Times come from the clock of the device that made the change.
 
@@ -274,7 +273,7 @@ Encryption is optional, and off unless you turn it on.
 
 ```bash
 atdrive encryption        # which it is, and whether anything is still being converted
-atdrive encryption on     # or: atdrive login --encrypted, when the drive is first created
+atdrive encryption on     # (a new drive asks when it's created)
 atdrive encryption off
 ```
 
@@ -289,17 +288,16 @@ On a Mac, the same switch is in the app's **Settings…**.
 - **Turning it off** is immediate: the drive's keys are published in the drive itself, so
   everything in it, history included, is readable by whoever runs your PDS from that moment. That
   can't be taken back for what's already there. The files are then uploaded again unencrypted, so
-  apps that can't decrypt can read them; that part can be skipped (`--keep-records`) or
-  interrupted. Your other devices carry on by themselves: they recognize the published keys, so
+  apps that can't decrypt can read them; that part can be interrupted. Your other devices carry on by themselves: they recognize the published keys, so
   they know it was one of your devices that turned encryption off, not the server.
 
 The rest of this section is about encrypted drives.
 
 - **The recovery key** is shown once, when the drive is created: 14 groups of 4 letters and
   digits. Write it down, or keep it in a password manager. With it, any device you sign in on can
-  open the drive (`atdrive unlock`). **If you lose every device that has the drive's keys and the
-  recovery key too, nobody can read your files again**: not you, and not whoever runs your PDS.
-  `atdrive recovery-key` makes a new one; the old one stops working.
+  open the drive (`atdrive encryption unlock`). **If you lose every device that has the drive's
+  keys and the recovery key too, nobody can read your files again**: not you, and not whoever runs
+  your PDS. `atdrive encryption rotate-recovery-key` makes a new one; the old one stops working.
 - **Adding a device:** sign in there (`atdrive login`, or the Mac app). Then either type the
   recovery key, or approve it from a device that has the keys:
 
@@ -310,12 +308,12 @@ The rest of this section is about encrypted drives.
   Both devices show a 16-digit code. Approve only if they match: if they don't, something between
   them swapped in a key of its own. The new device then shows the code of the one that approved
   it, to confirm once more.
-- **Removing a device** (`atdrive devices remove <name>`, say for a lost laptop) gives the drive
+- **Removing a device** (`atdrive devices rm <name>`, say for a lost laptop) gives the drive
   a new key for everything written from then on, which the removed device never gets. It asks for
   the recovery key, which has to open the new key too (or makes a new recovery key). What removal
   can't do:
-  - The removed device keeps what it could already read: everything written before, and its own
-    copies.
+  - The removed device can still read everything stored before, and keeps its own copies.
+    Re-encrypting what's stored under a new key is planned (#46).
   - It can still sign in to your account until you revoke its session (in your account's settings,
     or by signing it out there). Until every other device has seen the removal, what it
     writes may still be read.
@@ -339,27 +337,28 @@ and **Download…**; so does **Add Shared Link…** in the menu bar.
 From the command line:
 
 ```bash
-atdrive share /photos --link                 # anyone with the link can see it
-atdrive share /photos --with alice.bsky.social
-atdrive share ls                             # what you share, with whom, and whose drives aren't encrypted
-atdrive share remove /photos alice.bsky.social
+atdrive share /photos alice.bsky.social      # share it with alice
+atdrive share /photos                        # a public link anyone can open (prints it)
+atdrive shares                               # what you share, with whom, and its link; and what's shared with you
+atdrive unshare /photos alice.bsky.social    # take alice off
 atdrive unshare /photos                      # stop sharing it: it's an ordinary folder again
 
-atdrive open 'atdrive://open?at=…'           # add something shared with you to your drive
-atdrive shared ls                            # what's shared with you
+atdrive open-share 'atdrive://open?at=…'     # put something shared with you in your drive
 atdrive get 'atdrive://open?at=…' ~/Downloads   # just download it (no sign-in needed for a link)
+atdrive rm /from-alice                       # take something shared with you out of your drive
 ```
 
 - **The first time something is shared,** it moves into a space of its own, which stays where it
   was in your drive. Its history up to then stays with your drive: people see it from then on.
+  Once nobody has it any more (no people, no link), it's an ordinary file or folder again.
 - **Shares take your drive's mode.** An encrypted drive's shares are encrypted, even behind a
-  link: an encrypted share's link ends with `#<key>`, which never reaches a server. `--plain` makes
-  an unencrypted one.
+  link: an encrypted share's link ends with `#<key>`, which never reaches a server.
 - **Sharing encrypted files with someone** wraps the share's keys for the sharing key they
-  publish. To be sure it's really theirs, compare codes: `atdrive share verify <handle>`. If their
+  publish. To be sure it's really theirs, compare codes: `atdrive verify <handle>`. If their
   key changes later, you're asked before anything new is shared with them. If their own drive
   isn't encrypted, you're told: their PDS could read what you share.
-- **Removing someone** stops them getting anything new; what they already downloaded stays theirs.
+- **Taking someone off** stops them getting anything new; what they already downloaded stays theirs.
+- **Deleting something you share** (`rm`) stops sharing it; it asks first, and says who loses it.
 - **If you lose access** to something shared with you, it stays as it was, and says why. If its
   owner deletes it, it's gone here too.
 - **Turning encryption on or off ends your sharing:** your shares move back into your drive, and
@@ -368,9 +367,9 @@ atdrive get 'atdrive://open?at=…' ~/Downloads   # just download it (no sign-in
   links on a Linux desktop; the Mac app does on a Mac. Some chat apps won't make them clickable:
   paste them into ATDrive instead.
 
-To start over while trying things out, `atdrive reset` deletes your whole drive (and everything
-you shared) and makes a new, empty one; `atdrive reset --no-drive` leaves none, so the next
-sign-in makes it (the Mac app asks whether to encrypt it).
+To start over while trying things out, `atdrive dev reset` deletes your whole drive (and
+everything you shared), as if ATDrive had never been used on your account. The next sign-in makes
+a new drive, and asks whether to encrypt it.
 
 ## Conflicts
 
@@ -489,7 +488,7 @@ See [PLAN.md](PLAN.md) for the roadmap and design notes.
 - **`atdrive sync` on a Mac** works, but two names that differ only in case (`Notes.txt` and
   `notes.txt`) clash on Mac disks. The app doesn't have this problem.
 - **History and the trash are only in the command line.** Things deleted in Finder or in a
-  synced folder still go to the trash, and `atdrive trash restore` brings them back.
+  synced folder still go to the trash, and `atdrive restore` brings them back.
 - **Symlinks and aliases aren't stored.**
 - **Approving and removing devices is only in the command line.** The Mac app can create a drive
   (encrypted or not), switch encryption, and join an encrypted drive (by approval or the recovery

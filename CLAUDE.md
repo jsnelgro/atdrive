@@ -50,7 +50,7 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
   - Sharing: `Sharing.swift` (share, unshare, ending sharing when encryption switches),
     `Links.swift` (links, opening them), `People.swift` (members, the account's sharing key),
     `ShareKeys.swift` (member and link records), `Verification.swift` (verification codes).
-    `Reset.swift`: `atdrive reset`.
+    `Reset.swift`: `atdrive dev reset`.
   - `StoredRecords.swift`: the **only** place records become stored values and back. A record is
     plain or sealed and says which; `Drive.mode` (from the settings record) picks the form for
     writes. `DriveKeys.swift`: opening a drive, keys, devices. `Encryption.swift`: turning

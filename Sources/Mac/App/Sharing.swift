@@ -168,7 +168,6 @@ final class ShareModel {
     private(set) var busy = false
     private(set) var message: String?
     var newPerson = ""
-    var plain = false
     /// Warnings to confirm before adding someone.
     var pendingWarnings: [String] = []
     private var pendingDIDs: [String] = []
@@ -180,7 +179,6 @@ final class ShareModel {
 
     var isShared: Bool { node.isMount }
     var isMine: Bool { node.record.mount.map { $0.owner == drive.owner } ?? true }
-    var driveIsEncrypted: Bool { drive.mode == .encrypted }
 
     func load() async {
         guard node.isMount, isMine else { return }
@@ -202,7 +200,7 @@ final class ShareModel {
 
     func share() async {
         await run {
-            self.node = try await self.drive.share(self.node, plain: self.plain)
+            self.node = try await self.drive.share(self.node)
         }
         await load()
     }
@@ -357,12 +355,6 @@ struct ShareView: View {
                 "Share it with people by their handle, or turn on a link anyone can open. It stays right where it is in your drive."
             )
             .fixedSize(horizontal: false, vertical: true)
-            if model.driveIsEncrypted {
-                Toggle(isOn: $model.plain) {
-                    Text("Share it unencrypted")
-                    Text("Whoever runs your server can read an unencrypted share.")
-                }
-            }
             HStack {
                 Spacer()
                 Button("Share") { Task { await model.share() } }

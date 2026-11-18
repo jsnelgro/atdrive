@@ -2,35 +2,31 @@ import ATDriveCore
 import ArgumentParser
 import Foundation
 
+/// For developing and testing ATDrive, not for everyday use.
+struct Dev: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "For developing and testing ATDrive.",
+        subcommands: [Reset.self, DiskUsage.self, Lexicons.self])
+}
+
 struct Reset: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Delete your whole drive and start again with an empty one.",
+        abstract: "Delete everything, as if ATDrive had never been used on your account.",
         discussion: """
-            For trying things out and testing: takes your account back to a clean slate, as if
-            ATDrive had never been used on it. It deletes:
+            For trying things out and testing: takes your account back to a clean slate. It deletes:
             - your drive, with everything in it and all its history;
-            - every folder you shared (people you shared them with lose them too);
+            - everything you shared (people you shared it with lose it too);
             - your published sharing key, and this device's identity.
-            Folders other people shared with you aren't touched; they're no longer in your drive.
+            Things other people shared with you aren't touched; they're no longer in your drive.
 
-            Then it makes a new, empty drive (encrypted with --encrypted), or none with
-            --no-drive: the next sign-in makes one (the Mac app asks whether to encrypt it). Your
-            other devices have to sign in again, and a synced folder of the old drive stops
-            syncing (its files stay where they are).
+            Afterwards your account has no drive. The next sign-in (`atdrive login`, or the Mac
+            app) makes one, and asks whether to encrypt it. Your other devices have to sign in
+            again, and a synced folder of the old drive stops syncing (its files stay where they
+            are).
             """)
 
-    @Flag(help: "Don't ask: delete straight away.")
+    @Flag(name: .shortAndLong, help: "Don't ask: delete straight away.")
     var yes = false
-
-    @Flag(help: "Make the new drive encrypted.")
-    var encrypted = false
-
-    @Flag(help: "Don't make a new drive: the next sign-in makes one.")
-    var noDrive = false
-
-    func validate() throws {
-        if encrypted && noDrive { throw ValidationError("--encrypted and --no-drive don't go together") }
-    }
 
     func run() async throws {
         let context = try await Context.locked()
@@ -55,11 +51,7 @@ struct Reset: AsyncParsableCommand {
             try FileManager.default.removeItem(at: devices.file)
         }
         let shared = result.spaces.filter { $0 != context.drive.space }.count
-        print("✓ Deleted your drive\(shared > 0 ? " and \(shared) shared folder\(shared == 1 ? "" : "s")" : "").")
-        if noDrive {
-            print("Your account has no drive now. Signing in (the Mac app, or `atdrive login`) makes one.")
-        } else {
-            try await KeySetup.run(encrypted: encrypted)
-        }
+        print("✓ Deleted your drive\(shared > 0 ? " and \(shared) share\(shared == 1 ? "" : "s")" : "").")
+        print("Your account has no drive now. Signing in (`atdrive login`, or the Mac app) makes one.")
     }
 }

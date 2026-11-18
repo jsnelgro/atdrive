@@ -113,17 +113,17 @@ public enum DriveAccessError: Error, Equatable, CustomStringConvertible {
             "this account has no drive yet: run `atdrive login` to create one"
         case .notApproved(pending: false):
             "this device doesn't have the drive's keys: run `atdrive login` to ask for them, or "
-                + "`atdrive unlock` to use the recovery key"
+                + "`atdrive encryption unlock` to use the recovery key"
         case .notApproved(pending: true):
             "this device is waiting to be approved: run `atdrive devices approve` on a device that has the "
-                + "drive's keys (or `atdrive login` here to compare codes), or `atdrive unlock` to use the "
+                + "drive's keys (or `atdrive login` here to compare codes), or `atdrive encryption unlock` to use the "
                 + "recovery key"
         case .untrustedKeyring(let sender):
             "ignored the keys wrapped for this device by \(sender): it isn't a device this one trusts. "
-                + "Approve this device again (`atdrive login`), or run `atdrive unlock` with the recovery key"
+                + "Approve this device again (`atdrive login`), or run `atdrive encryption unlock` with the recovery key"
         case .keyringMissingKeys:
             "ignored the keys wrapped for this device: they lack a key it had before (an old copy, or not "
-                + "the drive's). Approve this device again (`atdrive login`), or run `atdrive unlock` with the "
+                + "the drive's). Approve this device again (`atdrive login`), or run `atdrive encryption unlock` with the "
                 + "recovery key"
         case .locked:
             "this device doesn't have the drive's keys (run `atdrive login`)"
@@ -259,7 +259,7 @@ extension Drive {
     /// membership), the keyring wrapped with a new recovery key, and the settings, sealed. All in
     /// one transaction, and the drive is unlocked afterwards. It returns the recovery key, to
     /// show once. With every device lost, it's the only way back in, so only places that can show
-    /// it create an encrypted drive (`atdrive login --encrypted`, the Mac app's first sign-in),
+    /// it create an encrypted drive (`atdrive login`, the Mac app's first sign-in, when asked to),
     /// never a background sync.
     ///
     /// Throws `DriveAccessError.driveExists` if the account has a drive already.

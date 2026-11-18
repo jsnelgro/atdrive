@@ -425,7 +425,7 @@ struct Remove: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "rm", abstract: "Delete files or folders (they go to the trash).",
         discussion: """
-            Deleted things stay in the trash for \(DriveSettings.defaultRetentionDays) days, as long as the drive keeps history. `atdrive trash` lists them, and `atdrive trash restore <path>` brings them back. To delete something for good right away, use `atdrive purge`.
+            Deleted things stay in the trash for \(DriveSettings.defaultRetentionDays) days, as long as the drive keeps history. `atdrive trash` lists them, and `atdrive restore <path>` brings one back. To get rid of something for good, `atdrive trash empty <path>` after deleting it.
             """
     )
 
@@ -435,9 +435,13 @@ struct Remove: AsyncParsableCommand {
     @Flag(name: .shortAndLong, help: "Delete folders and everything in them.")
     var recursive = false
 
+    @Flag(name: .shortAndLong, help: "Don't ask for confirmation (deleting something you share).")
+    var yes = false
+
     func run() async throws {
         let drive = try await Context.load().joined
-        let tree = try await drive.tree()
+        let snapshot = try await drive.update(nil)
+        let tree = snapshot.tree
         // Check every path before deleting anything.
         var targets: [(DrivePath, [Node])] = []
         for raw in paths {
@@ -445,8 +449,24 @@ struct Remove: AsyncParsableCommand {
             guard let node = try tree.locate(path) else {
                 throw ATDriveError.invalidMove("refusing to delete the whole drive")
             }
-            if node.isFolder, !recursive { throw ATDriveError.needsRecursive(path.description) }
-            targets.append((path, node.isFolder ? tree.descendants(of: node.id) + [node] : [node]))
+            // Something shared with you only leaves your drive: no -r needed.
+            let theirs = node.isMount && snapshot.mounts[node.id]?.readOnly == true
+            if node.isFolder, !recursive, !theirs { throw ATDriveError.needsRecursive(path.description) }
+            targets.append((path, node.isFolder && !theirs ? tree.descendants(of: node.id) + [node] : [node]))
+        }
+        // Deleting something you share stops sharing it: say who loses it, and ask.
+        let ids = Set(targets.map { $0.1.last!.id })
+        let shared = try await drive.ownShares(in: snapshot).filter { ids.contains($0.mount.id) }
+        if !shared.isEmpty, !yes {
+            var lines: [String] = []
+            for share in shared {
+                let who = await Unshare.whoHasIt(share)
+                lines.append("\(share.path): \(who.isEmpty ? "shared, with nobody yet" : "\(who) will lose it")")
+            }
+            guard try Output.confirm("Deleting stops sharing these. Delete them?", about: lines) else {
+                print("Nothing was deleted.")
+                return
+            }
         }
         for (path, nodes) in targets {
             try await drive.delete(nodes)

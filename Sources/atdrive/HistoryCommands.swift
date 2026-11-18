@@ -88,11 +88,13 @@ struct ShowHistory: AsyncParsableCommand {
 
 struct Restore: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Put a file or folder back as it was.",
+        abstract: "Bring something back: from the trash, or as it was before its last change.",
         discussion: """
-              atdrive restore /notes.txt --previous   undo its latest change
+              atdrive restore /notes.txt              deleted: back from the trash; otherwise its last change undone
               atdrive restore /notes.txt --at 2h      as it was 2 hours ago
               atdrive restore /docs --at 2026-11-08   a folder, with what was in it
+
+            Without --at, something deleted comes back from the trash where it was (a folder with what was deleted with it; as "name (conflicted copy <date>)" if the name is taken by now), and anything else has its latest change undone. It says which it did.
 
             Contents, name and place all go back. With --at, the path is looked up as of then, so something renamed, moved or deleted since is found under the path it had. A folder gets back what was in it then, and keeps what was added since.
 
@@ -105,14 +107,6 @@ struct Restore: AsyncParsableCommand {
 
     @Option(help: When.help("Put it back"), transform: When.parse)
     var at: Date?
-
-    @Flag(help: "Undo its latest change.")
-    var previous = false
-
-    func validate() throws {
-        if at == nil, !previous { throw ValidationError("say when: --at <when>, or --previous") }
-        if at != nil, previous { throw ValidationError("choose --at or --previous") }
-    }
 
     func run() async throws {
         let (drive, snapshot, path) = try await Context.load().space(of: DrivePath(path), writing: true)
@@ -128,8 +122,17 @@ struct Restore: AsyncParsableCommand {
             }
             result = try await drive.restore(node.id, asOf: when, in: snapshot)
         } else {
-            guard let id = try snapshot.find(path).id else {
+            let found = try snapshot.find(path)
+            guard let id = found.id else {
                 throw CommandError("pick a file or folder to restore, not the whole drive")
+            }
+            if case .trashed = found {
+                print("Bringing \(path) back from the trash.")
+                let restored = try await drive.restoreFromTrash([id], in: snapshot)
+                let after = try await drive.update(snapshot)
+                for node in restored.restored { print("↺ \(Output.path(of: node.id, in: after))") }
+                Output.reportSkipped(restored, before: snapshot)
+                return
             }
             let history = snapshot.history
             guard let before = history.previousVersion(of: id, current: snapshot.tree) else {
@@ -159,7 +162,7 @@ struct Restore: AsyncParsableCommand {
         }
     }
 
-    /// The change `--previous` undoes: the node's current version, or its delete.
+    /// The change a restore without `--at` undoes: the node's current version.
     private static func latestChange(of id: String, in snapshot: DriveSnapshot) -> Version? {
         if let version = snapshot.tree.nodes[id]?.record.version { return snapshot.history.version(version) }
         return snapshot.trash().first { $0.id == id }?.deletion
@@ -168,22 +171,23 @@ struct Restore: AsyncParsableCommand {
 
 struct Trash: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "See what was deleted, and bring it back.",
+        abstract: "What's in the trash (`--all`: with what was deleted along with its folder).",
         discussion: """
               atdrive trash                       what's in it
-              atdrive trash restore /notes.txt    bring something back where it was
+              atdrive restore /notes.txt          bring something back where it was
               atdrive trash empty                 delete everything in it for good
+              atdrive trash empty /notes.txt      just that, for good
 
-            Deleted files and folders stay in the trash for \(DriveSettings.defaultRetentionDays) days (as long as the drive keeps history), then they're gone for good.
+            Deleted files and folders stay in the trash for \(DriveSettings.defaultRetentionDays) days (as long as the drive keeps history), then they're gone for good. To get rid of something for good now, `atdrive rm` it, then `atdrive trash empty` it.
             """,
-        subcommands: [TrashList.self, TrashRestore.self, TrashEmpty.self],
+        subcommands: [TrashList.self, TrashEmpty.self],
         defaultSubcommand: TrashList.self
     )
 }
 
 struct TrashList: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "list", abstract: "List what's in the trash, latest first.")
+        commandName: "ls", abstract: "List what's in the trash, latest first.", shouldDisplay: false)
 
     @Flag(name: .shortAndLong, help: "Also list what was deleted along with its folder.")
     var all = false
@@ -207,54 +211,57 @@ struct TrashList: AsyncParsableCommand {
         }
         print(
             "\nDeleted things stay here for \(Output.days(snapshot.retention)). "
-                + "`atdrive trash restore <path>` brings one back.")
-    }
-}
-
-struct TrashRestore: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "restore", abstract: "Bring things back from the trash, where they were.",
-        discussion: """
-            Give the paths things had when they were deleted. A folder comes back with what was deleted with it, and deleted folders it was in come back too. If the name is taken by now, it comes back as "name (conflicted copy <date>)". If several things were deleted from the same path, the latest one comes back.
-            """
-    )
-
-    @Argument(help: "Where they were in the drive.")
-    var paths: [String]
-
-    func validate() throws {
-        if paths.isEmpty { throw ValidationError("nothing to restore") }
-    }
-
-    func run() async throws {
-        let context = try await Context.load()
-        let (drive, snapshot, _) = try await context.space(of: DrivePath(paths[0]), writing: true)
-        var ids: [String] = []
-        for raw in paths {
-            let (other, _, path) = try await context.space(of: DrivePath(raw), writing: true)
-            guard other === drive else { throw CommandError("restore things from one shared folder at a time") }
-            guard let item = snapshot.trashed(at: path) else {
-                let isThere = (try? snapshot.tree.find(path)).map { $0 != .missing } ?? false
-                throw CommandError("\(path): not in the trash\(isThere ? " (it's in the drive)" : "")")
-            }
-            if !ids.contains(item.id) { ids.append(item.id) }
-        }
-        let result = try await drive.restoreFromTrash(ids, in: snapshot)
-        let after = try await drive.update(snapshot)
-        for node in result.restored { print("↺ \(Output.path(of: node.id, in: after))") }
-        Output.reportSkipped(result, before: snapshot)
+                + "`atdrive restore <path>` brings one back.")
     }
 }
 
 struct TrashEmpty: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "empty", abstract: "Delete everything in the trash for good, with its history.")
+        commandName: "empty",
+        abstract: "Delete what's in the trash for good, with its history: all of it, or just these.",
+        discussion: """
+            Nothing of it can be restored afterwards: every version goes too. Give the paths things had when they were deleted to empty just those (a folder goes with what was deleted with it).
+            """)
+
+    @Argument(help: "Where things in the trash were (default: everything in it).")
+    var paths: [String] = []
 
     @Flag(name: .shortAndLong, help: "Don't ask for confirmation.")
     var yes = false
 
     func run() async throws {
-        let drive = try await Context.load().drive
+        let context = try await Context.load()
+        guard !paths.isEmpty else { return try await emptyAll(context.drive) }
+        let (drive, snapshot, _) = try await context.space(of: DrivePath(paths[0]), writing: true)
+        // Check every path before deleting anything.
+        var targets: [(id: String, line: String)] = []
+        for raw in paths {
+            let (other, _, path) = try await context.space(of: DrivePath(raw), writing: true)
+            guard other === drive else { throw CommandError("empty things from one shared folder at a time") }
+            guard let item = snapshot.trashed(at: path) else {
+                let isThere = (try? snapshot.tree.find(path)).map { $0 != .missing } ?? false
+                throw CommandError(
+                    "\(path): not in the trash\(isThere ? " (it's in the drive: `atdrive rm` it first)" : "")")
+            }
+            var line = item.isFolder ? "\(path)/" : path.description
+            let inside = snapshot.deletedTogether(item).count - 1
+            if inside > 0 { line += "  (with \(Output.count(inside, "item")) in it)" }
+            if !targets.contains(where: { $0.id == item.id }) { targets.append((item.id, line)) }
+        }
+        if !yes {
+            let question = "Delete \(targets.count == 1 ? "this" : "these") for good, with all history?"
+            guard try Output.confirm(question, about: targets.map(\.line)) else {
+                print("Nothing was deleted.")
+                return
+            }
+        }
+        for target in targets {
+            try await drive.purge([target.id], in: snapshot)
+            print("✗ \(target.line)")
+        }
+    }
+
+    private func emptyAll(_ drive: Drive) async throws {
         let snapshot = try await drive.update(nil)
         // Everything `emptyTrash` deletes, including what's past the retention period.
         let count = snapshot.history.trash(current: snapshot.tree).count
@@ -268,65 +275,6 @@ struct TrashEmpty: AsyncParsableCommand {
         }
         try await drive.emptyTrash(in: snapshot)
         print("✗ Emptied the trash (\(Output.count(count, "item")))")
-    }
-}
-
-struct Purge: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(
-        abstract: "Delete files or folders now, with all their history.",
-        discussion: """
-            Unlike rm, nothing goes to the trash: every version is deleted too, so nothing of it can be restored. For things that mustn't stay around. A path that's not in the drive is looked up in the trash.
-            """
-    )
-
-    @Argument(help: "Paths in the drive, or where things in the trash were.")
-    var paths: [String]
-
-    @Flag(name: .shortAndLong, help: "Purge folders and everything in them.")
-    var recursive = false
-
-    @Flag(name: .shortAndLong, help: "Don't ask for confirmation.")
-    var yes = false
-
-    func validate() throws {
-        if paths.isEmpty { throw ValidationError("nothing to purge") }
-    }
-
-    func run() async throws {
-        let context = try await Context.load()
-        let (drive, snapshot, _) = try await context.space(of: DrivePath(paths[0]), writing: true)
-        // Check every path before deleting anything.
-        var targets: [(id: String, line: String)] = []
-        for raw in paths {
-            let (other, _, path) = try await context.space(of: DrivePath(raw), writing: true)
-            guard other === drive else { throw CommandError("purge things from one shared folder at a time") }
-            let found = try snapshot.find(path)
-            guard let id = found.id else { throw CommandError("refusing to purge the whole drive") }
-            if found.isFolder, !recursive { throw ATDriveError.needsRecursive(path.description) }
-            var line = found.isFolder ? "\(path)/" : path.description
-            switch found {
-            case .node(let node) where node.isFolder:
-                let inside = snapshot.tree.descendants(of: id).count
-                if inside > 0 { line += "  (and \(Output.count(inside, "item")) in it)" }
-            case .trashed(let item):
-                let inside = snapshot.deletedTogether(item).count - 1
-                line += inside > 0 ? "  (in the trash, with \(Output.count(inside, "item")))" : "  (in the trash)"
-            default:
-                break
-            }
-            if !targets.contains(where: { $0.id == id }) { targets.append((id, line)) }
-        }
-        if !yes {
-            let question = "Delete \(targets.count == 1 ? "this" : "these") for good, with all history?"
-            guard try Output.confirm(question, about: targets.map(\.line)) else {
-                print("Nothing was deleted.")
-                return
-            }
-        }
-        for target in targets {
-            try await drive.purge([target.id], in: snapshot)
-            print("✗ \(target.line)")
-        }
     }
 }
 
@@ -356,27 +304,6 @@ struct DiskUsage: AsyncParsableCommand {
         print(
             "\nHistory shares \(Output.size(usage.shared)) with current files: a chunk is stored once, "
                 + "however many files and versions use it.")
-    }
-}
-
-struct Prune: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(
-        abstract: "Apply the history period now: delete older versions.",
-        discussion: """
-            The drive keeps \(DriveSettings.defaultRetentionDays) days of history. What's needed to show the drive as it was at the start of that period stays. `atdrive sync` prunes once a day by itself.
-            """
-    )
-
-    func run() async throws {
-        let joined = try await Context.load().joined
-        let snapshot = try await joined.update(nil)
-        let removed = try await joined.prune(snapshot)
-        let days = Output.days(snapshot.home.retention)
-        if removed == 0 {
-            print("Nothing to remove. History is kept for \(days).")
-        } else {
-            print("Removed \(Output.count(removed, "version")) from more than \(days) ago.")
-        }
     }
 }
 

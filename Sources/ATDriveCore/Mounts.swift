@@ -55,7 +55,7 @@ public enum SharingError: Error, Equatable, CustomStringConvertible {
         case .downgraded:
             "this share was encrypted, and its settings now say it isn't: the server may have changed them, so it isn't used"
         case .keyChanged(let who):
-            "\(who)'s sharing key changed: compare verification codes (`atdrive share verify`) before sharing with them"
+            "\(who)'s sharing key changed: compare verification codes (`atdrive verify`) before sharing with them"
         }
     }
 }
