@@ -87,15 +87,22 @@ final class SharingCoordinator {
 
     /// "Add Shared Link…": a field to paste a link into.
     func askForLink() {
-        show(
+        // The window closes once a link is opened (in a window of its own).
+        weak var window: NSWindow?
+        window = show(
             PasteLinkView { [weak self] text in
-                guard let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
+                guard let url = URL(string: text) else {
+                    self?.alert("That isn't an ATDrive link. They start with atdrive://")
+                    return
+                }
+                window?.close()
                 self?.open(url)
             }, title: "Add Shared Link")
     }
 
-    private func show<Content: View>(_ view: Content, title: String) {
-        let window = NSWindow(contentViewController: NSHostingController(rootView: view.frame(minWidth: 380)))
+    @discardableResult
+    private func show<Content: View>(_ view: Content, title: String) -> NSWindow {
+        let window = NSWindow(contentViewController: NSHostingController(rootView: view))
         window.title = title
         window.isReleasedWhenClosed = false
         window.center()
@@ -103,6 +110,7 @@ final class SharingCoordinator {
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         windows.removeAll { !$0.isVisible && $0 !== window }
+        return window
     }
 
     private func alert(_ text: String) {
@@ -241,10 +249,32 @@ final class ShareModel {
         }
     }
 
+    /// Just copied the link: the button says so for a moment.
+    private(set) var copied = false
+
     func copyLink() {
         guard let link else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(link.description, forType: .string)
+        copied = true
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            copied = false
+        }
+    }
+
+    /// Who has it, in a few words.
+    var summary: String {
+        guard isShared else { return "Not shared" }
+        guard isMine else { return "Shared with you · read-only" }
+        var parts: [String] = []
+        switch people.count {
+        case 0: parts.append(linkOn ? "Anyone with the link" : "Shared with nobody yet")
+        case 1: parts.append("Shared with 1 person")
+        default: parts.append("Shared with \(people.count) people")
+        }
+        if linkOn && !people.isEmpty { parts.append("anyone with the link") }
+        return parts.joined(separator: " · ")
     }
 
     private func run(_ body: @escaping () async throws -> Void) async {
@@ -268,88 +298,154 @@ struct ShareView: View {
     @State var model: ShareModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                Image(systemName: model.node.isFolder ? "folder.fill" : "doc.fill")
+                    .font(.system(size: 30))
+                    .foregroundStyle(.tint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model.node.name)
+                        .font(.headline)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(model.summary).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if model.busy { ProgressView().controlSize(.small) }
+            }
             if !model.isShared {
                 notShared
             } else if !model.isMine {
-                Text("Shared with you, read-only. Only its owner can change who has it.")
+                Text("Only its owner can change who has it. It's kept up to date in your drive.")
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 people
-                Divider()
                 link
             }
             if !model.pendingWarnings.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(model.pendingWarnings, id: \.self) { Text($0).font(.caption) }
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(model.pendingWarnings, id: \.self) { Callout(text: $0, kind: .warning) }
                     HStack {
-                        Button("Share Anyway") { Task { await model.addAnyway() } }
+                        Spacer()
                         Button("Cancel") { model.cancelAdd() }
+                        Button("Share Anyway") { Task { await model.addAnyway() } }
                     }
                 }
-                .padding(8)
-                .background(.yellow.opacity(0.15))
             }
             if let message = model.message {
-                Text(message).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                Callout(text: message)
             }
-            if model.busy { ProgressView().controlSize(.small) }
         }
-        .padding(16)
+        .padding(20)
+        .frame(width: 420)
         .task { await model.load() }
     }
 
     private var notShared: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             Text(
-                "“\(model.node.name)” moves into a space of its own, which stays where it is in your drive. Then you choose who sees it."
+                "Share it with people by their handle, or turn on a link anyone can open. It stays right where it is in your drive."
             )
             .fixedSize(horizontal: false, vertical: true)
             if model.driveIsEncrypted {
-                Toggle("Share it unencrypted (whoever runs your PDS can read it)", isOn: $model.plain)
+                Toggle(isOn: $model.plain) {
+                    Text("Share it unencrypted")
+                    Text("Whoever runs your server can read an unencrypted share.")
+                }
             }
-            Button("Share") { Task { await model.share() } }
-                .keyboardShortcut(.defaultAction)
-                .disabled(model.busy)
+            HStack {
+                Spacer()
+                Button("Share") { Task { await model.share() } }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(model.busy)
+            }
         }
     }
 
     private var people: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("People with access").font(.headline)
-            if model.people.isEmpty { Text("Nobody yet.").foregroundStyle(.secondary) }
-            ForEach(model.people) { person in
-                HStack {
-                    VStack(alignment: .leading) {
-                        Text(person.name)
-                        if !person.notes.isEmpty {
-                            Text(person.notes.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
+        GroupBox("People") {
+            VStack(alignment: .leading, spacing: 8) {
+                if model.people.isEmpty {
+                    Text("Nobody yet. Add someone by their handle.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(model.people) { person in
+                    HStack(spacing: 8) {
+                        ZStack {
+                            Circle().fill(.tint.opacity(0.15))
+                            Text(
+                                person.name.dropFirst(person.name.hasPrefix("@") ? 1 : 0).first.map {
+                                    String($0).uppercased()
+                                } ?? "?"
+                            )
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.tint)
                         }
+                        .frame(width: 24, height: 24)
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(person.name).lineLimit(1).truncationMode(.middle)
+                            if !person.notes.isEmpty {
+                                Text(person.notes.joined(separator: " · "))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        Button {
+                            Task { await model.remove(person) }
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Stop sharing with \(person.name)")
+                        .disabled(model.busy)
                     }
-                    Spacer()
-                    Button("Remove") { Task { await model.remove(person) } }
+                }
+                HStack {
+                    TextField("Add someone", text: $model.newPerson, prompt: Text("alice.bsky.social"))
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { Task { await model.add() } }
+                    Button("Add") { Task { await model.add() } }
+                        .disabled(model.newPerson.trimmingCharacters(in: .whitespaces).isEmpty || model.busy)
                 }
             }
-            HStack {
-                TextField("alice.example.com", text: $model.newPerson)
-                    .onSubmit { Task { await model.add() } }
-                Button("Add") { Task { await model.add() } }
-                    .disabled(model.newPerson.isEmpty || model.busy)
-            }
+            .padding(4)
         }
     }
 
     private var link: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Toggle(
-                "Anyone with the link can see it",
-                isOn: Binding(get: { model.linkOn }, set: { on in Task { await model.setLink(on) } }))
-            if let link = model.link {
-                HStack {
-                    Text(link.description).font(.caption.monospaced()).lineLimit(1).truncationMode(.middle)
-                    Button("Copy Link") { model.copyLink() }
+        GroupBox("Link") {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle(
+                    "Anyone with the link can view it",
+                    isOn: Binding(get: { model.linkOn }, set: { on in Task { await model.setLink(on) } })
+                )
+                .toggleStyle(.switch)
+                .disabled(model.busy)
+                if let link = model.link {
+                    HStack {
+                        Text(link.description)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                        Spacer()
+                        Button {
+                            model.copyLink()
+                        } label: {
+                            Label(
+                                model.copied ? "Copied" : "Copy Link",
+                                systemImage: model.copied ? "checkmark" : "doc.on.doc")
+                        }
+                    }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(4)
         }
     }
 }
@@ -420,29 +516,60 @@ struct OpenLinkView: View {
     @State var model: OpenLinkModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 16) {
             if let opened = model.opened {
-                Text("“\(opened.name)”").font(.headline)
-                Text("Shared by \(model.owner). \(opened.mode == .encrypted ? "Encrypted." : "Not encrypted.")")
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 12) {
+                    Image(systemName: opened.isFile ? "doc.fill" : "folder.fill")
+                        .font(.system(size: 30))
+                        .foregroundStyle(.tint)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(opened.name)
+                            .font(.headline)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text("Shared by \(model.owner)").font(.caption).foregroundStyle(.secondary)
+                        Label(
+                            opened.mode == .encrypted ? "Encrypted" : "Not encrypted",
+                            systemImage: opened.mode == .encrypted ? "lock.fill" : "lock.open"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                }
                 if let done = model.done {
-                    Text(done).fixedSize(horizontal: false, vertical: true)
+                    Label(done, systemImage: "checkmark.circle.fill")
+                        .symbolRenderingMode(.multicolor)
+                        .fixedSize(horizontal: false, vertical: true)
                 } else {
+                    Text(
+                        "Add it to your drive to keep it in Finder, kept up to date as \(model.owner) changes it. Or download a copy."
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                     HStack {
-                        Button("Add to My Drive") { Task { await model.add() } }
-                            .keyboardShortcut(.defaultAction)
+                        if model.busy { ProgressView().controlSize(.small) }
+                        Spacer()
                         Button("Download…") { Task { await model.download() } }
+                        Button("Add to My Drive") { Task { await model.add() } }
+                            .buttonStyle(.borderedProminent)
+                            .keyboardShortcut(.defaultAction)
                     }
                     .disabled(model.busy)
                 }
             } else if model.message == nil {
-                ProgressView("Opening the link…")
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Opening the link…").foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 60)
             }
             if let message = model.message {
-                Text(message).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                Callout(text: message)
             }
         }
-        .padding(16)
+        .padding(20)
+        .frame(width: 400)
     }
 }
 
@@ -451,14 +578,37 @@ struct PasteLinkView: View {
     @State private var text = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Paste a link someone shared with you (atdrive://…).")
-            TextField("atdrive://open?at=…", text: $text)
-                .onSubmit { open(text) }
-            Button("Open") { open(text) }
-                .keyboardShortcut(.defaultAction)
-                .disabled(text.isEmpty)
+        VStack(alignment: .leading, spacing: 14) {
+            StepHeader(
+                title: "Open a shared link", systemImage: "link",
+                detail: "Paste a link someone shared with you. ATDrive links start with atdrive://")
+            TextField("Link", text: $text, prompt: Text("atdrive://open?at=…"))
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { submit() }
+            HStack {
+                Spacer()
+                Button("Open") { submit() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
         }
-        .padding(16)
+        .padding(20)
+        .frame(width: 400)
+        .onAppear {
+            // A link on the clipboard is most likely the one to open.
+            if let copied = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(
+                in: .whitespacesAndNewlines),
+                copied.hasPrefix("atdrive://")
+            {
+                text = copied
+            }
+        }
+    }
+
+    private func submit() {
+        let link = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !link.isEmpty else { return }
+        open(link)
     }
 }
