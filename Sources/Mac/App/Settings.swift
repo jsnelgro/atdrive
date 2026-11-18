@@ -1,4 +1,5 @@
 import ATDriveCore
+import ATDriveMacSupport
 import AppKit
 import Observation
 import SwiftUI
