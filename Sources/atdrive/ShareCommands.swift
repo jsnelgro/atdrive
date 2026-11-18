@@ -312,28 +312,13 @@ enum LinkDownload {
             ?? SpaceAccess(ownClient: nil, resolver: IdentityResolver())
         let keys = try? await context?.drive.settings()?.sharingKeyPair(encrypted: context?.drive.mode == .encrypted)
         let opened = try await JoinedDrive.open(link, access: access, sharingKeys: keys, me: context?.drive.owner)
-        let tree = try await opened.drive.tree()
-        let root = destination.appendingPathComponent(opened.name)
-        try await download(nil, in: tree, from: opened.drive, to: root, at: .root)
-        print("✓ Downloaded \(opened.name), shared by \(await Handles.name(opened.owner)), to \(root.relativePath)")
-    }
-
-    private static func download(
-        _ folder: String?, in tree: DriveTree, from drive: Drive, to local: URL, at path: DrivePath
-    )
-        async throws
-    {
-        try FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
-        for child in tree.children(of: folder) {
-            let target = local.appendingPathComponent(child.name)
-            if child.isFolder {
-                try await download(child.id, in: tree, from: drive, to: target, at: path.appending(child.name))
-            } else {
-                try await drive.download(child, to: target, progress: Output.progress("↓", path.appending(child.name)))
+        let root = try await opened.download(
+            into: destination,
+            each: { _, file in
                 Output.clearStatus()
-                print("↓ \(target.relativePath)")
-            }
-        }
+                print("↓ \(file.relativePath)")
+            }, progress: { Output.progress("↓", $0) })
+        print("✓ Downloaded \(opened.name), shared by \(await Handles.name(opened.owner)), to \(root.relativePath)")
     }
 }
 

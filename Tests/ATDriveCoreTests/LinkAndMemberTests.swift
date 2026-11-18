@@ -482,6 +482,29 @@ extension JSONValue {
         }
     }
 
+    /// Downloading from a link: a shared file comes down as the file, a folder as a folder.
+    @Test func downloadingALinkKeepsAFileAFile() async throws {
+        let notes = try await owner.upload(try file("hello"), as: "notes.txt", in: nil)
+        let fileLink = try await owner.turnLinkOn(try await owner.share(notes))
+        let photos = try await owner.createFolder(named: "photos", in: nil)
+        _ = try await owner.upload(try file("aaa"), as: "a.txt", in: photos.id)
+        let trip = try await owner.createFolder(named: "trip", in: photos.id)
+        _ = try await owner.upload(try file("bbb"), as: "b.txt", in: trip.id)
+        let folderLink = try await owner.turnLinkOn(try await owner.share(photos))
+        let here = try temporaryDirectory()
+
+        let downloaded = try await JoinedDrive.open(fileLink, access: pds.access(as: nil)).download(into: here)
+        #expect(downloaded.lastPathComponent == "notes.txt")
+        #expect(try String(contentsOf: downloaded, encoding: .utf8) == "hello")
+
+        var written: [String] = []
+        let folder = try await JoinedDrive.open(folderLink, access: pds.access(as: nil)).download(into: here) {
+            path, _ in written.append(path.description)
+        }
+        #expect(try String(contentsOf: folder.appendingPathComponent("trip/b.txt"), encoding: .utf8) == "bbb")
+        #expect(written.sorted() == ["/photos/a.txt", "/photos/trip/b.txt"])
+    }
+
     /// A shared file syncs as a file: its owner's edits go to the share, a recipient's stay put.
     @Test func aSharedFileSyncsAsAFile() async throws {
         let notes = try await owner.upload(try file("hello"), as: "notes.txt", in: nil)

@@ -65,8 +65,47 @@ public struct OpenedShare: Sendable {
     /// The shared file's or folder's name.
     public var name: String
     public var mode: DriveMode
+    /// One file (`DriveSettings.file`), not a folder.
+    public var isFile: Bool
     /// The share, opened: read its tree, download it.
     public var drive: Drive
+
+    /// Downloads it into `folder`: a shared file as the file, a folder as a folder of its name.
+    /// `each` hears about every file once it's written. Returns what was made.
+    @discardableResult
+    public func download(
+        into folder: URL, each: (DrivePath, URL) -> Void = { _, _ in },
+        progress: (DrivePath) -> Drive.Progress? = { _ in nil }
+    ) async throws -> URL {
+        let tree = try await drive.tree()
+        let root = folder.appendingPathComponent(name)
+        let top = tree.children(of: nil)
+        if isFile, top.count == 1, let file = top.first, !file.isFolder {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try await drive.download(file, to: root, progress: progress(.root.appending(name)))
+            each(.root.appending(name), root)
+            return root
+        }
+        try await download(nil, in: tree, to: root, at: .root.appending(name), each: each, progress: progress)
+        return root
+    }
+
+    private func download(
+        _ parent: String?, in tree: DriveTree, to local: URL, at path: DrivePath, each: (DrivePath, URL) -> Void,
+        progress: (DrivePath) -> Drive.Progress?
+    ) async throws {
+        try FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
+        for child in tree.children(of: parent) {
+            let target = local.appendingPathComponent(child.name)
+            let childPath = path.appending(child.name)
+            if child.isFolder {
+                try await download(child.id, in: tree, to: target, at: childPath, each: each, progress: progress)
+            } else {
+                try await drive.download(child, to: target, progress: progress(childPath))
+                each(childPath, target)
+            }
+        }
+    }
 }
 
 extension JoinedDrive {
@@ -179,8 +218,10 @@ extension JoinedDrive {
         }
         let drive = Drive(
             client: client, owner: owner, space: link.space, mode: encrypted ? .encrypted : .plain, keyring: keyring)
-        let name = (try await drive.settings())?.name ?? "Shared with me"
-        return OpenedShare(link: link, owner: owner, name: name, mode: encrypted ? .encrypted : .plain, drive: drive)
+        let opened = try await drive.settings()
+        return OpenedShare(
+            link: link, owner: owner, name: opened?.name ?? "Shared with me", mode: encrypted ? .encrypted : .plain,
+            isFile: opened?.file ?? false, drive: drive)
     }
 
     /// Adds a share from a link to this drive: a mount at the top level, under the share's name

@@ -407,24 +407,11 @@ final class OpenLinkModel {
         busy = true
         defer { busy = false }
         do {
-            let tree = try await opened.drive.tree()
-            let root = folder.appendingPathComponent(opened.name)
-            try await Self.download(nil, in: tree, from: opened.drive, to: root)
+            let root = try await opened.download(into: folder)
             done = "Downloaded “\(opened.name)” to \(root.path)."
+            NSWorkspace.shared.activateFileViewerSelecting([root])
         } catch {
             message = String(describing: error)
-        }
-    }
-
-    private static func download(_ folder: String?, in tree: DriveTree, from drive: Drive, to local: URL) async throws {
-        try FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
-        for child in tree.children(of: folder) {
-            let target = local.appendingPathComponent(child.name)
-            if child.isFolder {
-                try await download(child.id, in: tree, from: drive, to: target)
-            } else {
-                try await drive.download(child, to: target)
-            }
         }
     }
 }
