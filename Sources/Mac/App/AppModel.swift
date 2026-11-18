@@ -59,8 +59,11 @@ final class AppModel {
     @ObservationIgnored private var joined: JoinedDrive?
     private let logger = Logger(subsystem: Log.subsystem, category: "app")
 
-    /// How often to check the drive for changes made elsewhere.
-    private let pollInterval: Duration = .seconds(30)
+    /// This Mac's settings, from `~/.config/atdrive/config.toml` (the CLI's too): read again
+    /// before each check for changes, so an edit to the file takes effect without a restart.
+    private(set) var config = LocalConfig()
+    /// Why config.toml can't be read or saved; the last settings that worked are used meanwhile.
+    private(set) var configProblem: String?
 
     /// The account, once the drive is open.
     var signedInHandle: String? {
@@ -79,12 +82,48 @@ final class AppModel {
             state = .openingDrive(handle: session.handle)
             Task { await openDrive(handle: session.handle) }
         }
-        polling = Task { [weak self, pollInterval] in
+        startPolling()
+    }
+
+    /// Checks the drive for changes made elsewhere every `sync.interval` seconds.
+    private func startPolling() {
+        polling?.cancel()
+        polling = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: pollInterval)
+                let seconds = self?.reloadConfig().syncInterval ?? LocalConfig().syncInterval
+                try? await Task.sleep(for: .seconds(seconds))
+                guard !Task.isCancelled else { return }
                 await self?.syncNow()
                 await self?.pruneIfDue()
             }
+        }
+    }
+
+    /// Reads config.toml again (the Settings window shows what it says), keeping the last
+    /// settings that worked if it can't be read.
+    @discardableResult func reloadConfig() -> LocalConfig {
+        // Set only when changed: setting an observed property redraws what shows it.
+        do {
+            let loaded = try UserConfig.file.load()
+            if loaded != config { config = loaded }
+            if configProblem != nil { configProblem = nil }
+        } catch {
+            let problem = String(describing: error)
+            if problem != configProblem { configProblem = problem }
+        }
+        return config
+    }
+
+    /// Saves it in config.toml, and checks for changes on the new schedule from now.
+    func setSyncInterval(_ seconds: Int) {
+        guard seconds != config.syncInterval else { return }
+        do {
+            try UserConfig.file.update { $0.syncInterval = seconds }
+            config.syncInterval = seconds
+            configProblem = nil
+            startPolling()
+        } catch {
+            configProblem = String(describing: error)
         }
     }
 
@@ -309,19 +348,19 @@ final class AppModel {
         guard let store = AppGroup.sessionStore() else { throw StoreProblem.noContainer }
         let session: Session
         do {
-            guard let loaded = try store.load() else { throw StoreProblem.noSession(store.file) }
+            guard let loaded = try store.load() else { throw StoreProblem.noSession(store.storage.description) }
             session = loaded
         } catch let problem as StoreProblem {
             throw problem
         } catch {
-            throw StoreProblem.unreadable(store.file, error)
+            throw StoreProblem.unreadable("the session in \(store.storage)", error)
         }
         let devices = store.devices
         let identity: DeviceIdentity
         do {
             identity = try devices.loadOrCreate()
         } catch {
-            throw StoreProblem.unreadable(devices.file, error)
+            throw StoreProblem.unreadable("this Mac's key in \(devices.storage)", error)
         }
         let manager = SessionManager(session) { updated in try? store.save(updated) }
         return await Drive(session: manager, identity: identity) { updated in try? devices.save(updated) }
@@ -330,17 +369,19 @@ final class AppModel {
     /// Why the session or this Mac's keys couldn't be read, said in full.
     enum StoreProblem: Error, CustomStringConvertible {
         case noContainer
-        case noSession(URL)
-        case unreadable(URL, any Error)
+        /// Where it should have been.
+        case noSession(String)
+        /// What couldn't be read, and where.
+        case unreadable(String, any Error)
 
         var description: String {
             switch self {
             case .noContainer:
                 "The App Group container is unavailable. Build the app with scripts/build-app.sh."
-            case .noSession(let file):
-                "Signed in, but no session was saved at \(file.path). Try signing in again."
-            case .unreadable(let file, let error):
-                "Couldn't read or write \(file.path): \(error)"
+            case .noSession(let place):
+                "Signed in, but no session was saved in \(place). Try signing in again."
+            case .unreadable(let what, let error):
+                "Couldn't read or write \(what): \(error)"
             }
         }
     }

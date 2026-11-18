@@ -18,8 +18,8 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
   on a plain drive, then on an encrypted one (`ATDRIVE_TEST_MODE=plain` or `=encrypted` runs one;
   `TestMode` in `FakePDS.swift`). Anything about how the drive behaves has to pass on both. They
   hit a real PDS only when enabled: `OAuthLiveTests` with `ATDRIVE_LIVE_HANDLE`, the others with
-  `ATDRIVE_LIVE_CONFIG` (and `ATDRIVE_LIVE_CONFIG_B`, a second account, for sharing): a folder
-  `ATDRIVE_CONFIG_DIR=<folder> atdrive login <handle>` saved a session to.
+  `ATDRIVE_LIVE_STATE` (and `ATDRIVE_LIVE_STATE_B`, a second account, for sharing): a folder
+  `ATDRIVE_STATE_DIR=<folder> atdrive login <handle>` saved a session to.
 - `scripts/build.sh`: release binary at `build/atdrive`. The Swift runtime is static on Linux.
 - `scripts/format.sh`: formatting (config in `.swift-format`).
 - `scripts/build-app.sh` / `scripts/run-app.sh` (macOS): build `build/ATDrive.app` (and install
@@ -38,6 +38,12 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
     DPoP, loopback client ID, browser redirect caught on 127.0.0.1). The only way to sign in:
     atproto spaces refuse app passwords.
   - `Identity.swift`: handle → DID → PDS. Never hardcode a PDS or account.
+  - Kept on this machine: secrets (the session, the device's key) in `SecretStorage.swift` (the
+    Keychain on a Mac, `$XDG_STATE_HOME/atdrive` elsewhere, the App Group container for the Mac
+    app), read through `SessionStore.swift`; and settings in `config.toml` (`Config.swift`, with
+    the TOML subset in `TOML.swift`), shared by the CLI and the Mac app. **Never put a secret in
+    `config.toml` or `~/.config`**: people keep that in version control. The drive's own settings
+    are a record in the drive (`DriveSettings`), not local config.
   - `Spaces.swift`: **every** `com.atproto.space.*` call. The alpha API changes weekly, so keep it
     contained here.
   - `Records.swift`, `Lexicon.swift`: the `me.jsnelgro.atdrive.*` record model (matches `lexicons/`).

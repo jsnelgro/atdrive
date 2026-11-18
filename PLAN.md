@@ -62,7 +62,7 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
   - **Not yet exercised:** any of it against the live alpha PDS, and the Mac app's new screens on a
     real Mac.
   - **Follow-ups:**
-    - **Live PDS:** run `LiveTests` and `LiveChangeFeedTests` (they need `ATDRIVE_LIVE_CONFIG`, a
+    - **Live PDS:** run `LiveTests` and `LiveChangeFeedTests` (they need `ATDRIVE_LIVE_STATE`, a
       folder `atdrive login` saved a session to; spaces refuse app passwords).
       Unverified there: `listRepoOps`, `listRecords` across collections, `createRecord`,
       `applyWrites` results, and the OAuth scope with the new collections.
@@ -83,7 +83,7 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
   - **Tested** with unit tests against `FakePDS`, which now hosts several accounts and checks
     credentials, request signatures and MACs as the protocol has them. The spaces crypto is
     checked against the reference's vectors. macOS CI builds the app.
-  - **Not yet exercised:** against the live alpha PDS (two accounts: `ATDRIVE_LIVE_CONFIG` and
+  - **Not yet exercised:** against the live alpha PDS (two accounts: `ATDRIVE_LIVE_STATE` and
     `_B`), and the Finder actions, badges, windows and `atdrive://` links on a real Mac.
   - **Follow-ups:** publish the lexicons (`atdrive dev lexicons publish`, then a DNS TXT record at
     `_lexicon.atdrive.jsnelgro.me`) and set `OAuthLogin.lexiconsPublished`, which narrows the
@@ -398,8 +398,9 @@ operator.
     names.
   - **Removing a device asks for the recovery key,** since only it can wrap the new keyring for
     recovery. Pressing Enter instead makes a new recovery key and shows it.
-  - **Each device's key** is in `device.json` (mode 600) beside `session.json`, or in the App Group
-    container on the Mac. The keyring itself is never stored; it's unwrapped from the device's
+  - **Each device's key** is kept beside the session (`SecretStorage`): the Keychain for the CLI on
+    a Mac, `device.json` (mode 600) in `$XDG_STATE_HOME/atdrive` elsewhere, or the App Group
+    container for the Mac app. Never in `~/.config`, which people keep in version control. The keyring itself is never stored; it's unwrapped from the device's
     record, and again whenever that record changes.
   - **Approving and removing devices** is CLI-only for now. The Mac app can create a drive, show
     the recovery key, unlock with it, and be approved.

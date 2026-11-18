@@ -4,8 +4,8 @@
 # swift test, e.g.
 #   scripts/test.sh --filter DriveTreeTests
 # To run one mode only: ATDRIVE_TEST_MODE=plain scripts/test.sh (or =encrypted).
-# The live tests run only when ATDRIVE_LIVE_CONFIG names a folder `atdrive login` saved a session
-# to (sign in with ATDRIVE_CONFIG_DIR=<folder> atdrive login <handle>), or, for the OAuth one,
+# The live tests run only when ATDRIVE_LIVE_STATE names a folder `atdrive login` saved a session
+# to (sign in with ATDRIVE_STATE_DIR=<folder> atdrive login <handle>), or, for the OAuth one,
 # ATDRIVE_LIVE_HANDLE is set.
 set -euo pipefail
 cd "$(dirname "$0")/.."

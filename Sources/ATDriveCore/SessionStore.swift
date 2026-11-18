@@ -1,72 +1,71 @@
 import Foundation
 
-/// Saves the session to `~/.config/atdrive/session.json` (readable only by you).
-///
-/// The directory can be moved with `ATDRIVE_CONFIG_DIR` or `XDG_CONFIG_HOME`. Only the OAuth
-/// tokens the server hands back are stored, which `atdrive logout` revokes.
+/// Saves the session: the OAuth tokens the server hands back, which `atdrive logout` revokes,
+/// and the DPoP key they're bound to. Kept as a secret (`SecretStorage`): never in `~/.config`.
 public struct SessionStore: Sendable {
-    public let directory: URL
+    public let storage: SecretStorage
+
+    public init(storage: SecretStorage) {
+        self.storage = storage
+    }
 
     /// Stores the session in a specific folder (e.g. the macOS app's shared App Group container).
     public init(directory: URL) {
-        self.directory = directory
+        self.init(storage: .directory(directory))
     }
 
+    /// Where the CLI keeps it: `SecretStorage.standard`.
     public init(environment: [String: String] = ProcessInfo.processInfo.environment) {
-        if let dir = environment["ATDRIVE_CONFIG_DIR"], !dir.isEmpty {
-            directory = URL(fileURLWithPath: dir, isDirectory: true)
-        } else if let xdg = environment["XDG_CONFIG_HOME"], !xdg.isEmpty {
-            directory = URL(fileURLWithPath: xdg, isDirectory: true).appendingPathComponent("atdrive")
-        } else {
-            directory = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".config/atdrive", isDirectory: true)
-        }
+        self.init(storage: .standard(environment: environment))
     }
-
-    public var file: URL { directory.appendingPathComponent("session.json") }
 
     /// The saved session; `nil` if there's none, or it's from an older version of ATDrive (an
     /// app-password session, say), which means signing in again.
     public func load() throws -> Session? {
-        guard FileManager.default.fileExists(atPath: file.path) else { return nil }
-        return try? JSONDecoder().decode(Session.self, from: Data(contentsOf: file))
+        guard let data = try storage.read("session") else { return nil }
+        return try? JSONDecoder().decode(Session.self, from: data)
     }
 
     public func save(_ session: Session) throws {
-        try writePrivately(session, to: file)
+        try storage.write(encode(session), as: "session")
     }
 
     public func delete() throws {
-        if FileManager.default.fileExists(atPath: file.path) {
-            try FileManager.default.removeItem(at: file)
-        }
+        try storage.delete("session")
     }
 
     /// This device's identity, kept beside the session.
-    public var devices: DeviceStore { DeviceStore(directory: directory) }
+    public var devices: DeviceStore { DeviceStore(storage: storage) }
 }
 
-/// Saves this device's identity (`DeviceIdentity`) to `device.json`, beside the session and
-/// readable only by you. It holds the device's private key, which the drive's keyring is wrapped
-/// for: with the account's session, it opens the drive.
+/// Saves this device's identity (`DeviceIdentity`), beside the session and as secret. It holds
+/// the device's private key, which the drive's keyring is wrapped for: with the account's
+/// session, it opens the drive.
 ///
 /// `atdrive logout` leaves it, so signing in again on this device doesn't need another approval.
 public struct DeviceStore: Sendable {
-    public let directory: URL
+    public let storage: SecretStorage
 
-    public init(directory: URL) {
-        self.directory = directory
+    public init(storage: SecretStorage) {
+        self.storage = storage
     }
 
-    public var file: URL { directory.appendingPathComponent("device.json") }
+    public init(directory: URL) {
+        self.init(storage: .directory(directory))
+    }
 
     public func load() throws -> DeviceIdentity? {
-        guard FileManager.default.fileExists(atPath: file.path) else { return nil }
-        return try JSONDecoder().decode(DeviceIdentity.self, from: Data(contentsOf: file))
+        guard let data = try storage.read("device") else { return nil }
+        return try JSONDecoder().decode(DeviceIdentity.self, from: data)
     }
 
     public func save(_ identity: DeviceIdentity) throws {
-        try writePrivately(identity, to: file)
+        try storage.write(encode(identity), as: "device")
+    }
+
+    /// Forgets this device's identity: the next one is a new device (`atdrive dev reset`).
+    public func delete() throws {
+        try storage.delete("device")
     }
 
     /// This device's identity, made (with a new key pair) and saved the first time.
@@ -78,27 +77,10 @@ public struct DeviceStore: Sendable {
     }
 }
 
-/// Writes `value` as JSON to `file` atomically, readable only by its owner, in a folder only its
-/// owner can open.
-private func writePrivately(_ value: some Encodable, to file: URL) throws {
-    let directory = file.deletingLastPathComponent()
-    try FileManager.default.createDirectory(
-        at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+private func encode(_ value: some Encodable) throws -> Data {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-    // Its own name, so two processes saving at once (the Mac app and its extension share these
-    // files) don't take each other's.
-    let temporary = directory.appendingPathComponent(".\(file.lastPathComponent).\(UUID().uuidString).tmp")
-    guard
-        FileManager.default.createFile(
-            atPath: temporary.path, contents: try encoder.encode(value), attributes: [.posixPermissions: 0o600])
-    else { throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: temporary.path]) }
-    do {
-        try replace(file, with: temporary)
-    } catch {
-        try? FileManager.default.removeItem(at: temporary)
-        throw error
-    }
+    return try encoder.encode(value)
 }
 
 /// Atomically moves `source` over `destination` (POSIX rename semantics).

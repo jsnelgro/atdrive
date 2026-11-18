@@ -3,10 +3,10 @@ import Testing
 
 @testable import ATDriveCore
 
-/// The change feed against a real spaces-enabled PDS. Skipped unless `ATDRIVE_LIVE_CONFIG` is
+/// The change feed against a real spaces-enabled PDS. Skipped unless `ATDRIVE_LIVE_STATE` is
 /// set (see `LiveTests`). Everything happens inside a uniquely named folder that is deleted at the
 /// end.
-@Suite(.enabled(if: LiveAccount.load() != nil, "set ATDRIVE_LIVE_CONFIG to a folder `atdrive login` saved to"))
+@Suite(.enabled(if: LiveAccount.load() != nil, "set ATDRIVE_LIVE_STATE to a folder `atdrive login` saved to"))
 struct LiveChangeFeedTests {
     @Test func followsTheDriveWithoutListingItAgain() async throws {
         let account = try #require(LiveAccount.load())

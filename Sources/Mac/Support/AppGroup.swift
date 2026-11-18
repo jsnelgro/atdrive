@@ -30,6 +30,21 @@ public enum AppGroup {
     }
 }
 
+/// This Mac's settings: `~/.config/atdrive/config.toml`, the same file the `atdrive` CLI uses,
+/// so there's one place to change them.
+public enum UserConfig {
+    public static var file: ConfigFile { ConfigFile.inHome(home) }
+
+    /// The real home folder. Sandboxed, `FileManager`'s is the app's container; the app's
+    /// entitlements let it into `~/.config/atdrive` there and nowhere else.
+    static var home: URL {
+        if let entry = getpwuid(getuid()), let directory = entry.pointee.pw_dir {
+            return URL(fileURLWithPath: String(cString: directory), isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+    }
+}
+
 /// The Finder location ATDrive shows up as. One domain, for the logged-in account.
 public enum DriveDomain {
     public static let identifier = NSFileProviderDomainIdentifier(rawValue: "default")

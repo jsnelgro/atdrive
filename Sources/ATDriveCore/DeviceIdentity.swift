@@ -5,8 +5,8 @@ import Foundation
 /// key pair that an encrypted drive's keyring is wrapped for. And what it trusts in each drive it
 /// has held the keys of (`trust`). A drive that isn't encrypted needs none of it.
 ///
-/// It's kept where the session is (`DeviceStore`: `device.json` beside `session.json`, or the
-/// Mac's App Group container), never in the drive. The private key never leaves the device. The
+/// It's kept where the session is (`DeviceStore`, in `SecretStorage`: the Keychain, a folder of
+/// its own, or the Mac app's App Group container), never in the drive. The private key never leaves the device. The
 /// keyring isn't kept here at all: it's unwrapped from the device's record each time the drive
 /// is opened.
 public struct DeviceIdentity: Codable, Sendable, Equatable, CustomStringConvertible {

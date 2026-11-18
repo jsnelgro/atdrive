@@ -162,6 +162,25 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            Section("Syncing") {
+                Picker(
+                    "Check for changes every",
+                    selection: Binding(get: { app.config.syncInterval }, set: { app.setSyncInterval($0) })
+                ) {
+                    ForEach(Self.intervalChoices(including: app.config.syncInterval), id: \.self) { seconds in
+                        Text(Self.describe(seconds: seconds)).tag(seconds)
+                    }
+                }
+                Text("Saved in ~/.config/atdrive/config.toml, which the atdrive command uses too.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let problem = app.configProblem {
+                    Text(problem)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             Section("Encryption") {
                 if app.signedInHandle == nil {
                     Text("Sign in to change your drive's encryption.").foregroundStyle(.secondary)
@@ -187,6 +206,7 @@ struct SettingsView: View {
         .frame(width: 460)
         .fixedSize(horizontal: false, vertical: true)
         .task(id: app.signedInHandle) { await encryption.refresh() }
+        .onAppear { app.reloadConfig() }
         .confirmationDialog("Sign out of ATDrive?", isPresented: $confirmingSignOut) {
             Button("Sign Out", role: .destructive) { Task { await app.signOut() } }
         } message: {
@@ -241,6 +261,19 @@ struct SettingsView: View {
                 Button(encryption.isEncrypted ? "Finish Encrypting" : "Finish Decrypting") { encryption.finish() }
             }
         }
+    }
+
+    /// The intervals offered, and whatever config.toml says if it's none of them.
+    static func intervalChoices(including current: Int) -> [Int] {
+        Set([15, 30, 60, 120, 300, current]).sorted()
+    }
+
+    static func describe(seconds: Int) -> String {
+        if seconds >= 60 && seconds % 60 == 0 {
+            let minutes = seconds / 60
+            return minutes == 1 ? "minute" : "\(minutes) minutes"
+        }
+        return "\(seconds) seconds"
     }
 
     static func consequences(of change: EncryptionModel.Switch) -> String {

@@ -286,12 +286,13 @@ import Testing
     // MARK: Small parts
 
     @Test func theDeviceIsSavedPrivately() throws {
-        let store = DeviceStore(directory: directory.appendingPathComponent("config"))
+        let store = DeviceStore(directory: directory.appendingPathComponent("state"))
+        let file = directory.appendingPathComponent("state/device.json")
         #expect(try store.load() == nil)
         let made = try store.loadOrCreate(name: "laptop")
         #expect(try store.loadOrCreate() == made)
         #expect(made.name == "laptop" && TID.isValid(made.id))
-        let mode = try FileManager.default.attributesOfItem(atPath: store.file.path)[.posixPermissions] as? NSNumber
+        let mode = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber
         #expect(mode?.intValue == 0o600)
         #expect(!"\(made)".contains(Base64.encode(made.privateKey.rawRepresentation)))
         var trusting = made
