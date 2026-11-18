@@ -69,15 +69,39 @@ import Testing
         #expect(snapshot.trash().isEmpty)
     }
 
+    /// A shared file is still the file: same place, name and contents, not a folder holding it.
     @Test func sharingAFile() async throws {
         let (_, notes) = try await populate()
         let before = try await listing()
         let mount = try await joined.share(notes)
-        #expect(mount.name == "notes.txt" && mount.isMount)
-        #expect(
-            try await listing()
-                == before.merging(["/notes.txt": "/"]) { _, new in new }.merging(
-                    ["/notes.txt/notes.txt": "notes!"]) { _, new in new })
+        #expect(mount.name == "notes.txt" && mount.isMount && !mount.isFolder)
+        #expect(try await listing() == before)
+        let space = try #require(mount.record.mount?.space)
+        let settings = try await Drive(client: home.client, owner: home.owner, space: space).settingsRecord()
+        #expect(settings != nil)
+    }
+
+    /// Editing, renaming and moving a shared file: the contents go to its space, the rest to the
+    /// mount, and it stays one shared file.
+    @Test func aSharedFileCanBeEditedRenamedAndMoved() async throws {
+        let (photos, notes) = try await populate()
+        var shared = try await joined.share(notes)
+        let space = try #require(shared.record.mount?.space)
+
+        shared = try await joined.upload(try file("new notes"), as: "notes.txt", in: nil, replacing: shared)
+        #expect(shared.isMount && !shared.isFolder)
+        #expect(try await listing()["/notes.txt"] == "new notes")
+        let inShare = try await joined.update(nil).sharedFile(of: shared.id)
+        #expect(inShare?.record.size == 9, "the new contents are in the share's space")
+
+        shared = try await joined.move(shared, to: photos.id, as: "renamed.txt")
+        let listing = try await listing()
+        #expect(listing["/photos/renamed.txt"] == "new notes")
+        #expect(listing["/notes.txt"] == nil)
+        let tree = try await joined.tree()
+        let node = try #require(try tree.locate(DrivePath("/photos/renamed.txt")))
+        #expect(node.isMount && node.record.mount?.space == space)
+        #expect(tree.children(of: node.id).isEmpty)
     }
 
     @Test func aPlainShareFromAnEncryptedDriveUploadsAgain() async throws {
@@ -118,26 +142,44 @@ import Testing
         await #expect(throws: SharingError.self) { try await joined.share(inside) }
     }
 
-    @Test func unsharingKeepsTheFolder() async throws {
+    /// Unsharing makes it an ordinary folder again, where it was, and deletes the share's space.
+    @Test func unsharingPutsTheFolderBack() async throws {
         let (photos, _) = try await populate()
         let before = try await listing()
         let mount = try await joined.share(photos)
         let bob = pds.addAccount("bob")
-        try await home.client.putMembers(mount.record.mount!.space, [SpaceMember(did: bob)])
+        let space = try #require(mount.record.mount?.space)
+        try await home.client.putMembers(space, [SpaceMember(did: bob)])
 
         try await joined.unshare(mount)
         #expect(try await listing() == before)
-        let space = mount.record.mount!.space
-        #expect(pds.policy(of: space)?.policy == .personal)
-        #expect(pds.policy(of: space)?.members == [])
-        if TestMode.encrypted {
-            let after = try #require(try await joined.tree().nodes[mount.id]?.record.mount?.spaceKeyring)
-            #expect(after.keys.count == 2, "a new key for what's written from now on")
-        }
-        // Still writable by its owner.
+        #expect(try await home.client.listSpaces(type: Lexicon.driveSpace).count == 1, "the share's space is gone")
         let folder = try #require(try await joined.tree().locate(DrivePath("/photos")))
+        #expect(!folder.isMount && folder.isFolder)
         _ = try await joined.upload(try file("new"), as: "new.jpg", in: folder.id)
         #expect(try await listing()["/photos/new.jpg"] == "new")
+    }
+
+    @Test func unsharingAFilePutsTheFileBack() async throws {
+        let (_, notes) = try await populate()
+        let before = try await listing()
+        let mount = try await joined.share(notes)
+        try await joined.unshare(mount)
+        #expect(try await listing() == before)
+        let file = try #require(try await joined.tree().locate(DrivePath("/notes.txt")))
+        #expect(!file.isMount && !file.isFolder)
+    }
+
+    /// Cut off partway through copying back, unsharing again finishes it, with nothing doubled.
+    @Test func anInterruptedUnshareFinishesWhenRunAgain() async throws {
+        let (photos, _) = try await populate()
+        let before = try await listing()
+        let mount = try await joined.share(photos)
+        pds.failingAfter["com.atproto.space.applyWrites"] = 3
+        await #expect(throws: (any Error).self) { try await joined.unshare(mount) }
+        pds.failingAfter = [:]
+        try await joined.unshare(mount)
+        #expect(try await listing() == before)
     }
 
     @Test func endingSharingPutsSharesBackInTheDrive() async throws {

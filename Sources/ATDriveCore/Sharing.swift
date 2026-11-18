@@ -11,14 +11,16 @@ extension Drive {
     /// (its own first key, so its own chunk IDs and chunker seed). Returns it, ready to write.
     static func createSpace(
         client: XRPCClient, owner: String, key: String, encrypted: Bool, policy: SpacePolicy, name: String? = nil,
-        transfers: TransferOptions = .standard, device: String = DeviceName.current, tids: TIDSource = .system
+        file: Bool = false, transfers: TransferOptions = .standard, device: String = DeviceName.current,
+        tids: TIDSource = .system
     ) async throws -> Drive {
         let space = try await client.createSpace(type: Lexicon.driveSpace, key: key, policy: policy)
         let keyring = encrypted ? Keyring(DriveKey()) : nil
         let drive = Drive(
             client: client, owner: owner, space: space, transfers: transfers, device: device, tids: tids,
             mode: encrypted ? .encrypted : .plain, keyring: keyring)
-        try await drive.writeSettingsIfMissing(DriveSettings(driveID: DriveSettings.newDriveID(), name: name))
+        try await drive.writeSettingsIfMissing(
+            DriveSettings(driveID: DriveSettings.newDriveID(), name: name, file: file))
         return drive
     }
 
@@ -108,7 +110,8 @@ extension JoinedDrive {
         } else {
             let space = try await Drive.createSpace(
                 client: home.client, owner: owner, key: newShareKey(), encrypted: encrypted,
-                policy: .members(publicRead: false), name: node.name, transfers: home.transfers, device: home.device,
+                policy: .members(publicRead: false), name: node.name, file: !node.isFolder, transfers: home.transfers,
+                device: home.device,
                 tids: home.tids)
             mount = try await home.createMount(
                 MountInfo(space: space.space, keyring: space.keyring), named: Self.sharingName(node.name), in: parent)
@@ -128,7 +131,8 @@ extension JoinedDrive {
         try await home.delete(inside + [node], recordedAs: .shared)
         snapshot = try await update(snapshot)
         guard let written = snapshot.tree.nodes[mount.id] else { throw ATDriveError.notFound(path.description) }
-        return try await move(written, to: parent, as: node.name)
+        _ = try await move(written, to: parent, as: node.name)
+        return try await current(written)
     }
 
     /// Copies a node of the home drive (and what's in it) into a share's space, keeping record
@@ -163,16 +167,22 @@ extension JoinedDrive {
         }
     }
 
-    /// Stops sharing a share of this account's: every member removed, the link turned off (and
-    /// their records deleted), and the space back to `personalspace`. An encrypted share gets a new
-    /// key for what's written from now on. The folder stays where it is, a mount: nothing moves
-    /// back.
+    /// Stops sharing a share of this account's. Nobody else can read it from that moment (the
+    /// space goes back to `personalspace`, its member and link records deleted); then it moves
+    /// back into the drive, where it is, an ordinary file or folder again, and its space is
+    /// deleted (so those who had it see it gone). Run again, it finishes an interrupted one.
     public func unshare(_ mount: Node) async throws {
         let mount = try await current(mount)
         guard mount.isMount, let info = mount.record.mount else { throw SharingError.notShared(mount.name) }
         guard info.owner == owner else { throw SharingError.notYours(mount.name) }
         try await stopSharing(info)
-        try await rotateKey(of: mount)
+        let snapshot = try await update(latestSnapshot)
+        guard let share = drive(ofMount: mount.id), let tree = snapshot.mounts[mount.id]?.snapshot?.tree else {
+            throw ATDriveError.mountUnavailable(
+                path: mount.name, why: snapshot.mounts[mount.id]?.problem?.description ?? "it can't be read")
+        }
+        try await unmount(
+            mount, share: share, shareTree: tree, file: snapshot.sharedFile(of: mount.id), joined: snapshot.tree)
     }
 
     /// Nobody but its owner can read a space of this account's any more: `personalspace` (which
@@ -215,7 +225,10 @@ extension JoinedDrive {
     /// A mount as the home drive has it.
     func homeNode(_ node: Node) throws -> Node {
         guard NodeID.split(node.id).mount == nil else { throw SharingError.nested(node.name) }
-        return node
+        guard node.isMount, node.record.kind != .mount else { return node }
+        // A share of one file, as the joined tree shows it: the mount as the home drive has it.
+        guard let stored = latestSnapshot?.home.tree.nodes[node.id] else { throw ATDriveError.notFound(node.name) }
+        return stored
     }
 
     /// The drive of a share of this account's, opened.
@@ -263,7 +276,8 @@ extension JoinedDrive {
                     throw ATDriveError.mountUnavailable(
                         path: path, why: state.problem?.description ?? "it can't be read")
                 }
-                try await unmount(mount, share: share, shareTree: tree, joined: snapshot.tree)
+                try await unmount(
+                    mount, share: share, shareTree: tree, file: snapshot.sharedFile(of: id), joined: snapshot.tree)
             }
             ended.append(path)
             snapshot = try await update(snapshot)
@@ -271,18 +285,31 @@ extension JoinedDrive {
         return ended
     }
 
-    /// Moves a share's contents back into the home drive, in the mount's place, and deletes its space.
-    private func unmount(_ mount: Node, share: Drive, shareTree: DriveTree, joined: DriveTree) async throws {
+    /// Moves a share's contents back into the home drive, in the mount's place, and deletes its
+    /// space. `file`: the file a share of one file holds. What an interrupted run left half-copied
+    /// is deleted first.
+    private func unmount(_ mount: Node, share: Drive, shareTree: DriveTree, file: Node?, joined: DriveTree)
+        async throws
+    {
         let parent = joined.parent(of: mount.id)
+        let leftovers = joined.children(of: parent).filter {
+            $0.name == Self.unmountingName(mount.name) && !$0.isMount
+        }
+        if !leftovers.isEmpty {
+            try await home.delete(leftovers.flatMap { joined.descendants(of: $0.id) + [$0] })
+        }
         let top = shareTree.children(of: nil)
-        if top.count == 1, let file = top.first, !file.isFolder, file.name == mount.name {
+        // Shares made before `DriveSettings.file`: one file of the mount's name.
+        let file =
+            file ?? top.first.flatMap { top.count == 1 && !$0.isFolder && $0.name == mount.name ? $0 : nil }
+        if let file {
             // A shared file: it comes back as the file, copied before the mount goes.
             let global = Node(id: NodeID.join(mount.id, file.id), cid: file.cid, record: file.record)
             let copied = try await copy(
-                global, in: joined, from: share, to: home, parent: parent, as: Self.unmountingName(file.name))
+                global, in: joined, from: share, to: home, parent: parent, as: Self.unmountingName(mount.name))
             try await home.delete([try homeNode(mount)])
             try await home.client.deleteSpace(share.space)
-            _ = try await home.move(copied, to: parent, as: file.name)
+            _ = try await home.move(copied, to: parent, as: mount.name)
             return
         }
         let folder = try await home.createFolder(named: Self.unmountingName(mount.name), in: parent)

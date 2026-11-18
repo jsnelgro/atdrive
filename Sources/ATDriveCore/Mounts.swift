@@ -171,20 +171,50 @@ public struct JoinedSnapshot: Sendable {
         return Self.join(homePast, past)
     }
 
-    /// The home tree with each mount's tree inside its mount node. A held mount keeps what it
+    /// The file a share of one file holds, as its space has it: `nil` for a folder's share.
+    public func sharedFile(of mount: String) -> Node? { mounts[mount].flatMap(Self.sharedFile) }
+
+    static func sharedFile(_ state: MountState) -> Node? {
+        guard let snapshot = state.snapshot, snapshot.settings?.file == true else { return nil }
+        let top = snapshot.tree.children(of: nil)
+        guard top.count == 1, let file = top.first, !file.isFolder else { return nil }
+        return file
+    }
+
+    /// A share of one file as the joined tree shows it: the file, where the mount is, under the
+    /// mount's ID and name, with the mount's info. Its `cid` changes when either does.
+    static func fileView(mount: Node, file: Node) -> Node {
+        var record = file.record
+        record.name = mount.name
+        record.parent = mount.record.parent
+        record.mount = mount.record.mount
+        record.createdAt = mount.record.createdAt
+        return Node(id: mount.id, cid: "\(mount.cid)+\(file.cid)", record: record)
+    }
+
+    /// The home tree with each mount's tree inside its mount node; a share of one file is that
+    /// file (`fileView`), and a share whose space was deleted is gone. A held mount keeps what it
     /// had (read-only, it can't be changed anyway); one that was never read is an unreadable
     /// record, so nothing that came from it is taken for deleted, here or by the Mac.
     static func join(_ home: DriveTree, _ mounts: [String: MountState]) -> DriveTree {
         var nodes = Array(home.nodes.values)
         var unreadable = Array(home.unreadable.values)
         for (id, state) in mounts.sorted(by: { $0.key < $1.key }) where home.nodes[id] != nil {
-            if state.problem?.isDeletion == true { continue }
+            if state.problem?.isDeletion == true {
+                nodes.removeAll { $0.id == id }
+                continue
+            }
             guard let tree = state.snapshot?.tree else {
                 if state.isHeld, let mount = home.nodes[id] {
                     nodes.removeAll { $0.id == id }
                     unreadable.append(
                         UnreadableNode(id: id, cid: mount.cid, reason: .unavailable, value: nil))
                 }
+                continue
+            }
+            if let file = sharedFile(state), let mount = home.nodes[id] {
+                nodes.removeAll { $0.id == id }
+                nodes.append(fileView(mount: mount, file: file))
                 continue
             }
             for node in tree.nodes.values {
@@ -397,20 +427,12 @@ public final class JoinedDrive: Sendable {
         throw ATDriveError.mountUnavailable(path: path, why: state?.problem?.description ?? "it can't be read")
     }
 
-    /// The drive a node is in, and the node as that drive knows it.
+    /// The drive a node is in, and the node as that drive knows it. A share of one file is its
+    /// mount, in the home drive (`content` has the file).
     private func local(_ node: Node, writing: Bool) throws -> (Drive, Node, mount: String?) {
         let (mount, rkey) = NodeID.split(node.id)
-        guard let mount else { return (home, node, nil) }
-        let drive: Drive
-        if writing {
-            drive = try writable(mount, path: node.name)
-        } else {
-            guard let opened = opened.value[mount] else {
-                throw ATDriveError.mountUnavailable(
-                    path: node.name, why: latest.value?.mounts[mount]?.problem?.description ?? "it can't be read")
-            }
-            drive = opened.drive
-        }
+        guard let mount else { return (home, try homeNode(node), nil) }
+        let drive = try self.drive(of: mount, path: node.name, writing: writing)
         var record = node.record
         if record.parent == mount {
             record.parent = nil
@@ -418,6 +440,33 @@ public final class JoinedDrive: Sendable {
             record.parent = NodeID.split(parent).rkey
         }
         return (drive, Node(id: rkey, cid: node.cid, record: record), mount)
+    }
+
+    /// A mount as the joined tree shows it: a share of one file as the file.
+    func view(of mount: Node) -> Node {
+        guard mount.record.kind == .mount, let file = latest.value?.sharedFile(of: mount.id) else { return mount }
+        return JoinedSnapshot.fileView(mount: mount, file: file)
+    }
+
+    /// Where a node's contents are: for a share of one file, the file in its space.
+    private func content(_ node: Node, writing: Bool) throws -> (Drive, Node, mount: String?) {
+        guard node.isMount, !node.isFolder, NodeID.split(node.id).mount == nil else {
+            return try local(node, writing: writing)
+        }
+        let drive = try self.drive(of: node.id, path: node.name, writing: writing)
+        guard let file = latest.value?.sharedFile(of: node.id) else {
+            throw ATDriveError.mountUnavailable(path: node.name, why: "it can't be read")
+        }
+        return (drive, file, node.id)
+    }
+
+    private func drive(of mount: String, path: String, writing: Bool) throws -> Drive {
+        if writing { return try writable(mount, path: path) }
+        guard let opened = opened.value[mount] else {
+            throw ATDriveError.mountUnavailable(
+                path: path, why: latest.value?.mounts[mount]?.problem?.description ?? "it can't be read")
+        }
+        return opened.drive
     }
 
     private func global(_ node: Node, in mount: String?) -> Node {
@@ -440,6 +489,10 @@ public final class JoinedDrive: Sendable {
         _ file: URL, as name: String, in parent: String?, replacing existing: Node? = nil, modified: Date? = nil,
         known: Set<String> = [], progress: Drive.Progress? = nil
     ) async throws -> Node {
+        if let existing, existing.isMount, !existing.isFolder {
+            return try await uploadShared(
+                file, as: name, in: parent, replacing: existing, modified: modified, known: known, progress: progress)
+        }
         let (drive, localParent, mount) = try place(parent, path: name)
         var replacing: Node?
         var stale: Node?
@@ -453,13 +506,32 @@ public final class JoinedDrive: Sendable {
         return global(written, in: mount)
     }
 
+    /// New contents for a share of one file: they go to the file in its space (keeping its name
+    /// there), and the share is moved or renamed if `parent` or `name` say so.
+    private func uploadShared(
+        _ file: URL, as name: String, in parent: String?, replacing existing: Node, modified: Date?,
+        known: Set<String>, progress: Drive.Progress?
+    ) async throws -> Node {
+        let (drive, inner, _) = try content(existing, writing: true)
+        let written = try await drive.upload(
+            file, as: inner.name, in: nil, replacing: inner, modified: modified, known: known, progress: progress)
+        var mount = try homeNode(existing)
+        if parent != existing.record.parent || name != existing.name {
+            mount = try await home.move(mount, to: parent, as: name)
+        }
+        return JoinedSnapshot.fileView(mount: mount, file: written)
+    }
+
     /// Renames and/or moves a node. Within a space it's a move; between two (into or out of a
     /// shared folder of yours) it's a copy, then a delete, and it gets a new ID.
     @discardableResult
     public func move(_ node: Node, to parent: String?, as name: String) async throws -> Node {
         let (source, local, sourceMount) = try self.local(node, writing: true)
         let (target, localParent, targetMount) = try place(parent, path: name)
-        if source === target { return global(try await source.move(local, to: localParent, as: name), in: targetMount) }
+        if source === target {
+            let moved = global(try await source.move(local, to: localParent, as: name), in: targetMount)
+            return node.isMount ? view(of: moved) : moved
+        }
         guard !node.isMount else { throw SharingError.nested(name) }
         let tree = latest.value?.tree ?? DriveTree([])
         guard !tree.descendants(of: node.id).contains(where: \.isMount) else { throw SharingError.nested(name) }
@@ -533,14 +605,14 @@ public final class JoinedDrive: Sendable {
     )
         async throws
     {
-        let (drive, local, _) = try self.local(node, writing: false)
+        let (drive, local, _) = try content(node, writing: false)
         try await drive.read(local, previous: previous, progress: progress, into: write)
     }
 
     public func download(_ node: Node, to destination: URL, previous: URL? = nil, progress: Drive.Progress? = nil)
         async throws
     {
-        let (drive, local, _) = try self.local(node, writing: false)
+        let (drive, local, _) = try content(node, writing: false)
         try await drive.download(local, to: destination, previous: previous, progress: progress)
     }
 

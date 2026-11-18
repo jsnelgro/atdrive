@@ -607,6 +607,11 @@ Checked against the proposal and the reference branch on 2026-11-17:
   space's address and, for an encrypted space you own, its keyring (and its link key, if its
   link is on); for someone else's encrypted share opened by link, the link key. A plain drive
   refuses to write a keyring into one.
+- **A shared file is the file.** Its space holds just that file, and its settings say `file`.
+  The joined tree shows the mount as the file (kind `file`, still with its `mount`, under the
+  mount's ID and name), not a folder holding it: for its owner, everyone it's shared with, sync
+  and Finder alike. Its contents (reading, new versions) go to the file in the space; renaming,
+  moving and deleting go to the mount.
 - **`JoinedDrive`** joins the home drive and its mounts into one tree. A node's ID is its record
   key at home, `<mount>/<rkey>` in a mounted space: strings, as before, so sync state and the
   Mac's identifiers didn't change shape. Each space follows its own change feed; the Mac's sync
@@ -615,7 +620,7 @@ Checked against the proposal and the reference branch on 2026-11-17:
   spaces of the same mode, and transferred again otherwise.
 - **A mount that can't be read is held:** it keeps its last contents, or, never read, shows as an
   unreadable record, so neither sync nor Finder takes what came from it for deleted. A share
-  its owner deleted is the exception: its copies go.
+  its owner deleted (or unshared) is the exception: it disappears, and its copies go.
 - **Other people's shares are read-only:** Finder gives their items no write capabilities, and
   in `atdrive sync` local changes inside one are held and reported, never uploaded or deleted.
 - **No nesting:** nothing inside a mount can be shared, and a mount can't go in another.
@@ -634,8 +639,11 @@ Checked against the proposal and the reference branch on 2026-11-17:
 - **History stays behind.** Members see the share from the moment of sharing.
 - **Running it again** finishes an interrupted share: the mount is found by name, and what's
   been copied by record key.
-- **`unshare`:** back to `personalspace` (dropping members and `publicRead`), member and link
-  records deleted, and a new key for an encrypted share. The folder stays a mount.
+- **`unshare`:** first back to `personalspace` (dropping members and `publicRead`) with member
+  and link records deleted, so access ends at once; then the share moves back into the drive,
+  where it is, an ordinary file or folder again, and its space is deleted. Those who had it see
+  it disappear. Run again, it finishes an interrupted one. Sharing it again makes a new space
+  (and link).
 
 ### Encrypted and plain shares
 

@@ -449,13 +449,68 @@ extension JSONValue {
         await #expect(throws: (any Error).self) { _ = try await JoinedDrive.open(link, access: pds.access(as: nil)) }
     }
 
-    @Test func peopleCanBeAddedAgainAfterUnsharing() async throws {
+    /// Unsharing takes it away from those who had it; sharing again gives them a new share.
+    @Test func unsharingTakesItAwayAndItCanBeSharedAgain() async throws {
         let mount = try await sharedPhotos()
-        try await owner.addMembers([bobDID], to: mount)
-        try await owner.unshare(mount)
         try await owner.addMembers([bobDID], to: mount)
         _ = try await bob.add(ShareLinkAddress(space: mount.record.mount!.space))
         #expect(try await contents(bob, "/photos/a.txt") == "aaa")
+
+        try await owner.unshare(mount)
+        #expect(try await contents(bob, "/photos/a.txt") == nil)
+        let folder = try #require(try await owner.tree().locate(DrivePath("/photos")))
+        let again = try await owner.share(folder)
+        try await owner.addMembers([bobDID], to: again)
+        _ = try await bob.add(ShareLinkAddress(space: again.record.mount!.space))
+        #expect(try await contents(bob, "/photos/a.txt") == "aaa")
+    }
+
+    /// A shared file opened from its link is the file, in the recipient's drive too.
+    @Test func aSharedFileOpensAsTheFile() async throws {
+        let notes = try await owner.upload(try file("hello"), as: "notes.txt", in: nil)
+        let mount = try await owner.share(notes)
+        let link = try await owner.turnLinkOn(mount)
+        let added = try await bob.add(link)
+        #expect(added.name == "notes.txt")
+        let tree = try await bob.tree()
+        let node = try #require(try tree.locate(DrivePath("/notes.txt")))
+        #expect(node.isMount && !node.isFolder && tree.children(of: node.id).isEmpty)
+        #expect(try await contents(bob, "/notes.txt") == "hello")
+        // Read-only: new contents are refused.
+        await #expect(throws: (any Error).self) {
+            _ = try await bob.upload(try file("mine"), as: "notes.txt", in: nil, replacing: node)
+        }
+    }
+
+    /// A shared file syncs as a file: its owner's edits go to the share, a recipient's stay put.
+    @Test func aSharedFileSyncsAsAFile() async throws {
+        let notes = try await owner.upload(try file("hello"), as: "notes.txt", in: nil)
+        let mount = try await owner.share(notes)
+        try await owner.addMembers([bobDID], to: mount)
+        _ = try await bob.add(ShareLinkAddress(space: mount.record.mount!.space))
+
+        let mine = try temporaryDirectory().appendingPathComponent("mine")
+        let theirs = try temporaryDirectory().appendingPathComponent("theirs")
+        let ownerSync = try FolderSync(folder: mine, drive: owner, settle: 0)
+        let bobSync = try FolderSync(folder: theirs, drive: bob, settle: 0)
+        try await ownerSync.sync()
+        try await bobSync.sync()
+        for folder in [mine, theirs] {
+            var isFolder: ObjCBool = true
+            let path = folder.appendingPathComponent("notes.txt").path
+            #expect(FileManager.default.fileExists(atPath: path, isDirectory: &isFolder) && !isFolder.boolValue)
+        }
+
+        try Data("edited".utf8).write(to: mine.appendingPathComponent("notes.txt"))
+        try await ownerSync.sync()
+        #expect(try await contents(owner, "/notes.txt") == "edited")
+        #expect(try await owner.tree().nodes[mount.id]?.isMount == true, "still shared")
+        try await bobSync.sync()
+        #expect(try String(contentsOf: theirs.appendingPathComponent("notes.txt"), encoding: .utf8) == "edited")
+
+        try Data("bob's".utf8).write(to: theirs.appendingPathComponent("notes.txt"))
+        try await bobSync.sync()
+        #expect(try await contents(owner, "/notes.txt") == "edited", "read-only for bob")
     }
 
     @Test func aShareWhoseMountCantBeReadKeepsItsFilesInSync() async throws {

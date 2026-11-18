@@ -74,7 +74,11 @@ final class Item: NSObject, NSFileProviderItem, NSFileProviderItemDecorating {
             return node.isFolder ? [.allowsReading, .allowsContentEnumerating] : [.allowsReading]
         case .other:
             // The mount itself is yours, in your drive: it can be renamed, moved and removed.
-            return [.allowsReading, .allowsContentEnumerating, .allowsRenaming, .allowsReparenting, .allowsDeleting]
+            var capabilities: NSFileProviderItemCapabilities = [
+                .allowsReading, .allowsRenaming, .allowsReparenting, .allowsDeleting,
+            ]
+            if node.isFolder { capabilities.insert(.allowsContentEnumerating) }
+            return capabilities
         default:
             var capabilities: NSFileProviderItemCapabilities = [
                 .allowsReading, .allowsWriting, .allowsRenaming, .allowsReparenting, .allowsDeleting,

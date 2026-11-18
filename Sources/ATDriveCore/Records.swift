@@ -313,14 +313,18 @@ public struct DriveSettings: Codable, Sendable, Equatable {
     public var sharingKey: Bytes?
     /// Shares only: the shared file's or folder's name, for those who open it.
     public var name: String?
+    /// Shares only: it's one file (the space holds just that file), shown as the file rather than
+    /// a folder (`JoinedSnapshot.join`).
+    public var file: Bool
 
     public init(
         retentionDays: Int = defaultRetentionDays, driveID: String? = DriveSettings.newDriveID(),
         converting: Bool = false, retiredKeys: [Bytes] = [], generation: Int = 0, sharingKey: Bytes? = nil,
-        name: String? = nil
+        name: String? = nil, file: Bool = false
     ) {
         self.sharingKey = sharingKey
         self.name = name
+        self.file = file
         self.retentionDays = retentionDays
         self.driveID = driveID
         self.generation = generation
@@ -343,7 +347,7 @@ public struct DriveSettings: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case retentionDays, driveID, converting, retiredKeys, generation, sharingKey, name
+        case retentionDays, driveID, converting, retiredKeys, generation, sharingKey, name, file
     }
 
     public init(from decoder: Decoder) throws {
@@ -355,6 +359,7 @@ public struct DriveSettings: Codable, Sendable, Equatable {
         generation = try container.decodeIfPresent(Int.self, forKey: .generation) ?? 0
         sharingKey = try container.decodeIfPresent(Bytes.self, forKey: .sharingKey)
         name = try container.decodeIfPresent(String.self, forKey: .name)
+        file = try container.decodeIfPresent(Bool.self, forKey: .file) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -366,6 +371,7 @@ public struct DriveSettings: Codable, Sendable, Equatable {
         try container.encode(generation, forKey: .generation)
         try container.encodeIfPresent(sharingKey, forKey: .sharingKey)
         try container.encodeIfPresent(name, forKey: .name)
+        if file { try container.encode(file, forKey: .file) }
     }
 
     /// The sharing key pair, if there is one. `encrypted`: whether these settings are stored sealed.

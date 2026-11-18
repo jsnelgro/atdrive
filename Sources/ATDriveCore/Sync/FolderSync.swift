@@ -241,7 +241,8 @@ public final class FolderSync {
     /// Mounts that can't be read, once each: what was synced from them stays as it is.
     private func reportMounts(_ snapshot: JoinedSnapshot) {
         for (id, state) in snapshot.mounts.sorted(by: { $0.key < $1.key }) {
-            guard let problem = state.problem, let node = snapshot.tree.nodes[id] else { continue }
+            guard let problem = state.problem, let node = snapshot.tree.nodes[id] ?? snapshot.home.tree.nodes[id]
+            else { continue }
             let path = snapshot.tree.path(of: node).description
             if problem.isDeletion {
                 report(

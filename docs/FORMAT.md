@@ -79,7 +79,8 @@ Chunk lists:
 the drive was wiped and created again), `generation` (incremented on every change), `converting`
 (encrypted drives), `retiredKeys` (raw drive keys, published when encryption was turned off),
 `sharingKey?` (home drives: the account's raw X25519 sharing key), `name?` (shares: the shared
-file's or folder's name).
+file's or folder's name), `file?` (shares: `true` when it's one file, which the space holds at
+its top; the share is shown as that file rather than a folder).
 
 `device` (encrypted drives; key: the device's ID, a TID): `name`, `publicKey` (raw X25519),
 `keyring?` (the keyring wrapped for it), `member?` (sealed `{id, name, publicKey}`),

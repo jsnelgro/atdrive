@@ -52,15 +52,22 @@ final class SharingCoordinator {
                     confirm(
                         "Stop sharing “\(node.name)” with everyone?",
                         detail:
-                            "Everyone you shared it with loses it, and its link stops working. It stays in your drive. What people already downloaded stays theirs."
+                            "Everyone you shared it with loses it, and its link stops working. It stays in your drive, an ordinary \(node.isFolder ? "folder" : "file") again. What people already downloaded stays theirs."
                     )
                 else { return }
                 try await drive.unshare(node)
+                await Self.refreshFinder()
             }
         } catch {
             logger.error("sharing request failed: \(String(describing: error), privacy: .public)")
             alert(String(describing: error))
         }
+    }
+
+    /// Finder shows sharing changes (badges, a share's new form) now, not at the next poll.
+    static func refreshFinder() async {
+        guard let manager = DriveDomain.manager else { return }
+        try? await manager.signalEnumerator(for: .workingSet)
     }
 
     /// An `atdrive://` link was opened.
@@ -244,7 +251,12 @@ final class ShareModel {
         busy = true
         message = nil
         defer { busy = false }
-        do { try await body() } catch { message = String(describing: error) }
+        do {
+            try await body()
+            await SharingCoordinator.refreshFinder()
+        } catch {
+            message = String(describing: error)
+        }
     }
 
     static func name(_ did: String) async -> String {
@@ -379,7 +391,7 @@ final class OpenLinkModel {
         do {
             let mount = try await drive.add(link)
             done = "Added “\(mount.name)” to your drive. It's read-only, and kept up to date."
-            if let manager = DriveDomain.manager { try? await manager.signalEnumerator(for: .workingSet) }
+            await SharingCoordinator.refreshFinder()
         } catch {
             message = String(describing: error)
         }
