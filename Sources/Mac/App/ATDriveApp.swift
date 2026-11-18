@@ -8,6 +8,7 @@ import SwiftUI
 struct ATDriveApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var model: AppModel
+    @State private var encryption: EncryptionModel
 
     init() {
         let model = AppModel()
@@ -15,18 +16,24 @@ struct ATDriveApp: App {
         SharingCoordinator.shared.makeDrive = { [weak model] in await model?.joinedDrive() }
         SharingCoordinator.shared.start()
         _model = State(initialValue: model)
+        _encryption = State(initialValue: EncryptionModel(app: model))
     }
 
     var body: some Scene {
         MenuBarExtra("ATDrive", systemImage: "externaldrive.badge.icloud") {
-            MenuContent(model: model)
+            MenuContent(model: model, encryption: encryption)
         }
         .menuBarExtraStyle(.window)
+        Settings {
+            SettingsView(app: model, encryption: encryption)
+        }
     }
 }
 
 struct MenuContent: View {
     @Bindable var model: AppModel
+    var encryption: EncryptionModel
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -34,6 +41,7 @@ struct MenuContent: View {
             case .signedOut: signInForm
             case .signingIn: waitingForBrowser
             case .openingDrive: openingDrive
+            case .choosingEncryption: choosingEncryption
             case .showingRecoveryKey(_, let key): recoveryKey(key)
             case .needsKeys: needsKeys
             case .signedIn(let handle): signedIn(as: handle)
@@ -45,7 +53,16 @@ struct MenuContent: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Divider()
-            Button("Quit ATDrive") { NSApplication.shared.terminate(nil) }
+            HStack {
+                Button("Settings…") {
+                    // A menu-bar app isn't active, so its windows would open behind others.
+                    NSApp.activate()
+                    openSettings()
+                }
+                .keyboardShortcut(",")
+                Spacer()
+                Button("Quit ATDrive") { NSApplication.shared.terminate(nil) }
+            }
         }
         .padding(14)
         .frame(width: 300)
@@ -88,36 +105,67 @@ struct MenuContent: View {
         }
     }
 
+    /// The account has no drive yet: encrypt it or not.
+    private var choosingEncryption: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Set up your drive").font(.headline)
+            Text("Choose whether to encrypt it. You can change this later in Settings.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            choice(
+                "Not Encrypted", systemImage: "externaldrive",
+                detail: "Simplest. Whoever runs your server can read your files. There are no keys to keep or lose."
+            ) { model.createDrive(encrypted: false) }
+            choice(
+                "Encrypted", systemImage: "lock",
+                detail:
+                    "Only your devices can read your files. You get a recovery key to keep safe, and approve each new device."
+            ) { model.createDrive(encrypted: true) }
+            if model.busy {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text("Making your drive…").font(.caption)
+                }
+            }
+            Button("Sign Out") { Task { await model.signOut() } }
+                .disabled(model.busy)
+        }
+    }
+
+    private func choice(
+        _ title: String, systemImage: String, detail: String, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: systemImage).font(.title2).frame(width: 24)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.body.weight(.semibold))
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.leading)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.bordered)
+        .disabled(model.busy)
+    }
+
     /// A new drive's recovery key, until the user says they've saved it. It stays here if the
     /// menu closes.
     private func recoveryKey(_ key: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Your drive's recovery key").font(.headline)
             Text("Your drive is encrypted: only your devices can read it.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text(key)
-                .font(.system(.body, design: .monospaced))
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-            Text(
-                "Write it down, or keep it in a password manager, now: it's shown only this once. With it, "
-                    + "any device you sign in on can open the drive. If you lose every device that has the "
-                    + "drive's keys and this key too, nobody can read your files again: not you, and not "
-                    + "whoever runs your server."
-            )
-            .font(.caption)
-            .fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Button("Copy") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(key, forType: .string)
-                }
-                Spacer()
-                Button("I've Saved It") { model.savedRecoveryKey() }
-                    .keyboardShortcut(.defaultAction)
-            }
+            RecoveryKeyView(key: key) { model.savedRecoveryKey() }
         }
     }
 
@@ -182,6 +230,16 @@ struct MenuContent: View {
     private func signedIn(as handle: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Label("@\(handle)", systemImage: "person.crop.circle").font(.headline)
+            if encryption.working {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text(
+                        encryption.progress.map { "Converting your drive: \($0.done) of \($0.total)" }
+                            ?? "Converting your drive…"
+                    )
+                    .font(.caption)
+                }
+            }
             Button("Show in Finder") { Task { await model.showInFinder() } }
             Button("Check for Changes") { Task { await model.syncNow() } }
             Button("Add Shared Link…") { SharingCoordinator.shared.askForLink() }
