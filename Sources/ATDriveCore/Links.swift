@@ -228,6 +228,8 @@ extension JoinedDrive {
     /// (renamed if the name is taken). Already added: that mount. Returns the mount.
     @discardableResult
     public func add(_ link: ShareLinkAddress) async throws -> Node {
+        // Your own share is in your drive already, as yours: refused before anything else.
+        guard !isOwn(link) else { throw LinkError.yourOwn }
         var snapshot = try await update(nil)
         if let existing = snapshot.tree.nodes.values.first(where: { $0.isMount && $0.record.mount?.space == link.space }
         ) {
@@ -254,6 +256,19 @@ extension JoinedDrive {
         return snapshot.tree.nodes[mount.id] ?? mount
     }
 
+    /// Whether a link is to one of this account's own shares.
+    public func isOwn(_ link: ShareLinkAddress) -> Bool {
+        XRPCClient.spaceParts(link.space)?.authority == owner
+    }
+
+    /// Where the share a link is to is in this drive, if it's there.
+    public func path(of link: ShareLinkAddress) async throws -> DrivePath? {
+        let snapshot = try await update(latestSnapshot)
+        let mount = snapshot.tree.nodes.values.first { $0.isMount && $0.record.mount?.space == link.space }
+        guard let mount else { return nil }
+        return snapshot.tree.path(of: mount)
+    }
+
     /// Mounts of other people's shares in this drive.
     public func sharedWithMe(in snapshot: JoinedSnapshot) -> [(mount: Node, state: MountState)] {
         snapshot.mounts.filter(\.value.readOnly).compactMap { id, state in
@@ -271,7 +286,7 @@ public enum LinkError: Error, Equatable, CustomStringConvertible {
     public var description: String {
         switch self {
         case .notADrive(let space): "\(space) isn't an ATDrive share: it's another app's data"
-        case .yourOwn: "that's one of your own shares: it's already in your drive"
+        case .yourOwn: "that's your own share: it's already in your drive, as yours (links are for other people)"
         }
     }
 }
