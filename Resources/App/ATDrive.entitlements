@@ -9,6 +9,9 @@
 	<!-- Sign-in: the browser redirects back to a listener on 127.0.0.1. -->
 	<key>com.apple.security.network.server</key>
 	<true/>
+	<!-- Download… from a link: saving into the folder the user picks. -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>__APP_GROUP__</string>

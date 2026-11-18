@@ -76,6 +76,14 @@ final class SharingCoordinator {
             guard let drive = await makeDrive?() else { return alert("Sign in to ATDrive first.") }
             do {
                 let link = try ShareLinkAddress(parsing: url.absoluteString)
+                if drive.isOwn(link) {
+                    // Yours already: nothing to add or download.
+                    let path = (try? await drive.path(of: link)).flatMap { $0 }
+                    let place = path.map { ", at \($0)" } ?? ""
+                    return alert(
+                        "This is your own share",
+                        detail: "It's already in your drive\(place). Links you share are for other people to open.")
+                }
                 let model = OpenLinkModel(drive: drive, link: link)
                 show(OpenLinkView(model: model), title: "Shared with you")
                 await model.load()
@@ -105,9 +113,10 @@ final class SharingCoordinator {
         windows.removeAll { !$0.isVisible && $0 !== window }
     }
 
-    private func alert(_ text: String) {
+    private func alert(_ text: String, detail: String? = nil) {
         let alert = NSAlert()
         alert.messageText = text
+        if let detail { alert.informativeText = detail }
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
     }
