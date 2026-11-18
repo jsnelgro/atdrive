@@ -65,6 +65,16 @@ import Testing
         #expect(!other.isDrive)
     }
 
+    /// A link to your own share is refused, though the share is in your drive (as yours).
+    @Test func yourOwnLinkIsRefused() async throws {
+        let mount = try await sharedPhotos()
+        let link = try await owner.turnLinkOn(mount)
+        #expect(owner.isOwn(link) && !bob.isOwn(link))
+        await #expect(throws: LinkError.yourOwn) { try await owner.add(link) }
+        #expect(try await owner.path(of: link) == DrivePath("/photos"))
+        #expect(try await owner.tree().nodes.values.filter(\.isMount).count == 1, "nothing added")
+    }
+
     @Test func aPublicLinkReadsSignedOut() async throws {
         let mount = try await sharedPhotos()
         let link = try await owner.turnLinkOn(mount)
