@@ -163,7 +163,8 @@ public final class Drive: Sendable {
                 return DriveChanges(ops: [], commit: nil)
             }
             ops += page.ops
-            guard page.commit == nil, let next = page.cursor, !page.ops.isEmpty else {
+            // Every page carries the current commit; the feed ends at the page with no cursor.
+            guard let next = page.cursor, !page.ops.isEmpty else {
                 return DriveChanges(ops: ops, commit: page.commit)
             }
             cursor = next

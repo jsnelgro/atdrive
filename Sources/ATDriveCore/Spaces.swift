@@ -347,8 +347,9 @@ extension XRPCClient {
 
     /// One page of the repo's change feed: the writes after `since` (or after `cursor`, which
     /// takes precedence), in every collection, in order. A page holds up to `limit` ops (the
-    /// server allows 1000). The last one has no cursor and carries the commit, unless the repo
-    /// doesn't exist. The server may compact the feed, so it isn't history: `prev` shows gaps.
+    /// server allows 1000). Every page carries the repo's current commit; a full page has a
+    /// cursor, so the last one may be empty. A repo never written to is `RepoNotFound`. The server
+    /// may compact the feed, so it isn't history: `prev` shows gaps.
     public func listRepoOps(
         space: String, repo: String, since: String?, cursor: String? = nil, limit: Int = 1000
     ) async throws -> RepoOpsPage {

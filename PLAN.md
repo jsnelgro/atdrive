@@ -732,4 +732,8 @@ Checked against the proposal and the reference branch on 2026-11-17:
   - Spaces are **not** end-to-end encrypted.
 - **No compare-and-swap** on space writes, so conflict detection has to happen on the client.
   Creates do fail if the record exists (`RecordAlreadyExists`).
-- **Change feed:** `listRepoOps(since:)` lists writes after a revision. See *Storage v2*.
+- **Change feed:** `listRepoOps(since:)` lists writes after a revision. Since 2026-11-12 every
+  page carries the current commit (with its MAC), and the feed ends at the page with no cursor.
+  See *Storage v2*.
+- **Checked against the 2026-11-12 migration guide** (`alpha-migrations/prompt-11-12-26.md`):
+  that paging change was the only one ATDrive needed.

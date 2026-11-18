@@ -20,7 +20,7 @@ import Testing
 ///
 /// Like the reference PDS, every write gets a revision (a TID) and is logged with its index
 /// in the commit, its CID and the CID it replaced; `listRepoOps` serves that log with a value
-/// only for ops whose version is still current, and the commit once it reaches the head.
+/// only for ops whose version is still current, and the current commit on every page.
 ///
 /// Spaces have policies: `personalspace`, or `memberspace` with members and `publicRead`. Other
 /// accounts read them as the protocol says: a delegation token from their own PDS, a credential
@@ -578,7 +578,8 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
             return json(["commit": commit], headers: macHeaders(commit, key: key, request: headers))
 
         default:  // listRepoOps
-            // As the reference PDS: no error for a missing space or repo, just no commit.
+            // As the reference PDS (2026-11-12): a repo never written to is `RepoNotFound`.
+            guard let rev = repo.rev else { return error(400, "RepoNotFound") }
             var position: (rev: String, idx: Int)?
             if let cursor = query["cursor"] {
                 let parts = cursor.split(separator: "/")
@@ -605,16 +606,12 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
                     return entry
                 }
             ]
-            // Like the reference: a full page has a cursor and no commit, even at the head.
-            var extra: [String: String] = [:]
-            if page.count == limit, let last = page.last {
-                output["cursor"] = "\(last.rev)/\(last.idx)"
-            } else if let rev = repo.rev {
-                let commit = commitJSON(rev, key: key)
-                output["commit"] = commit
-                extra = macHeaders(commit, key: key, request: headers)
-            }
-            return json(output, headers: extra)
+            // Like the reference (2026-11-12): every page carries the current commit, and a full
+            // page has a cursor, even at the head (so the last page may be empty).
+            if page.count == limit, let last = page.last { output["cursor"] = "\(last.rev)/\(last.idx)" }
+            let commit = commitJSON(rev, key: key)
+            output["commit"] = commit
+            return json(output, headers: macHeaders(commit, key: key, request: headers))
         }
     }
 
