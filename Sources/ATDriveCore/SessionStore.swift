@@ -86,17 +86,29 @@ private func writePrivately(_ value: some Encodable, to file: URL) throws {
         at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-    let temporary = directory.appendingPathComponent(".\(file.lastPathComponent).tmp")
+    // Its own name, so two processes saving at once (the Mac app and its extension share these
+    // files) don't take each other's.
+    let temporary = directory.appendingPathComponent(".\(file.lastPathComponent).\(UUID().uuidString).tmp")
     guard
         FileManager.default.createFile(
             atPath: temporary.path, contents: try encoder.encode(value), attributes: [.posixPermissions: 0o600])
     else { throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: temporary.path]) }
-    try replace(file, with: temporary)
+    do {
+        try replace(file, with: temporary)
+    } catch {
+        try? FileManager.default.removeItem(at: temporary)
+        throw error
+    }
 }
 
 /// Atomically moves `source` over `destination` (POSIX rename semantics).
 func replace(_ destination: URL, with source: URL) throws {
     guard rename(source.path, destination.path) == 0 else {
-        throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: destination.path])
+        throw CocoaError(
+            .fileWriteUnknown,
+            userInfo: [
+                NSFilePathErrorKey: destination.path,
+                NSUnderlyingErrorKey: POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO),
+            ])
     }
 }

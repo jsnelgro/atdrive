@@ -141,8 +141,12 @@ final class AppModel {
     /// encrypted drive this Mac has no keys for, asks how to get them. Only this, never the
     /// extension, creates a drive.
     private func openDrive(handle: String) async {
-        guard let drive = await makeDrive() else {
-            message = "Couldn't read this Mac's keys from the App Group container."
+        let drive: Drive
+        do {
+            drive = try await makeDrive()
+        } catch {
+            logger.error("opening the drive's stores failed: \(String(describing: error), privacy: .public)")
+            message = String(describing: error)
             state = .signedOut
             return
         }
@@ -263,7 +267,7 @@ final class AppModel {
     func joinedDrive() async -> JoinedDrive? {
         guard case .signedIn = state else { return nil }
         if let joined { return joined }
-        guard let drive = await makeDrive(), (try? await drive.open()) != nil else { return nil }
+        guard let drive = try? await makeDrive(), (try? await drive.open()) != nil else { return nil }
         let joined = JoinedDrive(
             home: drive, access: SpaceAccess(ownClient: drive.client, resolver: IdentityResolver()))
         self.joined = joined
@@ -272,12 +276,44 @@ final class AppModel {
 
     /// The drive as this Mac: its identity is made the first time, in the App Group container, so
     /// the extension can unlock the drive with it too.
-    private func makeDrive() async -> Drive? {
-        guard let store = AppGroup.sessionStore(), let session = try? store.load(),
-            let devices = AppGroup.deviceStore(), let identity = try? devices.loadOrCreate()
-        else { return nil }
+    private func makeDrive() async throws -> Drive {
+        guard let store = AppGroup.sessionStore() else { throw StoreProblem.noContainer }
+        let session: Session
+        do {
+            guard let loaded = try store.load() else { throw StoreProblem.noSession(store.file) }
+            session = loaded
+        } catch let problem as StoreProblem {
+            throw problem
+        } catch {
+            throw StoreProblem.unreadable(store.file, error)
+        }
+        let devices = store.devices
+        let identity: DeviceIdentity
+        do {
+            identity = try devices.loadOrCreate()
+        } catch {
+            throw StoreProblem.unreadable(devices.file, error)
+        }
         let manager = SessionManager(session) { updated in try? store.save(updated) }
         return await Drive(session: manager, identity: identity) { updated in try? devices.save(updated) }
+    }
+
+    /// Why the session or this Mac's keys couldn't be read, said in full.
+    enum StoreProblem: Error, CustomStringConvertible {
+        case noContainer
+        case noSession(URL)
+        case unreadable(URL, any Error)
+
+        var description: String {
+            switch self {
+            case .noContainer:
+                "The App Group container is unavailable. Build the app with scripts/build-app.sh."
+            case .noSession(let file):
+                "Signed in, but no session was saved at \(file.path). Try signing in again."
+            case .unreadable(let file, let error):
+                "Couldn't read or write \(file.path): \(error)"
+            }
+        }
     }
 
     // MARK: Finder
