@@ -69,8 +69,8 @@ Ordered by how much they matter. None is new on this branch unless it says so.
   keys, which other devices still read. Fix: revoke its OAuth session as part of `devices
   remove` if the PDS offers that, and have devices that have seen a rotation refuse records
   sealed with an older key that are newer than the rotation.
-- **Secrets are plain files, except for the CLI on a Mac** (#32). The CLI on a Mac keeps them in
-  the login Keychain. Elsewhere they're `session.json` and `device.json` (mode 600) in
+- **Secrets are plain files, except for the CLI on a Mac** (#32). An `atdrive` built on its own
+  keeps them in the login Keychain on a Mac; the one inside ATDrive.app shares the app's. Elsewhere they're `session.json` and `device.json` (mode 600) in
   `$XDG_STATE_HOME/atdrive` on Linux, or in the Mac app's App Group container. Anything running
   as the user can read those. (They're never in `~/.config`, which people put in version
   control.) Remaining fix: the Keychain for the Mac app (a shared access group for the

@@ -70,7 +70,7 @@ struct LiveAccount: Sendable {
         guard let path = ProcessInfo.processInfo.environment[variable], !path.isEmpty else { return nil }
         let store = SessionStore(directory: URL(fileURLWithPath: (path as NSString).expandingTildeInPath))
         guard let session = try? store.load() else { return nil }
-        return LiveAccount(store: store, session: session, manager: SessionManager(session) { try? store.save($0) })
+        return LiveAccount(store: store, session: session, manager: SessionManager(session, store: store))
     }
 
     var client: XRPCClient { XRPCClient(service: session.service, session: manager) }

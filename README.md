@@ -148,6 +148,10 @@ That builds `ATDrive.app`, installs it to `~/Applications`, and launches it.
 3. **ATDrive** appears in Finder's sidebar under Locations.
 4. Drag files in, open them, rename them, delete them. Changes made elsewhere (another Mac, the
    CLI) show up within about 30 seconds.
+5. For the `atdrive` command too, choose **Install Command-Line Tool…** in the menu. It copies a
+   command that links the `atdrive` inside the app into `/usr/local/bin`. That `atdrive` shares
+   the app's sign-in and this Mac's key: there's no second sign-in, the drive counts the Mac as
+   one device, and signing out of either signs out of both.
 
 Files are downloaded the first time you open them. Right-click > Remove Download frees the space
 again. Changes made in two places at once are settled the same way as in a synced folder (see
@@ -295,11 +299,13 @@ interval = 60  # seconds between checks for changes made elsewhere (default 30, 
   before each check of the drive.
 - **The drive's own settings are kept in the drive,** not here, so every device follows them:
   encryption (`atdrive encryption`) and how long history is kept.
-- **Your secrets are kept elsewhere:** your session and this device's key. The CLI keeps them in
-  the login Keychain on a Mac, and in `~/.local/state/atdrive` on Linux; the Mac app keeps them
-  in its own container. The first time a newly built `atdrive` opens its Keychain items, macOS asks
-  whether to allow it. Where it can't ask you (over SSH), set `ATDRIVE_STATE_DIR` to a folder to
-  keep them in instead.
+- **Your secrets are kept elsewhere:** your session and this device's key.
+  - **The Mac app** keeps them in its own container, and the `atdrive` inside it uses the same
+    ones.
+  - **An `atdrive` built on its own** keeps them in the login Keychain on a Mac. The first time a
+    newly built one opens its Keychain items, macOS asks whether to allow it. Where it can't ask
+    you (over SSH), set `ATDRIVE_STATE_DIR` to a folder to keep them in instead.
+  - **On Linux**, they're in `~/.local/state/atdrive`.
 - **The Mac app always uses `~/.config/atdrive`:** it can't see `XDG_CONFIG_HOME` or
   `ATDRIVE_CONFIG_DIR` from your shell. If you set either, the CLI and the app read different
   files.

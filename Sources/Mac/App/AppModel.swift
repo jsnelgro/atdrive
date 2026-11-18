@@ -362,7 +362,7 @@ final class AppModel {
         } catch {
             throw StoreProblem.unreadable("this Mac's key in \(devices.storage)", error)
         }
-        let manager = SessionManager(session) { updated in try? store.save(updated) }
+        let manager = SessionManager(session, store: store)
         return await Drive(session: manager, identity: identity) { updated in try? devices.save(updated) }
     }
 

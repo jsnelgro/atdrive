@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The atdrive inside ATDrive.app (Contents/Helpers/atdrive). Not sandboxed: it's a command
+	     that reads and writes wherever you point it. The App Group lets it into the app's
+	     container, to share the app's session and this Mac's key. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>__APP_GROUP__</string>
+	</array>
+</dict>
+</plist>

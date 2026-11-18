@@ -16,11 +16,10 @@ public enum AppGroup {
         identifier.flatMap { FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: $0) }
     }
 
-    /// Where the logged-in session lives, readable by both the app and the extension.
+    /// Where the logged-in session lives, shared by the app, the extension and the `atdrive` inside
+    /// the app (`SecretStorage.appGroup`).
     public static func sessionStore() -> SessionStore? {
-        containerURL.map {
-            SessionStore(directory: $0.appendingPathComponent("Library/Application Support/ATDrive", isDirectory: true))
-        }
+        containerURL.map { SessionStore(storage: .appGroup(container: $0)) }
     }
 
     /// Where this Mac's device identity lives (its key pair, which the drive's keyring is wrapped

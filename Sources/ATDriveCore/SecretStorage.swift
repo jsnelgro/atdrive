@@ -13,6 +13,8 @@ import Foundation
 /// (`ConfigFile`).
 ///
 /// - `ATDRIVE_STATE_DIR` names a folder to keep them in, as files only you can read.
+/// - The `atdrive` inside ATDrive.app (`Contents/Helpers/atdrive`) shares the app's, in its App
+///   Group container: one sign-in, and one device, for the whole Mac.
 /// - Otherwise, on a Mac, the CLI keeps them in the login Keychain.
 /// - Elsewhere, in `$XDG_STATE_HOME/atdrive` (`~/.local/state/atdrive`): the XDG place for state
 ///   that has to last but belongs to this machine alone.
@@ -25,6 +27,15 @@ public struct SecretStorage: Sendable, CustomStringConvertible {
     /// Files in `directory` (`session.json`, `device.json`), readable only by you.
     public static func directory(_ directory: URL) -> SecretStorage {
         SecretStorage(backend: DirectoryBackend(directory: directory))
+    }
+
+    /// The Mac app's, in its App Group container (`container`): its Finder extension's too, and
+    /// the `atdrive` inside it.
+    public static func appGroup(container: URL) -> SecretStorage {
+        SecretStorage(
+            backend: DirectoryBackend(
+                directory: container.appendingPathComponent("Library/Application Support/ATDrive", isDirectory: true),
+                sharedWithApp: true))
     }
 
     #if canImport(Security)
@@ -46,10 +57,28 @@ public struct SecretStorage: Sendable, CustomStringConvertible {
             return .directory(URL(fileURLWithPath: (directory as NSString).expandingTildeInPath, isDirectory: true))
         }
         #if os(macOS)
+            if let executable = Bundle.main.executableURL, let group = enclosingAppGroup(executable: executable),
+                let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)
+            {
+                return .appGroup(container: container)
+            }
             return .keychain()
         #else
             return .directory(defaultDirectory(environment: environment))
         #endif
+    }
+
+    /// The App Group of the ATDrive.app that `executable` is inside, at `Contents/Helpers/` (through
+    /// a symlink, too: how it's put on the PATH). `build-app.sh` puts it there, signed with that
+    /// group, which is what lets it into the app's container.
+    static func enclosingAppGroup(executable: URL) -> String? {
+        let contents = executable.resolvingSymlinksInPath().deletingLastPathComponent().deletingLastPathComponent()
+        guard contents.lastPathComponent == "Contents", contents.deletingLastPathComponent().pathExtension == "app",
+            let data = FileManager.default.contents(atPath: contents.appendingPathComponent("Info.plist").path),
+            let info = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+            let group = info["ATDriveAppGroup"] as? String, !group.isEmpty
+        else { return nil }
+        return group
     }
 
     /// `$XDG_STATE_HOME/atdrive`, or `~/.local/state/atdrive`.
@@ -64,7 +93,33 @@ public struct SecretStorage: Sendable, CustomStringConvertible {
     /// The folder they're kept in; `nil` when they're in the Keychain.
     public var directory: URL? { (backend as? DirectoryBackend)?.directory }
 
+    /// The Mac app's (`appGroup`).
+    public var isSharedWithApp: Bool { (backend as? DirectoryBackend)?.sharedWithApp == true }
+
     public var description: String { backend.description }
+
+    /// Runs `body` holding a lock that every process using this storage respects: a `flock` on
+    /// a file beside the secrets (for the Keychain, in the temporary folder). Refreshing the
+    /// session holds it, since a refresh token works only once: two processes refreshing with the
+    /// same one would sign one of them out.
+    ///
+    /// A process that dies holding it lets go (the system drops the lock with the process). One
+    /// that's stuck is waited for at most `timeout`; then `body` runs anyway.
+    func withLock<T>(timeout: Duration = .seconds(90), _ body: () async throws -> T) async throws -> T {
+        let file = backend.lockFile
+        try? FileManager.default.createDirectory(
+            at: file.deletingLastPathComponent(), withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        let descriptor = open(file.path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { return try await body() }  // no lock is better than no refresh
+        defer { close(descriptor) }  // closing releases it
+        let deadline = ContinuousClock.now + timeout
+        while flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
+            guard errno == EWOULDBLOCK || errno == EINTR, ContinuousClock.now < deadline else { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        return try await body()
+    }
 
     func read(_ name: String) throws -> Data? { try backend.read(name) }
     func write(_ data: Data, as name: String) throws { try backend.write(data, as: name) }
@@ -73,6 +128,8 @@ public struct SecretStorage: Sendable, CustomStringConvertible {
 
 /// One way of keeping secrets: each is some bytes under a short name (`session`, `device`).
 protocol SecretBackend: Sendable, CustomStringConvertible {
+    /// For `SecretStorage.withLock`.
+    var lockFile: URL { get }
     func read(_ name: String) throws -> Data?
     func write(_ data: Data, as name: String) throws
     func delete(_ name: String) throws
@@ -81,8 +138,11 @@ protocol SecretBackend: Sendable, CustomStringConvertible {
 /// `<name>.json` in a folder only its owner can open, each file readable only by its owner.
 struct DirectoryBackend: SecretBackend {
     let directory: URL
+    var sharedWithApp = false
 
-    var description: String { directory.path }
+    var description: String { directory.path + (sharedWithApp ? " (the ATDrive app's, shared with it)" : "") }
+
+    var lockFile: URL { directory.appendingPathComponent(".lock") }
 
     func file(_ name: String) -> URL { directory.appendingPathComponent("\(name).json") }
 
@@ -131,6 +191,9 @@ struct DirectoryBackend: SecretBackend {
         let service: String
 
         var description: String { "the login Keychain (service \(service))" }
+
+        /// The temporary folder is this user's own on a Mac.
+        var lockFile: URL { FileManager.default.temporaryDirectory.appendingPathComponent("\(service).lock") }
 
         private func query(_ name: String) -> [String: Any] {
             [
