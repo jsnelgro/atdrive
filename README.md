@@ -39,10 +39,10 @@ That builds `ATDrive.app`, installs it to `~/Applications`, and launches it.
 
 1. Click the drive icon in the menu bar, enter your handle, and approve ATDrive on your account's
    sign-in page in the browser.
-2. The first time, ATDrive creates your drive. It isn't encrypted; `atdrive encryption on` (the
-   command line) turns encryption on, see [Encryption](#encryption). If your drive is encrypted,
-   this Mac needs its keys first: approve it from a device that has them (comparing a code), or
-   type the recovery key.
+2. The first time, ATDrive asks whether to encrypt your new drive (see [Encryption](#encryption)),
+   and shows the recovery key if you do. **Settings…** in the menu switches it later. If your
+   drive is encrypted already, this Mac needs its keys first: approve it from a device that has
+   them (comparing a code), or type the recovery key.
 3. **ATDrive** appears in Finder's sidebar under Locations.
 4. Drag files in, open them, rename them, delete them. Changes made elsewhere (another Mac, the
    CLI) show up within about 30 seconds.
@@ -229,6 +229,8 @@ atdrive encryption on     # or: atdrive login --encrypted, when the drive is fir
 atdrive encryption off
 ```
 
+On a Mac, the same switch is in the app's **Settings…**.
+
 - **Turning it on** makes new keys and shows a recovery key, then uploads every file again,
   encrypted, history included. On a big drive that takes a while and a lot of transfer; it says
   how much before it starts. It can be interrupted: `atdrive encryption on` again picks up where
@@ -318,7 +320,8 @@ atdrive get 'atdrive://open?at=…' ~/Downloads   # just download it (no sign-in
   paste them into ATDrive instead.
 
 To start over while trying things out, `atdrive reset` deletes your whole drive (and everything
-you shared) and makes a new, empty one.
+you shared) and makes a new, empty one; `atdrive reset --no-drive` leaves none, so the next
+sign-in makes it (the Mac app asks whether to encrypt it).
 
 ## Conflicts
 
@@ -439,9 +442,9 @@ See [PLAN.md](PLAN.md) for the roadmap and design notes.
 - **History and the trash are only in the command line.** Things deleted in Finder or in a
   synced folder still go to the trash, and `atdrive trash restore` brings them back.
 - **Symlinks and aliases aren't stored.**
-- **Turning encryption on or off, and approving and removing devices, is only in the command
-  line.** The Mac app can create a drive (unencrypted) and join an encrypted one (by approval or
-  the recovery key).
+- **Approving and removing devices is only in the command line.** The Mac app can create a drive
+  (encrypted or not), switch encryption, and join an encrypted drive (by approval or the recovery
+  key).
 - **A device that was offline when encryption was turned on** may write a few unencrypted
   records before it notices. Encrypted devices ignore those (the server could have written
   them) until you run `atdrive encryption on` again, which offers to encrypt and keep them.
