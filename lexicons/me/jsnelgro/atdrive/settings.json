@@ -45,6 +45,10 @@
             "type": "string",
             "maxLength": 255,
             "description": "Shares: the shared file's or folder's name, for those who open it."
+          },
+          "file": {
+            "type": "boolean",
+            "description": "Shares: it's one file (the space holds just that file), shown as the file rather than a folder."
           }
         }
       }

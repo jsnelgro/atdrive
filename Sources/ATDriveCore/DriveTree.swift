@@ -15,7 +15,9 @@ public struct Node: Sendable, Identifiable, Equatable {
     public var name: String { record.name }
     /// A folder, or a mount (another space, which shows as a folder).
     public var isFolder: Bool { record.kind != .file }
-    public var isMount: Bool { record.kind == .mount }
+    /// A share mounted in the drive. In the joined tree a share of one file shows as that file
+    /// (`kind` `file`, so not `isFolder`), still with its `mount`.
+    public var isMount: Bool { record.kind == .mount || record.mount != nil }
 }
 
 /// A node record that exists in the drive but that this device can't read (yet). It must never

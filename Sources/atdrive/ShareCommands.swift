@@ -200,7 +200,7 @@ struct Unshare: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Stop sharing a file or folder with anyone.",
         discussion: """
-            Removes everyone you shared it with and turns its link off. It stays where it is in your drive. What people already downloaded stays theirs.
+            Removes everyone you shared it with and turns its link off. It stays where it is in your drive, an ordinary file or folder again (sharing it again makes a new link). What people already downloaded stays theirs.
             """)
 
     @Argument(help: "The share.")

@@ -294,7 +294,7 @@ atdrive share /photos --link                 # anyone with the link can see it
 atdrive share /photos --with alice.bsky.social
 atdrive share ls                             # what you share, with whom, and whose drives aren't encrypted
 atdrive share remove /photos alice.bsky.social
-atdrive unshare /photos                      # stop sharing it with anyone
+atdrive unshare /photos                      # stop sharing it: it's an ordinary folder again
 
 atdrive open 'atdrive://open?at=…'           # add something shared with you to your drive
 atdrive shared ls                            # what's shared with you
