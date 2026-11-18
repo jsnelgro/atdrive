@@ -14,6 +14,13 @@ struct Login: AsyncParsableCommand {
             up on (it starts with http://127.0.0.1 and won't load) back here.
 
             For scripts, --app-password signs in with an app password instead.
+
+            With no drive yet, one is created. It isn't encrypted unless you pass --encrypted
+            (or turn encryption on later with `atdrive encryption on`): whoever runs your PDS
+            can read an unencrypted drive, and there are no keys to lose. An encrypted drive's
+            recovery key is shown once. For an encrypted drive made elsewhere, approve this
+            device from one that has the keys (`atdrive devices approve`, comparing a code shown
+            on both), or type the recovery key.
             """
     )
 
@@ -25,6 +32,9 @@ struct Login: AsyncParsableCommand {
 
     @Flag(help: "With --app-password: read the password from standard input.")
     var passwordStdin = false
+
+    @Flag(help: "If this creates the drive: encrypt it, so whoever runs your PDS can't read it.")
+    var encrypted = false
 
     func run() async throws {
         let session: Session
@@ -60,6 +70,7 @@ struct Login: AsyncParsableCommand {
         }
         try SessionStore().save(session)
         print("Logged in as @\(session.handle) (\(session.did)) on \(session.service.host ?? "\(session.service)")")
+        try await KeySetup.run(encrypted: encrypted)
     }
 
     private func readPassword() throws -> String {
@@ -101,12 +112,25 @@ struct WhoAmI: AsyncParsableCommand {
         commandName: "whoami", abstract: "Show the logged-in account and where its drive lives.")
 
     func run() async throws {
-        let context = try await Context.load()
+        let context = try await Context.locked()
         let session = await context.session.session
         print("handle: @\(session.handle)")
         print("did:    \(session.did)")
         print("pds:    \(session.service.absoluteString)")
         print("drive:  \(context.drive.space)")
+        do {
+            switch try await context.drive.open() {
+            case .plain:
+                print("        not encrypted (`atdrive encryption on` turns encryption on)")
+            case .encrypted:
+                print("        encrypted")
+                if let device = context.drive.identity { print("device: \(device.name) (\(device.id))") }
+                print("keys:   this device has the drive's keys")
+            }
+        } catch let error as DriveAccessError {
+            if context.drive.mode == .encrypted { print("        encrypted") }
+            print("keys:   \(error)")
+        }
     }
 }
 

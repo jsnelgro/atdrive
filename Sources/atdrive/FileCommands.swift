@@ -11,8 +11,11 @@ struct List: AsyncParsableCommand {
     @Flag(name: .shortAndLong, help: "Show size and modification time.")
     var long = false
 
+    @Option(help: When.help("List it"), transform: When.parse)
+    var at: Date?
+
     func run() async throws {
-        let tree = try await Context.load().drive.tree()
+        let tree = try await Context.load().tree(at: at)
         let path = DrivePath(path)
         let entries: [Node]
         switch try tree.find(path) {
@@ -39,8 +42,11 @@ struct Tree: AsyncParsableCommand {
     @Argument(help: "Folder in the drive.")
     var path = "/"
 
+    @Option(help: When.help("Show it"), transform: When.parse)
+    var at: Date?
+
     func run() async throws {
-        let tree = try await Context.load().drive.tree()
+        let tree = try await Context.load().tree(at: at)
         let path = DrivePath(path)
         let start = try tree.locate(path)
         if let start, !start.isFolder { throw ATDriveError.notAFolder(path.description) }
@@ -62,11 +68,18 @@ struct Tree: AsyncParsableCommand {
                 }
             }
         }
-        print(path.description)
+        print(at.map { "\(path)  (as of \(Output.date($0)))" } ?? path.description)
         walk(start?.id, prefix: "")
         print(
             "\n\(folders) folder\(folders == 1 ? "" : "s"), \(files) file\(files == 1 ? "" : "s"), \(Output.size(bytes))"
         )
+        // They exist, but where (and what's in them) can't be shown.
+        if !tree.unreadable.isEmpty {
+            let count = tree.unreadable.count
+            print(
+                "(\(count) item\(count == 1 ? "" : "s") in the drive can't be read here: made by a newer atdrive, or sealed with a key this device doesn't have)"
+            )
+        }
     }
 }
 
@@ -98,7 +111,7 @@ struct Put: AsyncParsableCommand {
         let sources = paths.count == 1 ? paths : Array(paths.dropLast())
         let destination = DrivePath(paths.count == 1 ? "/" : paths.last!)
         let tree = try await drive.tree()
-        var uploader = Uploader(drive: drive, state: DriveState(tree), recursive: recursive)
+        var uploader = Uploader(drive: drive, state: DriveState(tree), recursive: recursive, known: tree.chunkCIDs)
 
         let target = try tree.find(destination)
         for source in sources {
@@ -143,6 +156,8 @@ struct Uploader {
     let drive: Drive
     var state: DriveState
     let recursive: Bool
+    /// Chunks the drive has: those current files use, and those uploaded since.
+    var known: Set<String>
 
     mutating func upload(_ local: URL, isDirectory: Bool, as name: String, in parent: String?, at path: DrivePath)
         async throws
@@ -165,7 +180,8 @@ struct Uploader {
             return
         }
         let node = try await drive.upload(
-            local, as: name, in: parent, replacing: existing, progress: Output.progress("↑", path))
+            local, as: name, in: parent, replacing: existing, known: known, progress: Output.progress("↑", path))
+        for chunk in node.record.chunks ?? [] { known.insert(chunk.cid) }
         Output.clearStatus()
         state.add(node)
         print("↑ \(path)  (\(Output.size(node.record.size ?? 0)))")
@@ -221,13 +237,17 @@ struct Get: AsyncParsableCommand {
     @Flag(name: .shortAndLong, help: "Download folders and everything in them.")
     var recursive = false
 
+    @Option(help: When.help("Download them"), transform: When.parse)
+    var at: Date?
+
     func validate() throws {
         if paths.isEmpty { throw ValidationError("nothing to download") }
     }
 
     func run() async throws {
-        let drive = try await Context.load().drive
-        let tree = try await drive.tree()
+        let context = try await Context.load()
+        let drive = context.drive
+        let tree = try await context.tree(at: at)
         let sources = paths.count == 1 ? paths : Array(paths.dropLast())
         let destination = URL(fileURLWithPath: paths.count == 1 ? "." : paths.last!)
         var isDirectory: ObjCBool = false
@@ -271,7 +291,9 @@ struct Get: AsyncParsableCommand {
             print("= \(local.relativePath)  (unchanged)")
             return
         }
-        try await drive.download(node, to: local, progress: Output.progress("↓", path))
+        // What the copy here has already isn't fetched again.
+        let previous = FileManager.default.fileExists(atPath: local.path) ? local : nil
+        try await drive.download(node, to: local, previous: previous, progress: Output.progress("↓", path))
         Output.clearStatus()
         print("↓ \(local.relativePath)  (\(Output.size(node.record.size ?? 0)))")
     }
@@ -283,10 +305,16 @@ struct Cat: AsyncParsableCommand {
     @Argument(help: "File in the drive.")
     var path: String
 
+    @Option(help: When.help("Print it"), transform: When.parse)
+    var at: Date?
+
     func run() async throws {
-        let drive = try await Context.load().drive
+        let context = try await Context.load()
+        let drive = context.drive
         let path = DrivePath(path)
-        guard let node = try await drive.tree().locate(path) else { throw ATDriveError.isAFolder(path.description) }
+        guard let node = try await context.tree(at: at).locate(path) else {
+            throw ATDriveError.isAFolder(path.description)
+        }
         try await drive.read(node) { FileHandle.standardOutput.write($0) }
     }
 }
@@ -383,7 +411,12 @@ struct Move: AsyncParsableCommand {
 }
 
 struct Remove: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "rm", abstract: "Delete files or folders.")
+    static let configuration = CommandConfiguration(
+        commandName: "rm", abstract: "Delete files or folders (they go to the trash).",
+        discussion: """
+            Deleted things stay in the trash for \(DriveSettings.defaultRetentionDays) days, as long as the drive keeps history. `atdrive trash` lists them, and `atdrive trash restore <path>` brings them back. To delete something for good right away, use `atdrive purge`.
+            """
+    )
 
     @Argument(help: "Paths in the drive.")
     var paths: [String]

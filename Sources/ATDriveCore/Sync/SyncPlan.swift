@@ -191,16 +191,31 @@ struct LocalView {
 struct RemoteView {
     let tree: DriveTree
     let entries: [String: SyncEntry]
+    /// On the drive, but not something the sync can know: records this device can't read, and
+    /// things inside one the last sync didn't have as a folder (there's nowhere here to put
+    /// them). They're left alone on both sides, never taken for deletions.
+    let unknown: Set<String>
 
-    init(_ tree: DriveTree) {
+    init(_ tree: DriveTree, base: SyncBase) {
         self.tree = tree
         var entries: [String: SyncEntry] = [:]
-        for node in tree.nodes.values where !SyncIgnore.isIgnored(path: tree.path(of: node).components) {
+        var unknown = Set(tree.unreadable.keys)
+        for node in tree.nodes.values {
+            var path = tree.path(of: node).components
+            if let container = tree.unreadableContainer(of: node.id) {
+                guard base.entries[container]?.isFolder == true, let place = base.paths[container] else {
+                    unknown.insert(node.id)
+                    continue
+                }
+                path = place.split(separator: "/").map(String.init) + path
+            }
+            guard !SyncIgnore.isIgnored(path: path) else { continue }
             entries[node.id] = SyncEntry(
                 parent: tree.parent(of: node.id), name: node.name, isFolder: node.isFolder,
                 sha256: node.isFolder ? nil : node.record.sha256)
         }
         self.entries = entries
+        self.unknown = unknown
     }
 }
 
@@ -220,14 +235,32 @@ struct SyncPlan {
     var splitFrom: [String: String] = [:]
     /// Renamed because of a name clash (merged ID → name before).
     var renamed: [String: String] = [:]
+    /// Left exactly as they are, here, on the drive and in the saved state: things last synced
+    /// that the drive now has but this device can't read (`RemoteView.unknown`). Merged as they
+    /// are here (or were), so what's inside them keeps its place.
+    var held: Set<String> = []
 
-    init(base: [String: SyncEntry], local: LocalView, remote: [String: SyncEntry]) {
+    init(base: [String: SyncEntry], local: LocalView, remote: [String: SyncEntry], unknown: Set<String> = []) {
         var candidates: [String: (entry: SyncEntry, local: Bool)] = [:]
         var remap: [String: String] = [:]
         // A fresh ID for something that has to be created again on the drive.
         func renewed(_ id: String) -> String { temporaryID(local.paths[id]!) }
 
         for id in Set(base.keys).union(local.entries.keys).union(remote.keys).sorted() {
+            if unknown.contains(id) {
+                // Can't tell what happened to it on the drive: not a deletion, and nothing
+                // here may replace it there. Its saved state stays as it was, so whatever
+                // changed here is still noticed once it can be read.
+                if let before = base[id] {
+                    held.insert(id)
+                    if let here = local.entries[id] {
+                        add(id, here, from: id)
+                    } else {
+                        add(id, before)
+                    }
+                }
+                continue
+            }
             switch (base[id], local.entries[id], remote[id]) {
             case (nil, let here?, _):
                 add(id, here, from: id)
@@ -334,7 +367,10 @@ struct SyncPlan {
             let folder = queue.removeFirst()
             let groups = Dictionary(grouping: children[folder] ?? [], by: { merged[$0]!.name })
             for (name, group) in groups.sorted(by: { $0.key < $1.key }) where group.count > 1 {
-                func score(_ id: String) -> Int { (isOnDrive(id) ? 2 : 0) + (isHere(id) ? 1 : 0) }
+                // Something held can't be renamed: the others make way.
+                func score(_ id: String) -> Int {
+                    held.contains(id) ? 4 : (isOnDrive(id) ? 2 : 0) + (isHere(id) ? 1 : 0)
+                }
                 let ordered = group.sorted { score($0) != score($1) ? score($0) > score($1) : $0 < $1 }
                 for other in ordered.dropFirst() {
                     let siblings = children[folder] ?? []

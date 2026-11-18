@@ -4,8 +4,35 @@ public enum Lexicon {
     public static let driveSpace = "me.jsnelgro.atdrive.drive"
     /// Record collection holding one record per file or folder.
     public static let node = "me.jsnelgro.atdrive.node"
+    /// Record collection holding one record per change to a file or folder: the history.
+    public static let version = "me.jsnelgro.atdrive.version"
+    /// Record collection holding the drive's settings, in one record (`settingsKey`).
+    public static let settings = "me.jsnelgro.atdrive.settings"
+    /// Record key of the drive's settings record.
+    public static let settingsKey = "self"
+    /// Record collection holding one record per device (keyed by its ID), with the drive's
+    /// keyring wrapped for it, plus the keyring wrapped with the recovery key (`recoveryKey`).
+    public static let device = "me.jsnelgro.atdrive.device"
+    /// Record key of the keyring wrapped with the recovery key, in `device`.
+    public static let recoveryKey = "recovery"
+    /// Record collection holding the rest of chunk lists too long for the version record that
+    /// holds them, in order (`continuationKey`).
+    public static let chunks = "me.jsnelgro.atdrive.chunks"
     /// Space key of the default drive.
     public static let defaultDriveKey = "default"
+
+    /// Record key of a version's `index`th `chunks` record (from 1): the version's own key, a
+    /// dash, and the number.
+    public static func continuationKey(of version: String, _ index: Int) -> String { "\(version)-\(index)" }
+
+    /// The version a `chunks` record belongs to, and which of its records it is; `nil` for a key
+    /// `continuationKey` doesn't make.
+    public static func continuationOwner(_ key: String) -> (version: String, index: Int)? {
+        guard let dash = key.lastIndex(of: "-"), let index = Int(key[key.index(after: dash)...]), index > 0 else {
+            return nil
+        }
+        return (String(key[..<dash]), index)
+    }
 
     /// Policy for a space only its owner can read or write.
     static let personalSpacePolicy = "com.atproto.personalspace.policy"

@@ -63,7 +63,7 @@ import Testing
 /// The synced folder and the Mac app's rule for deleted folders agree.
 @Suite struct ConflictRulesAgreeWithSyncTests {
     @Test func folderDeletedHere() async throws {
-        let sync = try FolderSyncTests()
+        let sync = try await FolderSyncTests()
         try sync.write("project/old.txt", "old")
         try sync.write("project/edited.txt", "v1")
         try sync.write("project/sub/deep.txt", "deep")

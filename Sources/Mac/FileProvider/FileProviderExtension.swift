@@ -136,7 +136,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                     let modified = (itemTemplate.contentModificationDate ?? nil)
                     node = try await drive.upload(
                         try url ?? emptyFile(), as: name, in: parent, modified: modified,
-                        progress: Self.report(to: progress))
+                        known: tree.chunkCIDs, progress: Self.report(to: progress))
                 }
                 await index.noteSeen(node, parent: parent)
                 completionHandler(Item(node: node, parentID: parent), [], false, nil)
@@ -164,6 +164,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 let editedSHA = try edited.map(Drive.sha256(of:))
                 let baseSHA = Item.sha256(in: version)
 
+                // On the drive, but this Mac can't read it now: never written over. The change
+                // is tried again later, and settled once it can be read.
+                if tree.unreadable[item.itemIdentifier.rawValue] != nil {
+                    throw NSFileProviderError(.serverUnreachable)
+                }
                 guard let node = tree.nodes[item.itemIdentifier.rawValue] else {
                     // Deleted on the drive. Kept if it was edited here; otherwise the delete stands.
                     guard let edited, let editedSHA, !ConflictRules.deleteStands(base: baseSHA, other: editedSHA)
@@ -173,13 +178,14 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                     if tree.child(named: name, in: parent) != nil {
                         name = Self.conflictName(for: name, in: parent, tree: tree)
                     }
-                    // Back under its own ID, so this Mac's item and the drive's stay one thing.
-                    let gone = Node(
-                        id: item.itemIdentifier.rawValue, cid: "",
-                        record: NodeRecord(name: name, parent: parent, kind: .file))
+                    // Back under its own ID, so this Mac's item and the drive's stay one thing. Its
+                    // history goes on from the version this Mac last saw.
+                    var record = NodeRecord(name: name, parent: parent, kind: .file)
+                    record.version = await index.seenNode(item.itemIdentifier.rawValue)?.record.version
+                    let gone = Node(id: item.itemIdentifier.rawValue, cid: "", record: record)
                     let restored = try await drive.upload(
                         edited, as: name, in: parent, replacing: gone, modified: modified,
-                        progress: Self.report(to: progress))
+                        known: tree.chunkCIDs, progress: Self.report(to: progress))
                     logger.notice("\(gone.id, privacy: .public) was deleted on the drive but edited here: kept")
                     await index.noteSeen(restored, parent: parent)
                     completionHandler(Item(node: restored, parentID: parent), [], false, nil)
@@ -218,7 +224,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                     case .local:
                         let updated = try await drive.upload(
                             edited, as: target.name, in: target.parent, replacing: node, modified: modified,
-                            progress: Self.report(to: progress))
+                            known: tree.chunkCIDs, progress: Self.report(to: progress))
                         await index.noteSeen(updated, parent: target.parent)
                         completionHandler(Item(node: updated, parentID: target.parent), [], false, nil)
                     case .remote:
@@ -234,7 +240,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                         let copy = Self.conflictName(for: target.name, in: target.parent, tree: tree)
                         _ = try await drive.upload(
                             edited, as: copy, in: target.parent, modified: modified,
-                            progress: Self.report(to: progress))
+                            known: tree.chunkCIDs, progress: Self.report(to: progress))
                         let kept = try await placed()
                         logger.notice("conflict on \(node.id, privacy: .public): saved local edit as a copy")
                         await index.noteSeen(kept, parent: target.parent)
@@ -319,6 +325,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 guard folder.isFolder else { throw NSFileProviderError(.noSuchItem) }
                 return folder.id
             }
+            // Still there, but unreadable here now: used as it is, never put back over.
+            if tree.unreadable[identifier.rawValue] != nil { return identifier.rawValue }
             guard let gone = await index.seenNode(identifier.rawValue), gone.isFolder else {
                 throw NSFileProviderError(.noSuchItem)
             }

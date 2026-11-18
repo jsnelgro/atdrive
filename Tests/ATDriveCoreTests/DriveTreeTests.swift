@@ -86,6 +86,42 @@ import Testing
         #expect(after.changes(since: after).updated.isEmpty)
     }
 
+    func unreadable(_ id: String) -> UnreadableNode {
+        UnreadableNode(id: id, cid: "cid-\(id)-new", reason: .newerFormat, value: nil)
+    }
+
+    @Test func unreadableRecordsAreNotDeletionsAndKeepWhatsInside() {
+        let before = DriveTree([
+            node("d1", "docs", folder: true),
+            node("f1", "a.txt", parent: "d1"),
+            node("d2", "sub", parent: "d1", folder: true),
+            node("f2", "deep.txt", parent: "d2"),
+            node("f3", "top.txt"),
+        ])
+        // docs can't be read any more (say, a newer format), and something inside it changed.
+        let after = DriveTree(
+            [
+                node("f1", "a.txt", parent: "d1", cid: "edited"),
+                node("d2", "sub", parent: "d1", folder: true),
+                node("f2", "deep.txt", parent: "d2"),
+                node("f3", "top.txt"),
+            ], unreadable: [unreadable("d1")])
+        #expect(after.children(of: nil).map(\.id) == ["f3"])  // not lifted to the top
+        #expect(after.unreadableContainer(of: "f2") == "d1")
+        #expect(after.unreadableContainer(of: "f3") == nil)
+        #expect(after.children(of: "d1").map(\.id) == ["d2", "f1"])
+        let changes = after.changes(since: before)
+        #expect(changes.deleted.isEmpty)
+        #expect(changes.updated.isEmpty)  // left as last seen until it can be read
+
+        // Readable again: everything inside it is reported, wherever it is now.
+        let readable = DriveTree([node("d1", "docs", folder: true)] + after.nodes.values)
+        #expect(readable.changes(since: after).updated.map(\.id) == ["d1", "d2", "f1", "f2"])
+        // Gone for good: reported as deleted.
+        let gone = DriveTree(Array(after.nodes.values.filter { $0.id == "f3" }))
+        #expect(gone.changes(since: after).deleted == ["d1", "d2", "f1", "f2"])
+    }
+
     @Test func reportsChildrenLiftedToTheTopWhenTheirFolderGoes() {
         let before = DriveTree([node("d1", "docs", folder: true), node("f1", "a.txt", parent: "d1")])
         let after = DriveTree([node("f1", "a.txt", parent: "d1")])  // record unchanged, folder gone

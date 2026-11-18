@@ -1,0 +1,43 @@
+{
+  "lexicon": 1,
+  "id": "me.jsnelgro.atdrive.chunks",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "any",
+      "description": "Part of a chunk list too long for the version record that holds it. The record key is the version's, a dash, and the part's number (\"<version>-1\", \"<version>-2\", ...). The version says how many parts there are and which is the first, and holds no chunks itself; nor does a node whose contentsFrom is that version. Parts are written before or with the version and deleted with it. When a list is rewritten (turning encryption on or off), the new parts are numbered after the old ones, and the version switches to them in one write. Stored plain or sealed, as a node record is.",
+      "record": {
+        "type": "object",
+        "required": [
+          "chunks"
+        ],
+        "properties": {
+          "chunks": {
+            "type": "array",
+            "items": {
+              "type": "blob"
+            },
+            "description": "This part of the contents, in chunks, in order."
+          },
+          "chunkIDs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The IDs that decrypt the chunks, in the same order (32 bytes each, base64 without padding). Absent when the chunks are plain. In a plain record they're readable, so the chunks are too: that only happens after encryption was turned off."
+          },
+          "chunkKey": {
+            "type": "string",
+            "maxLength": 16,
+            "description": "The key ID of the drive key the chunk IDs were made with."
+          },
+          "sealed": {
+            "type": "ref",
+            "ref": "me.jsnelgro.atdrive.defs#sealedValue",
+            "description": "On an encrypted drive: every other field, as a JSON object, sealed for this space, collection and record key. The record then has only this and chunks."
+          }
+        }
+      }
+    }
+  }
+}

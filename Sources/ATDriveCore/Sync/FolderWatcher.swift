@@ -60,9 +60,13 @@ public final class FolderWatcher: @unchecked Sendable {
                     watches[path] = nil
                     paths[watch] = nil
                 }
-                let mask = UInt32(
-                    IN_CREATE | IN_DELETE | IN_MODIFY | IN_CLOSE_WRITE | IN_MOVED_FROM | IN_MOVED_TO | IN_DELETE_SELF
-                        | IN_MOVE_SELF | IN_ONLYDIR | IN_DONT_FOLLOW | IN_EXCL_UNLINK)
+                // Summed one at a time: as one expression, older compilers give up type-checking it.
+                let flags: [Int32] = [
+                    Int32(IN_CREATE), Int32(IN_DELETE), Int32(IN_MODIFY), Int32(IN_CLOSE_WRITE),
+                    Int32(IN_MOVED_FROM), Int32(IN_MOVED_TO), Int32(IN_DELETE_SELF), Int32(IN_MOVE_SELF),
+                    Int32(IN_ONLYDIR), Int32(IN_DONT_FOLLOW), Int32(IN_EXCL_UNLINK),
+                ]
+                let mask = UInt32(flags.reduce(0, |))
                 for path in wanted.sorted() where watches[path] == nil {
                     let watch = inotify_add_watch(descriptor, path, mask)
                     if watch >= 0 {
