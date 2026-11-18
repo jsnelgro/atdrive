@@ -43,7 +43,7 @@ public struct SecretStorage: Sendable, CustomStringConvertible {
 
     /// The Mac app's, in its App Group container (`container`): its Finder extension's too, and
     /// the `atdrive` inside it. Files, for now: on macOS an App Group isn't a Keychain access
-    /// group, and sharing Keychain items between the three needs provisioning profiles (#32).
+    /// group, and sharing Keychain items between the three needs provisioning profiles (#54).
     public static func appGroup(container: URL) -> SecretStorage {
         SecretStorage(
             backend: DirectoryBackend(
