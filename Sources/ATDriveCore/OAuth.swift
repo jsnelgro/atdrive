@@ -21,7 +21,7 @@ public enum OAuthLogin {
     ///
     /// - Your own drive spaces (the home drive, and the folders you share): read, write
     ///   ATDrive's records, and create, update and delete the spaces (sharing manages members and
-    ///   links with `manage=update`; `atdrive reset` deletes them).
+    ///   links with `manage=update`; `atdrive dev reset` deletes them).
     /// - Other people's drive spaces: read only, for what's shared with you (a delegation token
     ///   needs a `read` grant for the space, under any authority).
     /// - Your sharing key, in your public repo.
@@ -36,7 +36,7 @@ public enum OAuthLogin {
         return lexiconsPublished ? narrowScope : broadScope
     }
 
-    /// Whether ATDrive's lexicons are published (`atdrive lexicons publish`, plus a DNS TXT
+    /// Whether ATDrive's lexicons are published (`atdrive dev lexicons publish`, plus a DNS TXT
     /// record at `_lexicon.atdrive.jsnelgro.me`). Flip it once they are: sign-in then asks for
     /// ATDrive's spaces only (`narrowScope`).
     public static let lexiconsPublished = false

@@ -13,20 +13,16 @@ struct Login: AsyncParsableCommand {
             link in a browser on any device, approve, then paste the address the browser ends
             up on (it starts with http://127.0.0.1 and won't load) back here.
 
-            With no drive yet, one is created. It isn't encrypted unless you pass --encrypted
-            (or turn encryption on later with `atdrive encryption on`): whoever runs your PDS
-            can read an unencrypted drive, and there are no keys to lose. An encrypted drive's
-            recovery key is shown once. For an encrypted drive made elsewhere, approve this
-            device from one that has the keys (`atdrive devices approve`, comparing a code shown
-            on both), or type the recovery key.
+            With no drive yet, one is created, and you're asked whether to encrypt it: whoever
+            runs your PDS can read an unencrypted drive, and there are no keys to lose. An
+            encrypted drive's recovery key is shown once. For an encrypted drive made elsewhere,
+            approve this device from one that has the keys (`atdrive devices approve`, comparing a
+            code shown on both), or type the recovery key.
             """
     )
 
     @Argument(help: "Your handle (e.g. alice.example.com) or DID.")
     var handle: String
-
-    @Flag(help: "If this creates the drive: encrypt it, so whoever runs your PDS can't read it.")
-    var encrypted = false
 
     func run() async throws {
         let local = hasLocalBrowser
@@ -56,7 +52,7 @@ struct Login: AsyncParsableCommand {
             pastedRedirect: interactive ? readPastedAddress : nil)
         try SessionStore().save(session)
         print("Logged in as @\(session.handle) (\(session.did)) on \(session.service.host ?? "\(session.service)")")
-        try await KeySetup.run(encrypted: encrypted)
+        try await KeySetup.run()
         // So others can share encrypted files with this account (best effort: it's done again
         // whenever it's needed).
         _ = try? await Context.load().joined.ensureSharingKey()

@@ -4,20 +4,29 @@ import Foundation
 
 struct Encryption: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Whether the drive is encrypted, and turning encryption on or off.",
+        abstract: "Whether the drive is encrypted, and what's left to convert; turning it on or off.",
         discussion: """
+            atdrive encryption              whether it's encrypted, and what's left to convert
+            atdrive encryption on           encrypt it (or finish encrypting it)
+            atdrive encryption off          stop encrypting it (or finish decrypting it)
+
+
             A drive isn't encrypted unless you turn encryption on. Unencrypted, whoever runs your PDS can read your files and their names, and there are no keys to look after or lose. Encrypted, only devices that hold the drive's keys can read it: each new device has to be approved, and losing every device and the recovery key loses the drive.
 
             You can switch either way at any time. Turning it on uploads every file again, encrypted. Turning it off is immediate.
             """,
-        subcommands: [EncryptionStatusCommand.self, EncryptionOn.self, EncryptionOff.self],
+        subcommands: [
+            EncryptionStatusCommand.self, EncryptionOn.self, EncryptionOff.self, Unlock.self, RotateRecoveryKey.self,
+        ],
         defaultSubcommand: EncryptionStatusCommand.self
     )
 }
 
 struct EncryptionStatusCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "status", abstract: "Show whether the drive is encrypted, and what's left to convert.")
+        commandName: "status",
+        abstract: "Show whether the drive is encrypted, and what's left to convert (the default).",
+        shouldDisplay: false)
 
     func run() async throws {
         let drive = try await Context.load().drive
@@ -89,14 +98,11 @@ struct EncryptionOff: AsyncParsableCommand {
         discussion: """
             Publishes the drive's keys in the drive itself, so everything in it, history included, becomes readable by whoever runs your PDS. That's immediate, and can't be taken back for what's already there. The drive's devices and recovery key are forgotten: any device signed in to your account can use the drive.
 
-            Afterwards the records are rewritten as plain ones (files are uploaded again, unencrypted), so apps that can't decrypt can read them. That part can be skipped (--keep-records) or interrupted; run `atdrive encryption off` again to pick it up.
+            Afterwards the records are rewritten as plain ones (files are uploaded again, unencrypted), so apps that can't decrypt can read them. That can be interrupted; run `atdrive encryption off` again to pick it up.
             """)
 
     @Flag(name: .shortAndLong, help: "Don't ask for confirmation.")
     var yes = false
-
-    @Flag(help: "Only turn encryption off: leave what's there as it's stored, readable with the published keys.")
-    var keepRecords = false
 
     func run() async throws {
         let drive = try await Context.load().drive
@@ -114,7 +120,6 @@ struct EncryptionOff: AsyncParsableCommand {
             try await drive.disableEncryption()
             print("✓ The drive isn't encrypted any more.")
         }
-        if keepRecords { return }
         try await EncryptionReport.convert(drive, adoptUnsealed: false)
     }
 }

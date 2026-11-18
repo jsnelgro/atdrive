@@ -30,7 +30,7 @@ extension Drive {
     }
 }
 
-/// A member of a share of this account's, as `share ls` shows them.
+/// A member of a share of this account's, as `atdrive shares` shows them.
 public struct ShareMember: Sendable, Equatable {
     public var did: String
     /// For an encrypted share: the sharing key their keyring is wrapped for.
@@ -41,7 +41,7 @@ public struct ShareMember: Sendable, Equatable {
     /// Their sharing key changed since their keyring was wrapped: they get none for what's new
     /// until they're added again.
     public var keyChanged: Bool
-    /// Their published sharing key is the one you verified with a code (`atdrive share verify`).
+    /// Their published sharing key is the one you verified with a code (`atdrive verify`).
     public var verified: Bool = false
 }
 
@@ -59,7 +59,7 @@ public enum MemberWarning: Sendable, Equatable, CustomStringConvertible {
             "\(who)'s drive isn't encrypted, so whoever runs their PDS could read this share"
         case .keyChanged(let who, let from, let to):
             "\(who)'s sharing key changed (\(from) → \(to)): it may be a new device setup, or their PDS "
-                + "putting in a key of its own; compare verification codes (`atdrive share verify`) if unsure"
+                + "putting in a key of its own; compare verification codes (`atdrive verify`) if unsure"
         }
     }
 }

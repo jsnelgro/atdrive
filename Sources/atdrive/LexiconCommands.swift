@@ -4,8 +4,7 @@ import Foundation
 
 struct Lexicons: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Publish ATDrive's lexicons (for its maintainer).",
-        shouldDisplay: false, subcommands: [LexiconsPublish.self])
+        abstract: "Publish ATDrive's lexicons (for its maintainer).", subcommands: [LexiconsPublish.self])
 }
 
 struct LexiconsPublish: AsyncParsableCommand {

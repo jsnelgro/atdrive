@@ -85,7 +85,7 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
     checked against the reference's vectors. macOS CI builds the app.
   - **Not yet exercised:** against the live alpha PDS (two accounts: `ATDRIVE_LIVE_CONFIG` and
     `_B`), and the Finder actions, badges, windows and `atdrive://` links on a real Mac.
-  - **Follow-ups:** publish the lexicons (`atdrive lexicons publish`, then a DNS TXT record at
+  - **Follow-ups:** publish the lexicons (`atdrive dev lexicons publish`, then a DNS TXT record at
     `_lexicon.atdrive.jsnelgro.me`) and set `OAuthLogin.lexiconsPublished`, which narrows the
     scope to ATDrive's spaces.
 - [ ] **Later:**
@@ -353,7 +353,7 @@ operator.
     letters and digits (Crockford base32, with a checksum that catches typos). It's high-entropy,
     so it needs no password KDF (swift-crypto has no Argon2).
   - **Adding a device:** `atdrive login`, then one of:
-    - `atdrive unlock` with the recovery key.
+    - `atdrive encryption unlock` with the recovery key.
     - Approve it from a device that has the key:
       - The new device posts its public key. The approving device posts its own.
       - Both show a 16-digit code computed from the two keys, and the user confirms on both that
@@ -515,17 +515,16 @@ record has only `chunks` and `sealed`.
 | `history [path]` | Changes to a file, or to a folder and everything in it (the whole drive without a path): when, what, which device |
 | `ls` / `tree` / `get` / `cat --at <when>` | The drive as it was. `<when>` is `2h` or `3d` (ago), `2026-11-08`, `2026-11-08T14:00`, or a version ID. Paths are looked up as of then, so something moved since is found under its old path |
 | `restore <path> --at <when>` | Put a file or folder back as it was: contents, name and place. For a folder, everything in it too. It's recorded as new versions, so it can be undone |
-| `restore <path> --previous` | Undo a file's latest change |
+| `restore <path>` | Something deleted: back from the trash, where it was. Anything else: undo its latest change |
 | `trash` | What was deleted in the last 30 days |
-| `trash restore <path>…` | Bring things back where they were |
-| `purge <path>…` | Delete now, with all history |
-| `trash empty` | Purge everything in the trash |
-| `du` | Space used by current files and by history, and what they share |
-| `prune` | Apply the retention now |
+| `trash empty [path…]` | Delete what's in the trash (or just these) now, with all history |
+| `dev du` | Space used by current files and by history, and what they share |
 | `encryption` / `encryption on` / `encryption off` | Whether the drive is encrypted; turn it on (and convert what's there) or off |
 | `devices` | The devices that hold an encrypted drive's key |
-| `devices approve <code>` / `devices remove <name>` | Add or remove one |
-| `unlock` / `recovery-key` | Set up this device with the recovery key / make a new recovery key |
+| `devices approve [name]` / `devices rm <name>` | Add or remove one |
+| `encryption unlock` / `encryption rotate-recovery-key` | Set up this device with the recovery key / replace the recovery key |
+
+Retention is applied once a day by `atdrive sync` and by the Mac app.
 
 The time is a flag rather than part of the path (`path@when`), because file names can contain `@`
 (`icon@2x.png`).
@@ -632,13 +631,16 @@ Checked against the proposal and the reference branch on 2026-11-17:
    holding an encrypted share's keyring (sealed in the drive): nothing is ever lost if it's
    interrupted.
 2. Copy the folder's contents (or the file) into it, keeping record keys, each with one
-   `created` version. Chunks and their IDs are reused; nothing is uploaded, except for `--plain`
-   from an encrypted drive.
+   `created` version. Chunks and their IDs are reused; nothing is uploaded (except for a plain
+   share from an encrypted drive, which the core can make but no command asks for).
 3. Delete the originals with a `shared` version (the trash skips it), and rename the mount.
 
 - **History stays behind.** Members see the share from the moment of sharing.
 - **Running it again** finishes an interrupted share: the mount is found by name, and what's
   been copied by record key.
+- **On the command line,** `share <path> <people…>` adds people, and `share <path>` alone turns
+  the public link on. `unshare <path> <people…>` takes people off, and once nobody has it (no
+  people, no link) it's unshared; `unshare <path>` alone does that straight away.
 - **`unshare`:** first back to `personalspace` (dropping members and `publicRead`) with member
   and link records deleted, so access ends at once; then the share moves back into the drive,
   where it is, an ordinary file or folder again, and its space is deleted. Those who had it see
@@ -647,8 +649,8 @@ Checked against the proposal and the reference branch on 2026-11-17:
 
 ### Encrypted and plain shares
 
-- A share takes its drive's mode; `--plain` makes a plain share from an encrypted drive. A plain
-  drive makes plain shares only.
+- A share takes its drive's mode. (The core can make a plain share from an encrypted drive; no
+  command or button asks for one, since anyone can open an encrypted share from its link.)
 - **Switching the drive's encryption ends its sharing:** each share moves back into the drive
   where it was (a shared file comes back as the file) and its space is deleted; mounts of other
   people's shares are removed; the sharing key is replaced. The CLI lists what stops being
@@ -682,7 +684,7 @@ Checked against the proposal and the reference branch on 2026-11-17:
   encrypted share's public link. The CLI also takes the bare `at://` address. A link works for
   members and, with the link on, for anyone.
 - **Opening one:** the Mac app (`CFBundleURLTypes`: a window with Add to My Drive and
-  Download…), `atdrive open <link>` / `atdrive shared add`, or `atdrive get <link>` to download
+  Download…), `atdrive open-share <link>`, or `atdrive get <link>` to download
   once (signed out for a public link). `atdrive sync --install` makes ATDrive the
   `x-scheme-handler/atdrive` on a Linux desktop.
 - **A link to another app's space** says so; the apps view (#28) will open those.
@@ -707,7 +709,7 @@ Checked against the proposal and the reference branch on 2026-11-17:
   other accounts' drive spaces read-only (`authority=*&action=read`), and `repo:` the share key.
   Naming the space type needs its lexicon published (the PDS resolves it for the consent
   screen), so until then the scope uses `space:*`, which the consent screen warns about.
-  `atdrive lexicons publish` writes the schema records; then the DNS TXT record, then
+  `atdrive dev lexicons publish` writes the schema records; then the DNS TXT record, then
   `OAuthLogin.lexiconsPublished`.
 
 ### Later
@@ -732,7 +734,7 @@ Checked against the proposal and the reference branch on 2026-11-17:
     resolve that type's lexicon for the consent screen. If the lexicon can't be resolved, the
     sign-in fails with `invalid_scope: Unable to retrieve space declarations`.
   - **So ATDrive asks for `space:*`** until its lexicons are published:
-    1. `atdrive lexicons publish <handle>` writes the `com.atproto.lexicon.schema` records.
+    1. `atdrive dev lexicons publish <handle>` writes the `com.atproto.lexicon.schema` records.
     2. Add the DNS TXT record it prints: `_lexicon.atdrive.jsnelgro.me` → `did=<that account's DID>`.
     3. Set `OAuthLogin.lexiconsPublished`, which switches to `narrowScope`.
   - **Public OAuth clients get two-week sessions** on Bluesky's PDS, so you sign in again after

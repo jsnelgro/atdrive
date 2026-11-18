@@ -157,7 +157,7 @@ Reviewed by the same hands that wrote it, as above: not an independent audit.
   one only if the sender is the key the owner publishes, and its sealed membership opens. The PDS
   can't make one, or bring back a removed member's.
 - **The open risk: published sharing keys.** A malicious PDS could publish a key of its own for
-  someone, and receive the keyring wrapped for it. Verification codes (`atdrive share verify`)
+  someone, and receive the keyring wrapped for it. Verification codes (`atdrive verify`)
   close it for people who compare codes; for everyone else, ATDrive trusts the first key it sees
   and warns when one changes (a changed key is refused unless the owner confirms). Medium.
 - Commits read from someone else's space are MAC-checked with the owner's KEM key, so a host that

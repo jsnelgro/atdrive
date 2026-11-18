@@ -83,6 +83,7 @@ final class AppModel {
             while !Task.isCancelled {
                 try? await Task.sleep(for: pollInterval)
                 await self?.syncNow()
+                await self?.pruneIfDue()
             }
         }
     }
@@ -375,6 +376,28 @@ final class AppModel {
             lastChecked = Date()
         } catch {
             logger.error("signal failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Deletes history older than the drive keeps, once a day, as `atdrive sync` does: nothing
+    /// else on a Mac does it. The day is counted from the last try, so a failure waits a day too.
+    private func pruneIfDue() async {
+        let key = "lastPruned"
+        let now = Date()
+        if let last = UserDefaults.standard.object(forKey: key) as? Date, last <= now,
+            now.timeIntervalSince(last) < 24 * 60 * 60
+        {
+            return
+        }
+        guard let joined = await joinedDrive() else { return }
+        UserDefaults.standard.set(now, forKey: key)
+        do {
+            let snapshot = try await joined.update(nil)
+            let removed = try await joined.prune(snapshot, now: now)
+            logger.notice("pruned \(removed) old versions")
+            if removed > 0 { await syncNow() }
+        } catch {
+            logger.error("pruning failed: \(String(describing: error), privacy: .public)")
         }
     }
 

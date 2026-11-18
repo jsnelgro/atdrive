@@ -60,7 +60,7 @@ public func newShareKey() -> String {
     Base32.encode(SymmetricKey(size: .bits128).withUnsafeBytes { Array($0) })
 }
 
-/// A share of this account's, as `share ls` shows it.
+/// A share of this account's, as `atdrive shares` shows it.
 public struct OwnShare: Sendable, Equatable {
     /// The mount, in the joined tree.
     public var mount: Node
