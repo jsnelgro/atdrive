@@ -45,16 +45,69 @@ atdrive mv /taxes /archive/taxes
 atdrive rm -r /archive/taxes
 ```
 
-| Command | What it does |
-|---|---|
-| `login <handle>` / `logout` / `whoami` | Start, end, or show the session |
-| `ls [-l] [path]`, `tree [path]` | Browse the drive |
-| `put [-r] <local>… [dest]` | Upload. Works like `cp`. Existing files are replaced in place, and unchanged ones are skipped |
-| `get [-r] <path>… [local]` | Download. Works like `cp`. Files that are already identical locally are skipped |
-| `cat <path>` | Print a file to stdout |
-| `mkdir [-p] <path>…`, `mv <from> <to>`, `rm [-r] <path>…` | What you'd expect |
-| `sync [folder]` | Keep a folder in sync with the drive (see [above](#a-synced-folder-linux)) |
+## API
+Get the latest api by running `atdrive` or `atdrive --help`:
 
+```txt
+OVERVIEW: A file drive stored privately in your atproto
+account (atproto spaces).
+
+Paths in the drive always start from the top:
+/photos/cat.jpg. Start with
+`atdrive login <handle>`.
+
+USAGE: atdrive <subcommand>
+
+OPTIONS:
+  --version               Show the version.
+  -h, --help              Show help information.
+
+SUBCOMMANDS:
+  login                   Sign in through your account's
+                          sign-in page in the browser.
+  logout                  Log out and revoke the saved
+                          session.
+  whoami                  Show the logged-in account and
+                          where its drive lives.
+  ls                      List a folder.
+  tree                    Show a folder and everything in it.
+  put                     Upload files or folders.
+  get                     Download files or folders.
+  cat                     Print a file to standard output.
+  mkdir                   Create folders.
+  mv                      Rename or move a file or folder.
+  rm                      Delete files or folders (they go to
+                          the trash).
+  sync                    Keep a folder on this computer in
+                          sync with the drive.
+  share                   Share a file or folder with people,
+                          or, naming nobody, with a public
+                          link.
+  unshare                 Take people off a share, or, naming
+                          nobody, stop sharing it.
+  shares                  What you share (with whom, and its
+                          link), and what's shared with you.
+  open-share              Put something shared with you into
+                          your drive, from its link.
+  verify                  Check someone's sharing key with a
+                          code you both compare.
+  history                 Show what changed: when, how, on
+                          which device, and where.
+  restore                 Bring something back: from the
+                          trash, or as it was before its last
+                          change.
+  trash                   What's in the trash (`--all`: with
+                          what was deleted along with its
+                          folder).
+  encryption              Whether the drive is encrypted, and
+                          what's left to convert; turning it
+                          on or off.
+  devices                 The devices that hold the drive's
+                          keys, and those asking for them.
+  dev                     For developing and testing ATDrive.
+
+  See 'atdrive help <subcommand>' for detailed help.
+```
 
 <details>
 <summary><h1>View Claude Slop</h1></summary>
