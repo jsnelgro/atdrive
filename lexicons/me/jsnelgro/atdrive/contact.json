@@ -1,0 +1,29 @@
+{
+  "lexicon": 1,
+  "id": "me.jsnelgro.atdrive.contact",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "any",
+      "description": "In a home drive: someone's sharing key, as verified by comparing a code. The record key is their DID. Sealed on an encrypted drive.",
+      "record": {
+        "type": "object",
+        "properties": {
+          "publicKey": {
+            "type": "bytes",
+            "description": "Their raw X25519 sharing key."
+          },
+          "verifiedAt": {
+            "type": "string",
+            "format": "datetime"
+          },
+          "sealed": {
+            "type": "ref",
+            "ref": "me.jsnelgro.atdrive.defs#sealedValue",
+            "description": "On an encrypted drive: the fields above, sealed."
+          }
+        }
+      }
+    }
+  }
+}

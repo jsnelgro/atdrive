@@ -113,7 +113,7 @@ import Testing
         #expect(session.did == "did:plc:alice")
         #expect(session.handle == "alice.test")
         #expect(session.accessJwt == "access-1")
-        #expect(session.oauth?.clientID.hasPrefix("http://localhost?scope=") == true)
+        #expect(session.oauth.clientID.hasPrefix("http://localhost?scope="))
         // PKCE: the verifier sent at the end matches the challenge sent at the start.
         let verifier = try #require(server.lastToken["code_verifier"])
         #expect(Base64URL.encode(SHA256.hash(data: Data(verifier.utf8))) == par["code_challenge"])
@@ -213,5 +213,30 @@ final class FakeAuthorizationServer: HTTPTransport, @unchecked Sendable {
             HTTPURLResponse(
                 url: URL(string: "https://pds.test")!, statusCode: status, httpVersion: nil, headerFields: headers)!
         )
+    }
+}
+
+@Suite struct HandleResolutionTests {
+    /// The handle's server has an expired certificate and the fallback can't resolve it either.
+    struct BrokenHandleHost: HTTPTransport {
+        func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+            if request.url?.path == "/.well-known/atproto-did" { throw URLError(.serverCertificateHasBadDate) }
+            let body = Data(#"{"error":"InvalidRequest","message":"Unable to resolve handle"}"#.utf8)
+            return (body, HTTPURLResponse(url: request.url!, statusCode: 400, httpVersion: nil, headerFields: nil)!)
+        }
+    }
+
+    @Test func errorSaysWhatEachStepGot() async {
+        let resolver = IdentityResolver(environment: [:], transport: BrokenHandleHost())
+        do {
+            _ = try await resolver.resolveHandle("alice.pds.test")
+            Issue.record("resolved a handle nobody could resolve")
+        } catch {
+            let message = "\(error)"
+            #expect(message.contains("https://alice.pds.test/.well-known/atproto-did: its TLS certificate has expired"))
+            #expect(message.contains("public.api.bsky.app: "))
+            #expect(message.contains("Unable to resolve handle"))
+            #expect(message.contains("DID"))
+        }
     }
 }

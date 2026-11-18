@@ -13,8 +13,6 @@ struct Login: AsyncParsableCommand {
             link in a browser on any device, approve, then paste the address the browser ends
             up on (it starts with http://127.0.0.1 and won't load) back here.
 
-            For scripts, --app-password signs in with an app password instead.
-
             With no drive yet, one is created. It isn't encrypted unless you pass --encrypted
             (or turn encryption on later with `atdrive encryption on`): whoever runs your PDS
             can read an unencrypted drive, and there are no keys to lose. An encrypted drive's
@@ -27,68 +25,41 @@ struct Login: AsyncParsableCommand {
     @Argument(help: "Your handle (e.g. alice.example.com) or DID.")
     var handle: String
 
-    @Flag(help: "Log in with an app password instead of the browser (for servers and scripts).")
-    var appPassword = false
-
-    @Flag(help: "With --app-password: read the password from standard input.")
-    var passwordStdin = false
-
     @Flag(help: "If this creates the drive: encrypt it, so whoever runs your PDS can't read it.")
     var encrypted = false
 
     func run() async throws {
-        let session: Session
-        if appPassword || passwordStdin || ProcessInfo.processInfo.environment["ATDRIVE_APP_PASSWORD"] != nil {
-            session = try await Auth.login(
-                identifier: handle, password: try readPassword(), resolver: IdentityResolver())
-        } else {
-            let local = hasLocalBrowser
-            let interactive = isatty(STDIN_FILENO) != 0
-            session = try await OAuthLogin.signIn(
-                identifier: handle,
-                open: { url in
-                    if local {
-                        write(
-                            "Opening your browser to sign in. If it doesn't open, go to:\n\n  \(url.absoluteString)\n\n"
-                        )
-                        openInBrowser(url)
-                    } else {
-                        write(
-                            """
-                            Open this link in a browser on any device to sign in:
+        let local = hasLocalBrowser
+        let interactive = isatty(STDIN_FILENO) != 0
+        let session = try await OAuthLogin.signIn(
+            identifier: handle,
+            open: { url in
+                if local {
+                    write(
+                        "Opening your browser to sign in. If it doesn't open, go to:\n\n  \(url.absoluteString)\n\n"
+                    )
+                    openInBrowser(url)
+                } else {
+                    write(
+                        """
+                        Open this link in a browser on any device to sign in:
 
-                              \(url.absoluteString)
+                          \(url.absoluteString)
 
-                            After you approve, the browser goes to a page that won't load (its address
-                            starts with http://127.0.0.1). Copy that address and paste it here:
+                        After you approve, the browser goes to a page that won't load (its address
+                        starts with http://127.0.0.1). Copy that address and paste it here:
 
-                            """)
-                    }
-                },
-                // Also accepted on a desktop, in case the browser turns out to be elsewhere.
-                pastedRedirect: interactive ? readPastedAddress : nil)
-        }
+                        """)
+                }
+            },
+            // Also accepted on a desktop, in case the browser turns out to be elsewhere.
+            pastedRedirect: interactive ? readPastedAddress : nil)
         try SessionStore().save(session)
         print("Logged in as @\(session.handle) (\(session.did)) on \(session.service.host ?? "\(session.service)")")
         try await KeySetup.run(encrypted: encrypted)
-    }
-
-    private func readPassword() throws -> String {
-        if let password = ProcessInfo.processInfo.environment["ATDRIVE_APP_PASSWORD"], !password.isEmpty {
-            return password
-        }
-        if passwordStdin {
-            guard let line = readLine(strippingNewline: true), !line.isEmpty else {
-                throw ValidationError("no password on standard input")
-            }
-            return line
-        }
-        guard isatty(STDIN_FILENO) != 0, let typed = getpass("App password: ") else {
-            throw ValidationError("no terminal to ask for a password; use --password-stdin")
-        }
-        let password = String(cString: typed)
-        guard !password.isEmpty else { throw ValidationError("empty password") }
-        return password
+        // So others can share encrypted files with this account (best effort: it's done again
+        // whenever it's needed).
+        _ = try? await Context.load().joined.ensureSharingKey()
     }
 }
 

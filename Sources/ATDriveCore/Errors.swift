@@ -1,7 +1,7 @@
 public enum ATDriveError: Error, CustomStringConvertible, Equatable {
     case notLoggedIn
-    /// The server won't renew the session: it expired, or it was revoked (e.g. its app password
-    /// was deleted).
+    /// The server won't renew the session: it expired, or it was revoked (signed out
+    /// elsewhere, or from the account's settings).
     case sessionEnded
     case loginFailed(String)
     case identity(String)
@@ -14,6 +14,12 @@ public enum ATDriveError: Error, CustomStringConvertible, Equatable {
     case invalidMove(String)
     case integrity(String)
     case unexpectedResponse(String)
+    /// Not a link (or `at://` address) to a space.
+    case invalidLink(String)
+    /// Inside a folder someone else shared: only they can change it.
+    case readOnly(path: String, owner: String)
+    /// Inside a shared folder that can't be read right now.
+    case mountUnavailable(path: String, why: String)
 
     public var description: String {
         switch self {
@@ -30,6 +36,9 @@ public enum ATDriveError: Error, CustomStringConvertible, Equatable {
         case .invalidMove(let why): why
         case .integrity(let why): "integrity check failed: \(why)"
         case .unexpectedResponse(let why): "unexpected server response: \(why)"
+        case .invalidLink(let text): "not an ATDrive link or space address: \(text)"
+        case .readOnly(let path, let owner): "\(path) is read-only: \(owner) shared it with you"
+        case .mountUnavailable(let path, let why): "\(path) is in a shared folder that can't be read now: \(why)"
         }
     }
 }

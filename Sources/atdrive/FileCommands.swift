@@ -107,7 +107,7 @@ struct Put: AsyncParsableCommand {
     }
 
     func run() async throws {
-        let drive = try await Context.load().drive
+        let drive = try await Context.load().joined
         let sources = paths.count == 1 ? paths : Array(paths.dropLast())
         let destination = DrivePath(paths.count == 1 ? "/" : paths.last!)
         let tree = try await drive.tree()
@@ -153,7 +153,7 @@ struct Put: AsyncParsableCommand {
 }
 
 struct Uploader {
-    let drive: Drive
+    let drive: JoinedDrive
     var state: DriveState
     let recursive: Bool
     /// Chunks the drive has: those current files use, and those uploaded since.
@@ -228,6 +228,10 @@ struct Get: AsyncParsableCommand {
               atdrive get -r /Photos ~/Pictures     → ~/Pictures/Photos/...
               atdrive get -r / ./backup             → everything, into ./backup
             Files that are already identical locally are skipped.
+
+            Given a link someone shared (atdrive://…), downloads what it shares into the folder:
+              atdrive get 'atdrive://open?at=…' ~/Downloads
+            That works signed out, for a link that's on.
             """
     )
 
@@ -245,8 +249,13 @@ struct Get: AsyncParsableCommand {
     }
 
     func run() async throws {
+        if let first = paths.first, first.hasPrefix("atdrive://") || first.hasPrefix("at://") {
+            // A link: download what it shares, once (signed out for a public link).
+            guard paths.count <= 2 else { throw ValidationError("one link at a time") }
+            return try await LinkDownload.run(first, to: URL(fileURLWithPath: paths.count == 2 ? paths[1] : "."))
+        }
         let context = try await Context.load()
-        let drive = context.drive
+        let drive = context.joined
         let tree = try await context.tree(at: at)
         let sources = paths.count == 1 ? paths : Array(paths.dropLast())
         let destination = URL(fileURLWithPath: paths.count == 1 ? "." : paths.last!)
@@ -272,7 +281,9 @@ struct Get: AsyncParsableCommand {
         }
     }
 
-    private func downloadFolder(_ folder: String?, at path: DrivePath, to local: URL, tree: DriveTree, drive: Drive)
+    private func downloadFolder(
+        _ folder: String?, at path: DrivePath, to local: URL, tree: DriveTree, drive: JoinedDrive
+    )
         async throws
     {
         try FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
@@ -286,7 +297,7 @@ struct Get: AsyncParsableCommand {
         }
     }
 
-    private func download(_ node: Node, at path: DrivePath, to local: URL, drive: Drive) async throws {
+    private func download(_ node: Node, at path: DrivePath, to local: URL, drive: JoinedDrive) async throws {
         if FileManager.default.fileExists(atPath: local.path), try drive.isUnchanged(local, comparedTo: node) {
             print("= \(local.relativePath)  (unchanged)")
             return
@@ -310,7 +321,7 @@ struct Cat: AsyncParsableCommand {
 
     func run() async throws {
         let context = try await Context.load()
-        let drive = context.drive
+        let drive = context.joined
         let path = DrivePath(path)
         guard let node = try await context.tree(at: at).locate(path) else {
             throw ATDriveError.isAFolder(path.description)
@@ -329,7 +340,7 @@ struct MakeFolder: AsyncParsableCommand {
     var parents = false
 
     func run() async throws {
-        let drive = try await Context.load().drive
+        let drive = try await Context.load().joined
         var state = DriveState(try await drive.tree())
         for raw in paths {
             let path = DrivePath(raw)
@@ -370,7 +381,7 @@ struct Move: AsyncParsableCommand {
     var destination: String
 
     func run() async throws {
-        let drive = try await Context.load().drive
+        let drive = try await Context.load().joined
         let tree = try await drive.tree()
         let from = DrivePath(source)
         let to = DrivePath(destination)
@@ -425,7 +436,7 @@ struct Remove: AsyncParsableCommand {
     var recursive = false
 
     func run() async throws {
-        let drive = try await Context.load().drive
+        let drive = try await Context.load().joined
         let tree = try await drive.tree()
         // Check every path before deleting anything.
         var targets: [(DrivePath, [Node])] = []

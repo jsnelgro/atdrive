@@ -1,3 +1,4 @@
+import Crypto
 import Foundation
 
 #if canImport(FoundationNetworking)
@@ -49,19 +50,47 @@ public struct IdentityResolver: Sendable {
     }
 
     public func resolveHandle(_ handle: String) async throws -> String {
-        if let url = URL(string: "https://\(handle)/.well-known/atproto-did"),
-            let (data, response) = try? await transport.send(URLRequest(url: url)),
-            response.statusCode == 200
-        {
-            let did = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            if did.hasPrefix("did:") { return did }
+        // What the handle's own server said, for the error if the fallback fails too.
+        let wellKnown: String
+        if let url = URL(string: "https://\(handle)/.well-known/atproto-did") {
+            do {
+                let (data, response) = try await transport.send(URLRequest(url: url))
+                let body = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                if response.statusCode == 200, body.hasPrefix("did:") { return body }
+                wellKnown = response.statusCode == 200 ? "no DID in the answer" : "HTTP \(response.statusCode)"
+            } catch {
+                wellKnown = Self.describe(error)
+            }
+        } else {
+            wellKnown = "not a valid host name"
         }
         struct Output: Decodable { var did: String }
         do {
             return try await XRPCClient(service: handleResolver, transport: transport)
                 .query("com.atproto.identity.resolveHandle", ["handle": handle], as: Output.self).did
         } catch {
-            throw ATDriveError.identity("couldn't resolve handle \(handle): \(error)")
+            throw ATDriveError.identity(
+                """
+                couldn't resolve handle \(handle).
+                  https://\(handle)/.well-known/atproto-did: \(wellKnown)
+                  \(handleResolver.host ?? "\(handleResolver)"): \(error)
+                Signing in with your DID (did:plc:…) instead of the handle skips this step.
+                """)
+        }
+    }
+
+    /// A network error in a few words (`URLError`'s own description is often generic).
+    static func describe(_ error: any Error) -> String {
+        guard let error = error as? URLError else { return "\(error)" }
+        switch error.code {
+        case .serverCertificateHasBadDate: return "its TLS certificate has expired"
+        case .serverCertificateUntrusted, .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid,
+            .secureConnectionFailed:
+            return "its TLS certificate isn't valid (\(error.localizedDescription))"
+        case .cannotFindHost, .dnsLookupFailed: return "no such host"
+        case .cannotConnectToHost, .timedOut, .networkConnectionLost, .notConnectedToInternet:
+            return "couldn't connect (\(error.localizedDescription))"
+        default: return error.localizedDescription
         }
     }
 
@@ -107,9 +136,25 @@ public struct DIDDocument: Decodable, Sendable {
         }
     }
 
+    public struct VerificationMethod: Decodable, Sendable {
+        public var id: String
+        public var type: String?
+        public var publicKeyMultibase: String?
+    }
+
     public var id: String
     public var alsoKnownAs: [String]?
     public var service: [Service]?
+    public var verificationMethod: [VerificationMethod]?
+
+    /// The key a repo host derives MAC secrets with for this account's space repos
+    /// (`#atproto_kem`, P-256); `nil` if it publishes none.
+    public var kemKey: P256.KeyAgreement.PublicKey? {
+        verificationMethod?
+            .first { $0.id == "#atproto_kem" || $0.id == "\(id)#atproto_kem" }
+            .flatMap(\.publicKeyMultibase)
+            .flatMap(P256DIDKey.publicKey)
+    }
 
     public var pdsEndpoint: URL? {
         service?

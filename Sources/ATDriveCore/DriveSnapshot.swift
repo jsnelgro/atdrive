@@ -394,3 +394,8 @@ public struct DriveSnapshot: Sendable {
         reread(with: drive)
     }
 }
+
+extension DriveSnapshot {
+    /// Puts another tree in its place: for the drive as it was at some point (`JoinedSnapshot`).
+    mutating func setTree(_ tree: DriveTree) { self.tree = tree }
+}

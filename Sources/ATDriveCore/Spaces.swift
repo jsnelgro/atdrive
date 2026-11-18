@@ -8,21 +8,195 @@ extension XRPCClient {
         "at://\(authority)/space/\(type)/\(key)"
     }
 
+    /// The parts of a space's URI; `nil` if it isn't one.
+    public static func spaceParts(_ uri: String) -> (authority: String, type: String, key: String)? {
+        guard uri.hasPrefix("at://") else { return nil }
+        let parts = uri.dropFirst(5).split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 4, parts[1] == "space", parts[0].hasPrefix("did:"), !parts[2].isEmpty, !parts[3].isEmpty
+        else { return nil }
+        return (String(parts[0]), String(parts[2]), String(parts[3]))
+    }
+
     /// Creates a space only the authenticated account can read or write.
+    @discardableResult
     public func createPersonalSpace(type: String, key: String) async throws -> String {
-        struct Policy: Encodable {
-            let type = Lexicon.personalSpacePolicy
-            enum CodingKeys: String, CodingKey { case type = "$type" }
-        }
+        try await createSpace(type: type, key: key, policy: .personal)
+    }
+
+    /// Creates a space with the authenticated account as its authority. Fails with
+    /// `SpaceAlreadyExists` if it exists. Returns its URI.
+    @discardableResult
+    public func createSpace(type: String, key: String, policy: SpacePolicy) async throws -> String {
         struct Input: Encodable {
             var spaceType: String
             var skey: String
-            var policy = Policy()
+            var policy: SpacePolicy
         }
-        struct Output: Decodable { var uri: String }
+        struct Output: Decodable { var space: String }
         return try await procedure(
-            "com.atproto.space.createSpace", Input(spaceType: type, skey: key), as: Output.self
-        ).uri
+            "com.atproto.space.createSpace", Input(spaceType: type, skey: key, policy: policy), as: Output.self
+        ).space
+    }
+
+    /// A space's policy. Only its authority can read it.
+    public func getSpacePolicy(_ space: String) async throws -> SpacePolicy {
+        struct Output: Decodable { var policy: SpacePolicy }
+        return try await query("com.atproto.space.getSpace", ["space": space], as: Output.self).policy
+    }
+
+    /// Replaces a space's policy. Changing its type (say from `memberspace` to `personalspace`)
+    /// drops the old policy's state, such as the member list.
+    public func updateSpace(_ space: String, policy: SpacePolicy) async throws {
+        struct Input: Encodable {
+            var space: String
+            var policy: SpacePolicy
+        }
+        let _: Empty = try await procedure("com.atproto.space.updateSpace", Input(space: space, policy: policy))
+    }
+
+    /// Deletes a space: its authority's records in it, and everything the PDS keeps about it.
+    /// Readers are told it's gone (`SpaceDeleted`). Already deleted is fine.
+    public func deleteSpace(_ space: String) async throws {
+        struct Input: Encodable { var space: String }
+        do {
+            let _: Empty = try await procedure("com.atproto.space.deleteSpace", Input(space: space))
+        } catch let error as XRPCError where error.error == "SpaceNotFound" {}
+    }
+
+    /// The spaces the account is the authority of, or has a repo in: their URIs, of `type` if given.
+    public func listSpaces(type: String? = nil, authority: String? = nil) async throws -> [String] {
+        struct Output: Decodable {
+            struct View: Decodable { var space: String }
+            var spaces: [View]
+            var cursor: String?
+        }
+        var spaces: [String] = []
+        var cursor: String?
+        repeat {
+            let page = try await query(
+                "com.atproto.space.listSpaces",
+                ["spaceType": type, "spaceDid": authority, "cursor": cursor, "limit": "100"], as: Output.self)
+            spaces += page.spaces.map(\.space)
+            cursor = page.spaces.isEmpty ? nil : page.cursor
+        } while cursor != nil
+        return spaces
+    }
+
+    // MARK: Members (`com.atproto.memberspace.*`)
+
+    /// Adds members to a `memberspace` space, or changes their access.
+    public func putMembers(_ space: String, _ members: [SpaceMember]) async throws {
+        struct Input: Encodable {
+            var space: String
+            var members: [SpaceMember]
+        }
+        for start in stride(from: 0, to: members.count, by: 100) {
+            let batch = Array(members[start..<min(start + 100, members.count)])
+            let _: Empty = try await procedure(
+                "com.atproto.memberspace.putMembers", Input(space: space, members: batch))
+        }
+    }
+
+    /// Removes members (by DID) from a `memberspace` space.
+    public func removeMembers(_ space: String, dids: [String]) async throws {
+        struct Input: Encodable {
+            var space: String
+            var dids: [String]
+        }
+        for start in stride(from: 0, to: dids.count, by: 100) {
+            let batch = Array(dids[start..<min(start + 100, dids.count)])
+            let _: Empty = try await procedure(
+                "com.atproto.memberspace.removeMembers", Input(space: space, dids: batch))
+        }
+    }
+
+    /// A `memberspace` space's members. Only its authority can list them.
+    public func listMembers(_ space: String) async throws -> [SpaceMember] {
+        struct Output: Decodable {
+            var members: [SpaceMember]
+            var cursor: String?
+        }
+        var members: [SpaceMember] = []
+        var cursor: String?
+        repeat {
+            let page = try await query(
+                "com.atproto.memberspace.listMembers", ["space": space, "cursor": cursor, "limit": "1000"],
+                as: Output.self)
+            members += page.members
+            cursor = page.members.isEmpty ? nil : page.cursor
+        } while cursor != nil
+        return members
+    }
+
+    // MARK: Reading other accounts' spaces
+
+    /// A delegation token for `space`, from the signed-in account's own PDS: it says this app
+    /// acts for the account, and is traded for a credential at the space's host
+    /// (`authorizeSpaceSync`). Single use, and good for a minute.
+    public func getDelegationToken(space: String) async throws -> String {
+        struct Output: Decodable { var token: String }
+        return try await query("com.atproto.space.getDelegationToken", ["space": space], as: Output.self).token
+    }
+
+    /// Trades a delegation token (none for a public space) for a credential to read `space`,
+    /// bound to `credentialKey` (a P-256 `did:key`). Called on the space's host, unauthenticated.
+    public func authorizeSpaceSync(space: String, credentialKey: String, delegationToken: String?) async throws
+        -> String
+    {
+        struct Input: Encodable {
+            var space: String
+            var credentialKey: String
+            var delegationToken: String?
+        }
+        struct Output: Decodable { var credential: String }
+        let input = Input(space: space, credentialKey: credentialKey, delegationToken: delegationToken)
+        let data = try await send(
+            "com.atproto.space.authorizeSpaceSync", body: (try Self.encoder.encode(input), "application/json"),
+            auth: .none)
+        do {
+            return try JSONDecoder().decode(Output.self, from: data).credential
+        } catch {
+            throw Self.malformed("com.atproto.space.authorizeSpaceSync")
+        }
+    }
+
+    // MARK: The account's public repo
+
+    /// A record in an account's public repo (`com.atproto.repo.getRecord`), unauthenticated; `nil`
+    /// if there's none.
+    public func getPublicRecord(repo: String, collection: String, rkey: String) async throws -> JSONValue? {
+        do {
+            let data = try await send(
+                "com.atproto.repo.getRecord", params: ["repo": repo, "collection": collection, "rkey": rkey],
+                auth: .none)
+            return try JSONValue(parsing: data)["value"].unlessNull
+        } catch let error as XRPCError where error.error == "RecordNotFound" {
+            return nil
+        }
+    }
+
+    /// Creates or replaces a record in the signed-in account's public repo.
+    public func putPublicRecord(repo: String, collection: String, rkey: String, record: JSONValue) async throws {
+        struct Input: Encodable {
+            var repo: String
+            var collection: String
+            var rkey: String
+            var validate = false
+            var record: JSONValue
+        }
+        let _: PutRecordOutput = try await procedure(
+            "com.atproto.repo.putRecord", Input(repo: repo, collection: collection, rkey: rkey, record: record))
+    }
+
+    /// Deletes a record from the signed-in account's public repo; already gone is fine.
+    public func deletePublicRecord(repo: String, collection: String, rkey: String) async throws {
+        struct Input: Encodable {
+            var repo: String
+            var collection: String
+            var rkey: String
+        }
+        let _: Empty = try await procedure(
+            "com.atproto.repo.deleteRecord", Input(repo: repo, collection: collection, rkey: rkey))
     }
 
     public struct SpaceRecordPage<Value: Decodable & Sendable>: Sendable {
@@ -173,8 +347,9 @@ extension XRPCClient {
 
     /// One page of the repo's change feed: the writes after `since` (or after `cursor`, which
     /// takes precedence), in every collection, in order. A page holds up to `limit` ops (the
-    /// server allows 1000). The last one has no cursor and carries the commit, unless the repo
-    /// doesn't exist. The server may compact the feed, so it isn't history: `prev` shows gaps.
+    /// server allows 1000). Every page carries the repo's current commit; a full page has a
+    /// cursor, so the last one may be empty. A repo never written to is `RepoNotFound`. The server
+    /// may compact the feed, so it isn't history: `prev` shows gaps.
     public func listRepoOps(
         space: String, repo: String, since: String?, cursor: String? = nil, limit: Int = 1000
     ) async throws -> RepoOpsPage {
@@ -204,7 +379,7 @@ extension XRPCClient {
         return output
     }
 
-    private static func malformed(_ method: String) -> ATDriveError {
+    static func malformed(_ method: String) -> ATDriveError {
         .unexpectedResponse("\(method): the output isn't what its lexicon says")
     }
 
@@ -311,28 +486,41 @@ public struct RepoOp: Sendable, Equatable {
 
 /// A repo's commit in a space. There's no Merkle tree: `data` is a SHA-256 of an LtHash over
 /// every record (`collection/rkey/cid`), so a client holding the same records can check it.
+/// `ver`, `repo` and `space` say which repo it's of: a reader checks them against its MAC.
 public struct RepoCommit: Sendable, Equatable, Codable {
     public var rev: String
     /// 32 bytes. JSON carries it as `{"$bytes": "<base64>"}`.
     public var data: Data
+    public var ver: Int?
+    public var repo: String?
+    public var space: String?
 
-    public init(rev: String, data: Data) {
+    public init(rev: String, data: Data, ver: Int? = nil, repo: String? = nil, space: String? = nil) {
         self.rev = rev
         self.data = data
+        self.ver = ver
+        self.repo = repo
+        self.space = space
     }
 
-    private enum CodingKeys: String, CodingKey { case rev, data }
+    private enum CodingKeys: String, CodingKey { case rev, data, ver, repo, space }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         rev = try container.decode(String.self, forKey: .rev)
         data = try container.decode(Bytes.self, forKey: .data).data
+        ver = try container.decodeIfPresent(Int.self, forKey: .ver)
+        repo = try container.decodeIfPresent(String.self, forKey: .repo)
+        space = try container.decodeIfPresent(String.self, forKey: .space)
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(rev, forKey: .rev)
         try container.encode(Bytes(data), forKey: .data)
+        try container.encodeIfPresent(ver, forKey: .ver)
+        try container.encodeIfPresent(repo, forKey: .repo)
+        try container.encodeIfPresent(space, forKey: .space)
     }
 }
 
@@ -348,4 +536,54 @@ public struct RepoOpsPage: Sendable {
 struct Lenient<Value: Decodable>: Decodable {
     var value: Value?
     init(from decoder: Decoder) throws { value = try? Value(from: decoder) }
+}
+
+/// How a space's authority decides who may read it (`com.atproto.*space.policy`).
+public enum SpacePolicy: Sendable, Equatable, Codable {
+    /// Only its authority.
+    case personal
+    /// Members, and with `publicRead` anyone.
+    case members(publicRead: Bool)
+    /// Any other policy, as given.
+    case other(type: String)
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "$type"
+        case publicRead, publicWrite
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(String.self, forKey: .type) {
+        case Lexicon.personalSpacePolicy: self = .personal
+        case Lexicon.memberSpacePolicy:
+            self = .members(publicRead: try container.decodeIfPresent(Bool.self, forKey: .publicRead) ?? false)
+        case let type: self = .other(type: type)
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .personal: try container.encode(Lexicon.personalSpacePolicy, forKey: .type)
+        case .members(let publicRead):
+            try container.encode(Lexicon.memberSpacePolicy, forKey: .type)
+            try container.encode(publicRead, forKey: .publicRead)
+            try container.encode(false, forKey: .publicWrite)
+        case .other(let type): try container.encode(type, forKey: .type)
+        }
+    }
+}
+
+/// An entry in a `memberspace` space's member list.
+public struct SpaceMember: Sendable, Equatable, Codable {
+    public var did: String
+    public var read: Bool
+    public var write: Bool
+
+    public init(did: String, read: Bool = true, write: Bool = false) {
+        self.did = did
+        self.read = read
+        self.write = write
+    }
 }

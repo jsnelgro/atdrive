@@ -224,7 +224,7 @@ command. `atdrive login` prints a link to open in a browser on any device. After
 browser lands on a page that won't load, at an address starting with `http://127.0.0.1`. Paste that
 address back into the terminal and you're signed in.
 
-For scripts, `atdrive login --app-password <handle>` signs in with an app password instead.
+Signing in is always through the browser: atproto spaces don't accept app passwords.
 
 ## History and trash
 
@@ -315,7 +315,7 @@ The rest of this section is about encrypted drives.
   - The removed device keeps what it could already read: everything written before, and its own
     copies.
   - It can still sign in to your account until you revoke its session (in your account's settings,
-    or by deleting its app password). Until every other device has seen the removal, what it
+    or by signing it out there). Until every other device has seen the removal, what it
     writes may still be read.
 - **What the PDS still sees:** how many files and folders there are, roughly how big each file
   is, when things are created and changed, which files share contents, and your devices' names.
@@ -324,6 +324,50 @@ The rest of this section is about encrypted drives.
 - **What the PDS can't do** is switch encryption off behind your back. A device that has held the
   drive's keys believes the drive stopped being encrypted only if the drive publishes those keys,
   which the PDS never had. Otherwise it refuses to write anything, and says why.
+
+## Sharing
+
+Share a file or folder with specific people, or with anyone who has its link. Read-only for
+them: they see it in their own drive (in Finder, or a synced folder), kept up to date.
+
+In Finder, right-click: **Share…** (who has it, and the link), **Copy Link**, **Stop Sharing**.
+Shared things have a badge. Clicking an `atdrive://` link opens ATDrive, with **Add to My Drive**
+and **Download…**; so does **Add Shared Link…** in the menu bar.
+
+From the command line:
+
+```bash
+atdrive share /photos --link                 # anyone with the link can see it
+atdrive share /photos --with alice.bsky.social
+atdrive share ls                             # what you share, with whom, and whose drives aren't encrypted
+atdrive share remove /photos alice.bsky.social
+atdrive unshare /photos                      # stop sharing it: it's an ordinary folder again
+
+atdrive open 'atdrive://open?at=…'           # add something shared with you to your drive
+atdrive shared ls                            # what's shared with you
+atdrive get 'atdrive://open?at=…' ~/Downloads   # just download it (no sign-in needed for a link)
+```
+
+- **The first time something is shared,** it moves into a space of its own, which stays where it
+  was in your drive. Its history up to then stays with your drive: people see it from then on.
+- **Shares take your drive's mode.** An encrypted drive's shares are encrypted, even behind a
+  link: an encrypted share's link ends with `#<key>`, which never reaches a server. `--plain` makes
+  an unencrypted one.
+- **Sharing encrypted files with someone** wraps the share's keys for the sharing key they
+  publish. To be sure it's really theirs, compare codes: `atdrive share verify <handle>`. If their
+  key changes later, you're asked before anything new is shared with them. If their own drive
+  isn't encrypted, you're told: their PDS could read what you share.
+- **Removing someone** stops them getting anything new; what they already downloaded stays theirs.
+- **If you lose access** to something shared with you, it stays as it was, and says why. If its
+  owner deletes it, it's gone here too.
+- **Turning encryption on or off ends your sharing:** your shares move back into your drive, and
+  you share them again afterwards.
+- **Links need ATDrive to open them.** `atdrive sync --install` makes ATDrive open `atdrive://`
+  links on a Linux desktop; the Mac app does on a Mac. Some chat apps won't make them clickable:
+  paste them into ATDrive instead.
+
+To start over while trying things out, `atdrive reset` deletes your whole drive (and everything
+you shared) and makes a new, empty one.
 
 ## Conflicts
 
@@ -405,13 +449,16 @@ ATDRIVE_LIVE_HANDLE=you.spaces-alpha.bsky.network scripts/test.sh --filter OAuth
 ```
 
 ```bash
-ATDRIVE_LIVE_HANDLE=you.spaces-alpha.bsky.network ATDRIVE_LIVE_PASSWORD=xxxx-xxxx-xxxx-xxxx scripts/test.sh --filter LiveTests
+ATDRIVE_CONFIG_DIR=~/.atdrive-live-a atdrive login you.spaces-alpha.bsky.network
+ATDRIVE_LIVE_CONFIG=~/.atdrive-live-a scripts/test.sh --filter Live
 ```
 
-- `OAuthLiveTests` needs no password. It starts a real OAuth sign-in and checks the server accepts
-  it, up to the point where a person would approve it.
-- `LiveTests` runs a full upload/download round trip using an app password, and cleans up after
-  itself. It creates the account's drive if there's none (plain); for an account whose drive
+- `OAuthLiveTests` starts a real OAuth sign-in and checks the server accepts it, up to the point
+  where a person would approve it.
+- The other live tests use the session `atdrive login` saved in `ATDRIVE_LIVE_CONFIG` (sign in
+  into a folder of its own with `ATDRIVE_CONFIG_DIR`, as above). `LiveTests` runs a full
+  upload/download round trip, and `LiveChangeFeedTests` follows the change feed. Both clean up
+  after themselves. It creates the account's drive if there's none (plain); for an account whose drive
   is encrypted, set `ATDRIVE_LIVE_RECOVERY_KEY` to its recovery key (each run then adds a device
   to the drive).
 
@@ -426,6 +473,8 @@ See [PLAN.md](PLAN.md) for the roadmap and design notes.
 ## Current limitations
 
 - **One drive per account.** The Mac app and the CLI each keep their own login.
+- **Sharing is read-only.** Folders others can edit come later (#25). Shared folders can't go
+  inside each other.
 - **Remote changes are polled** every 30 seconds, not pushed.
 - **`put`, `mv` and `rm` have no conflict detection: the last write wins.** The spaces alpha has
   no compare-and-swap for writes. What was overwritten stays in history, though, and `atdrive sync`

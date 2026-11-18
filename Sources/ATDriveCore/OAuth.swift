@@ -19,25 +19,42 @@ import Foundation
 public enum OAuthLogin {
     /// What ATDrive asks for. Override with `ATDRIVE_OAUTH_SCOPE`.
     ///
-    /// - Writes: only ATDrive's records (nodes, their versions and long chunk lists, the drive's
-    ///   settings, and devices), and creating spaces.
-    /// - Reads: spaces your account owns.
+    /// - Your own drive spaces (the home drive, and the folders you share): read, write
+    ///   ATDrive's records, and create, update and delete the spaces (sharing manages members and
+    ///   links with `manage=update`; `atdrive reset` deletes them).
+    /// - Other people's drive spaces: read only, for what's shared with you (a delegation token
+    ///   needs a `read` grant for the space, under any authority).
+    /// - Your sharing key, in your public repo.
     /// - Blob uploads: needed for file contents.
     ///
-    /// The scope names spaces with `*`, not ATDrive's own space type, because naming a type
-    /// makes the PDS look up that type's published lexicon to show on the consent screen, and
-    /// `me.jsnelgro.atdrive.drive` isn't published yet. Once it is (DNS TXT record at
-    /// `_lexicon.atdrive.jsnelgro.me`, plus the schema records), switch to `narrowScope`.
+    /// Naming ATDrive's space type in a scope makes the PDS look up its published lexicon for the
+    /// consent screen, and fails if it can't. Until the lexicons are published
+    /// (`lexiconsPublished`), the scope names spaces with `*` instead (`broadScope`): reading
+    /// spaces of any type from anyone, which the consent screen warns about.
     public static func scope(environment: [String: String] = ProcessInfo.processInfo.environment) -> String {
         if let configured = environment["ATDRIVE_OAUTH_SCOPE"], !configured.isEmpty { return configured }
-        return "atproto space:*?\(collections)&manage=create blob:*/*"
+        return lexiconsPublished ? narrowScope : broadScope
     }
 
-    /// The scope to use once ATDrive's lexicons are published: access to ATDrive's spaces only.
-    public static let narrowScope = "atproto space:\(Lexicon.driveSpace)?\(collections)&manage=create blob:*/*"
+    /// Whether ATDrive's lexicons are published (`atdrive lexicons publish`, plus a DNS TXT
+    /// record at `_lexicon.atdrive.jsnelgro.me`). Flip it once they are: sign-in then asks for
+    /// ATDrive's spaces only (`narrowScope`).
+    public static let lexiconsPublished = false
+
+    /// Access to ATDrive's spaces only: yours to read, write and manage, other people's to read.
+    public static let narrowScope =
+        "atproto space:\(Lexicon.driveSpace)?\(collections)&\(manage) "
+        + "space:\(Lexicon.driveSpace)?authority=*&action=read repo:\(Lexicon.shareKey) blob:*/*"
+
+    /// Until the lexicons are published: the same, for spaces of any type.
+    public static let broadScope =
+        "atproto space:*?\(collections)&\(manage) space:*?authority=*&action=read repo:\(Lexicon.shareKey) blob:*/*"
+
+    private static let manage = "manage=create&manage=update&manage=delete"
 
     private static let collections = [
-        Lexicon.node, Lexicon.version, Lexicon.chunks, Lexicon.settings, Lexicon.device,
+        Lexicon.node, Lexicon.version, Lexicon.chunks, Lexicon.settings, Lexicon.device, Lexicon.member, Lexicon.link,
+        Lexicon.contact,
     ].map { "collection=\($0)" }.joined(separator: "&")
 
     public static func clientID(environment: [String: String] = ProcessInfo.processInfo.environment) -> String {

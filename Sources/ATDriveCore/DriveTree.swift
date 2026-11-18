@@ -13,7 +13,11 @@ public struct Node: Sendable, Identifiable, Equatable {
     }
 
     public var name: String { record.name }
-    public var isFolder: Bool { record.kind == .folder }
+    /// A folder, or a mount (another space, which shows as a folder).
+    public var isFolder: Bool { record.kind != .file }
+    /// A share mounted in the drive. In the joined tree a share of one file shows as that file
+    /// (`kind` `file`, so not `isFolder`), still with its `mount`.
+    public var isMount: Bool { record.kind == .mount || record.mount != nil }
 }
 
 /// A node record that exists in the drive but that this device can't read (yet). It must never
@@ -35,6 +39,8 @@ public struct UnreadableNode: Sendable, Equatable {
         case notSealed
         /// A file whose chunk list continues in `chunks` records, and one of them isn't there.
         case incomplete
+        /// A shared folder that can't be read right now (`MountProblem`).
+        case unavailable
 
         public var description: String {
             switch self {
@@ -46,6 +52,7 @@ public struct UnreadableNode: Sendable, Equatable {
                 "it isn't encrypted with the drive's keys, though the drive is: a device that hadn't noticed "
                     + "wrote it, or the server did (`atdrive encryption on` can encrypt and keep it)"
             case .incomplete: "part of its list of contents is missing from the server"
+            case .unavailable: "it's a shared folder that can't be read right now"
             }
         }
     }
@@ -95,7 +102,7 @@ public struct DrivePath: Sendable, Equatable, CustomStringConvertible {
         self.components = components
     }
 
-    init(components: [String]) { self.components = components }
+    public init(components: [String]) { self.components = components }
 
     public var isRoot: Bool { components.isEmpty }
     public var name: String? { components.last }

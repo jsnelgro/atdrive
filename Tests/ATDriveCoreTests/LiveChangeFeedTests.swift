@@ -3,19 +3,14 @@ import Testing
 
 @testable import ATDriveCore
 
-/// The change feed against a real spaces-enabled PDS. Skipped unless both are set:
-///
-///     ATDRIVE_LIVE_HANDLE=you.example.com ATDRIVE_LIVE_PASSWORD=xxxx-xxxx-xxxx-xxxx \
-///         scripts/test.sh --filter LiveChangeFeedTests
-///
-/// Everything happens inside a uniquely named folder that is deleted at the end.
-@Suite(.enabled(if: liveChangeFeedCredentials() != nil, "set ATDRIVE_LIVE_HANDLE and ATDRIVE_LIVE_PASSWORD"))
+/// The change feed against a real spaces-enabled PDS. Skipped unless `ATDRIVE_LIVE_CONFIG` is
+/// set (see `LiveTests`). Everything happens inside a uniquely named folder that is deleted at the
+/// end.
+@Suite(.enabled(if: LiveAccount.load() != nil, "set ATDRIVE_LIVE_CONFIG to a folder `atdrive login` saved to"))
 struct LiveChangeFeedTests {
     @Test func followsTheDriveWithoutListingItAgain() async throws {
-        let (handle, password) = try #require(liveChangeFeedCredentials())
-        let session = try await Auth.login(identifier: handle, password: password, resolver: IdentityResolver())
-        let manager = SessionManager(session)
-        let drive = try await openLiveDrive(session: session, manager: manager)
+        let account = try #require(LiveAccount.load())
+        let drive = try await account.openDrive()
 
         // A full listing: every collection, and the commit it's at.
         var snapshot = try await drive.update(nil)
@@ -42,21 +37,11 @@ struct LiveChangeFeedTests {
             #expect(fresh.tree.nodes == snapshot.tree.nodes)
         } catch {
             try? await drive.delete(created)
-            await Auth.logout(await manager.session)
             throw error
         }
         try await drive.delete(created)
         snapshot = try await drive.update(snapshot)
         #expect(snapshot.tree.nodes[folder.id] == nil)
         #expect(snapshot.listedAt == listedAt)
-        await Auth.logout(await manager.session)
     }
-}
-
-private func liveChangeFeedCredentials() -> (handle: String, password: String)? {
-    let env = ProcessInfo.processInfo.environment
-    guard let handle = env["ATDRIVE_LIVE_HANDLE"], let password = env["ATDRIVE_LIVE_PASSWORD"],
-        !handle.isEmpty, !password.isEmpty
-    else { return nil }
-    return (handle, password)
 }

@@ -133,7 +133,8 @@ private func randomData(_ count: Int) -> Data {
             try keyring.open(sealed, as: Metadata.self, space: FakePDS.space, collection: node, rkey: "3jzfcijpj2z2b")
                 == value)
         // nonce (12) + JSON + tag (16)
-        #expect(sealed.sealed.data.count == 12 + (try Sealing.encoder.encode(value)).count + 16)
+        let json = try Sealing.encoder.encode(value)
+        #expect(sealed.sealed.data.count == 12 + json.count + 16)
     }
 
     @Test func recordJSON() throws {

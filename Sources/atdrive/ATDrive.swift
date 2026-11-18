@@ -13,11 +13,12 @@ struct ATDrive: AsyncParsableCommand {
             """,
         version: "0.1.0",
         subcommands: [
-            Login.self, Logout.self, WhoAmI.self,
+            Login.self, Logout.self, WhoAmI.self, Reset.self,
             List.self, Tree.self, Put.self, Get.self, Cat.self,
             MakeFolder.self, Move.self, Remove.self, Sync.self,
+            Share.self, Unshare.self, Open.self, Shared.self,
             ShowHistory.self, Restore.self, Trash.self, Purge.self, DiskUsage.self, Prune.self,
-            Encryption.self, Devices.self, Unlock.self, NewRecoveryKey.self,
+            Encryption.self, Devices.self, Unlock.self, NewRecoveryKey.self, Lexicons.self,
         ]
     )
 }
@@ -26,7 +27,10 @@ struct ATDrive: AsyncParsableCommand {
 struct Context {
     let store: SessionStore
     let session: SessionManager
+    /// The home drive.
     let drive: Drive
+    /// The home drive with the shared folders mounted in it: what file commands and sync use.
+    let joined: JoinedDrive
 
     /// The drive, opened: ready to read and write, plain or encrypted. Throws `DriveAccessError`
     /// (no drive, or it's encrypted and this device doesn't have its keys), which says what to
@@ -48,7 +52,8 @@ struct Context {
         let identity = makingIdentity ? try devices.loadOrCreate() : try devices.load()
         // What it trusts changes as keys arrive and rotate; saved as it happens.
         let drive = await Drive(session: session, identity: identity) { try? devices.save($0) }
-        return Context(store: store, session: session, drive: drive)
+        let access = SpaceAccess(ownClient: drive.client, resolver: IdentityResolver())
+        return Context(store: store, session: session, drive: drive, joined: JoinedDrive(home: drive, access: access))
     }
 
     /// The drive, opened, which must be encrypted, with this device holding its keys: for

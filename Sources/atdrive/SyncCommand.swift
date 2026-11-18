@@ -51,7 +51,7 @@ struct Sync: AsyncParsableCommand {
         var context = waits ? try await Self.waitForSignIn() : try await Context.load()
         let sync: FolderSync
         do {
-            sync = try FolderSync(folder: url, drive: context.drive) { SyncLog.write($0.description) }
+            sync = try FolderSync(folder: url, drive: context.joined) { SyncLog.write($0.description) }
         } catch let error as SyncError {
             throw Self.fatal(error)
         }
@@ -98,7 +98,7 @@ struct Sync: AsyncParsableCommand {
                 let expired = await context.session.session
                 SyncLog.write("Your session has ended. Run `atdrive login <handle>` to resume syncing.")
                 context = try await Self.waitForSignIn(after: expired)
-                do { try sync.use(context.drive) } catch let error as SyncError { throw Self.fatal(error) }
+                do { try sync.use(context.joined) } catch let error as SyncError { throw Self.fatal(error) }
                 SyncLog.write("Signed in again; resuming.")
             } catch {
                 failures += 1
@@ -199,6 +199,7 @@ enum Service {
                 throw ExitCode.failure
             }
             print("Syncing \(folder.path) in the background, now and whenever you're logged in.")
+            LinkHandler.install(executable: executable)
             if run("loginctl", "show-user", String(getuid()), "--property=Linger", "--value").output == "no" {
                 print(
                     """
@@ -231,6 +232,7 @@ enum Service {
                 throw ExitCode.failure
             }
             _ = systemctl("daemon-reload")
+            LinkHandler.uninstall()
             print("Stopped syncing in the background. The folder and the drive are left as they are.")
         #else
             throw ValidationError("--uninstall is for Linux (systemd).")
@@ -256,7 +258,7 @@ enum Service {
         return "\"\(escaped)\""
     }
 
-    private static func systemctl(_ arguments: String...) -> Bool {
+    static func systemctl(_ arguments: String...) -> Bool {
         let result = run("systemctl", ["--user"] + arguments)
         if result.status != 0, !result.error.isEmpty {
             FileHandle.standardError.write(Data((result.error + "\n").utf8))
@@ -264,7 +266,7 @@ enum Service {
         return result.status == 0
     }
 
-    private static func run(_ tool: String, _ arguments: String...) -> (status: Int32, output: String, error: String) {
+    static func run(_ tool: String, _ arguments: String...) -> (status: Int32, output: String, error: String) {
         run(tool, arguments)
     }
 
@@ -284,5 +286,53 @@ enum Service {
             String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         }
         return (process.terminationStatus, text(out), text(err))
+    }
+}
+
+/// Opens `atdrive://` links on a Linux desktop: a desktop entry for `x-scheme-handler/atdrive`
+/// that runs `atdrive open <link>`, made the default handler. Installed with the sync service.
+enum LinkHandler {
+    static let name = "atdrive-open.desktop"
+
+    static var file: URL {
+        let environment = ProcessInfo.processInfo.environment
+        let data =
+            environment["XDG_DATA_HOME"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/share")
+        return data.appendingPathComponent("applications/\(name)")
+    }
+
+    static func install(executable: String) {
+        let entry = """
+            [Desktop Entry]
+            Type=Application
+            Name=ATDrive
+            Comment=Add something shared with you to your drive
+            Exec="\(executable.replacingOccurrences(of: "\"", with: "\\\""))" open %u
+            Terminal=true
+            NoDisplay=true
+            MimeType=x-scheme-handler/atdrive;
+
+            """
+        do {
+            try FileManager.default.createDirectory(
+                at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(entry.utf8).write(to: file)
+        } catch {
+            Output.warn("couldn't install the atdrive:// link handler: \(error)")
+            return
+        }
+        _ = Service.run("update-desktop-database", file.deletingLastPathComponent().path)
+        if Service.run("xdg-mime", "default", name, "x-scheme-handler/atdrive").status == 0 {
+            print("atdrive:// links now open here (`atdrive open <link>`).")
+        } else {
+            print(
+                "Wrote \(file.path); to open atdrive:// links with it: xdg-mime default \(name) x-scheme-handler/atdrive"
+            )
+        }
+    }
+
+    static func uninstall() {
+        if FileManager.default.fileExists(atPath: file.path) { try? FileManager.default.removeItem(at: file) }
     }
 }

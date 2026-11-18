@@ -102,7 +102,11 @@ final class Enumerator: NSObject, NSFileProviderEnumerator {
             guard let node = tree.nodes[id] else {
                 // A folder this Mac could read before but can't now: it's still there, and so is
                 // what's inside it.
-                if tree.unreadable[id] != nil { return tree.children(of: id).map { Item($0, in: tree) } }
+                if let unreadable = tree.unreadable[id] {
+                    // A shared folder that can't be read: not empty, just unreachable for now.
+                    if unreadable.reason == .unavailable { throw NSFileProviderError(.serverUnreachable) }
+                    return tree.children(of: id).map { Item($0, in: tree) }
+                }
                 throw NSFileProviderError(.noSuchItem)
             }
             return node.isFolder ? tree.children(of: id).map { Item($0, in: tree) } : [Item(node, in: tree)]

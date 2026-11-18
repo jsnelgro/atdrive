@@ -29,6 +29,59 @@
 		<string>__APP_GROUP__</string>
 		<key>NSExtensionFileProviderSupportsEnumeration</key>
 		<true/>
+		<!-- Finder's sharing actions, by each item's userInfo.sharing (`SharingRole`). The action
+		     identifier's last part names the request handed to the app (`SharingRequest`). -->
+		<key>NSExtensionFileProviderActions</key>
+		<array>
+			<dict>
+				<key>NSExtensionFileProviderActionIdentifier</key>
+				<string>__BUNDLE_ID__.fileprovider.share</string>
+				<key>NSExtensionFileProviderActionName</key>
+				<string>Share…</string>
+				<key>NSExtensionFileProviderActionActivationRule</key>
+				<string>SUBQUERY ( fileproviderItems, $fileproviderItem, $fileproviderItem.userInfo.sharing IN {&quot;none&quot;, &quot;own&quot;, &quot;other&quot;} ).@count == 1 AND fileproviderItems.@count == 1</string>
+			</dict>
+			<dict>
+				<key>NSExtensionFileProviderActionIdentifier</key>
+				<string>__BUNDLE_ID__.fileprovider.copyLink</string>
+				<key>NSExtensionFileProviderActionName</key>
+				<string>Copy Link</string>
+				<key>NSExtensionFileProviderActionActivationRule</key>
+				<string>SUBQUERY ( fileproviderItems, $fileproviderItem, $fileproviderItem.userInfo.sharing IN {&quot;own&quot;, &quot;other&quot;} ).@count == 1 AND fileproviderItems.@count == 1</string>
+			</dict>
+			<dict>
+				<key>NSExtensionFileProviderActionIdentifier</key>
+				<string>__BUNDLE_ID__.fileprovider.stopSharing</string>
+				<key>NSExtensionFileProviderActionName</key>
+				<string>Stop Sharing</string>
+				<key>NSExtensionFileProviderActionActivationRule</key>
+				<string>SUBQUERY ( fileproviderItems, $fileproviderItem, $fileproviderItem.userInfo.sharing == &quot;own&quot; ).@count == 1 AND fileproviderItems.@count == 1</string>
+			</dict>
+		</array>
+		<!-- Badges for shares (`Item.decorations`). -->
+		<key>NSFileProviderDecorations</key>
+		<array>
+			<dict>
+				<key>Identifier</key>
+				<string>__BUNDLE_ID__.fileprovider.shared</string>
+				<key>Category</key>
+				<string>Sharing</string>
+				<key>Label</key>
+				<string>Shared</string>
+				<key>BadgeImageType</key>
+				<string>com.apple.icon-decoration.shared</string>
+			</dict>
+			<dict>
+				<key>Identifier</key>
+				<string>__BUNDLE_ID__.fileprovider.sharedWithMe</string>
+				<key>Category</key>
+				<string>Sharing</string>
+				<key>Label</key>
+				<string>Shared with you</string>
+				<key>BadgeImageType</key>
+				<string>com.apple.icon-decoration.shared</string>
+			</dict>
+		</array>
 	</dict>
 	<key>ATDriveAppGroup</key>
 	<string>__APP_GROUP__</string>

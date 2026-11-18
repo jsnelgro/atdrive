@@ -29,26 +29,28 @@ public struct XRPCError: Error, CustomStringConvertible, Sendable {
     }
 }
 
-/// Minimal client for atproto's HTTP API (XRPC): JSON in, JSON out, bearer-token auth with
+/// Minimal client for atproto's HTTP API (XRPC): JSON in, JSON out, OAuth (DPoP) auth with
 /// automatic refresh, and polite retries when rate-limited.
 public final class XRPCClient: Sendable {
     public let service: URL
     public let session: SessionManager?
+    /// For reading another account's space at its host, instead of a session.
+    public let credentials: SpaceCredentials?
     let transport: any HTTPTransport
 
     public init(
-        service: URL, session: SessionManager? = nil,
+        service: URL, session: SessionManager? = nil, credentials: SpaceCredentials? = nil,
         transport: any HTTPTransport = URLSessionTransport()
     ) {
         self.service = service
         self.session = session
+        self.credentials = credentials
         self.transport = transport
     }
 
     enum Auth: Sendable {
         /// Use the session's access token, refreshing it if it has expired.
         case session
-        case bearer(String)
         case none
     }
 
@@ -97,6 +99,8 @@ public final class XRPCClient: Sendable {
         let isQuery = body == nil
         var refreshed = false
         var retriedNonce = false
+        var renewedCredential = false
+        var refreshedKEM = false
         var attempt = 0
 
         while true {
@@ -108,16 +112,24 @@ public final class XRPCClient: Sendable {
                 request.setValue(contentType, forHTTPHeaderField: "Content-Type")
             }
             var token: String?
+            var mac: SpaceMAC.Request?
             switch auth {
             case .session:
-                if let session {
+                if let credentials {
+                    let audience = (params["repo"] ?? nil) ?? credentials.authority
+                    let headers = try await credentials.headers(audience: audience, renew: false)
+                    for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
+                    if SpaceCredentials.committing.contains(method), let repo = params["repo"] ?? nil {
+                        // A fresh secret for every request, retries and pages included.
+                        mac = try SpaceMAC.request(kemKey: try await credentials.kemKey(of: repo))
+                        request.setValue(mac!.acceptSignature, forHTTPHeaderField: "Accept-Signature")
+                    }
+                } else if let session {
                     let authorization = try await session.authorization(
                         method: request.httpMethod ?? "GET", url: request.url!)
                     for (name, value) in authorization.headers { request.setValue(value, forHTTPHeaderField: name) }
                     token = authorization.token
                 }
-            case .bearer(let value):
-                request.setValue("Bearer \(value)", forHTTPHeaderField: "Authorization")
             case .none: break
             }
 
@@ -132,10 +144,30 @@ public final class XRPCClient: Sendable {
                 continue
             }
             let newNonce = await session?.observe(response, for: request.url!) ?? false
-            if (200..<300).contains(response.statusCode) { return data }
+            if (200..<300).contains(response.statusCode) {
+                if let mac, let credentials, let repo = params["repo"] ?? nil {
+                    do {
+                        try Self.verifyMAC(data, response: response, request: mac, repo: repo, space: credentials.space)
+                    } catch let error as SpaceAuthError where !refreshedKEM {
+                        // Its host's KEM key may have changed (a migration): look it up again, once.
+                        refreshedKEM = true
+                        _ = try await credentials.kemKey(of: repo, refresh: true)
+                        _ = error
+                        continue
+                    }
+                }
+                return data
+            }
 
             let error = XRPCError(method: method, status: response.statusCode, body: data)
             let challenge = response.header("WWW-Authenticate") ?? ""
+            if case .session = auth, let credentials, !renewedCredential, SpaceCredentials.isCredentialRefused(error) {
+                // Expired or revoked: one new credential (which fails with the host's reason if
+                // access is gone), then the request again.
+                renewedCredential = true
+                _ = try await credentials.headers(audience: credentials.authority, renew: true)
+                continue
+            }
             if case .session = auth, let session, let token {
                 // OAuth: the PDS wants the proof signed with a fresh nonce it just sent.
                 if response.statusCode == 401, challenge.contains("use_dpop_nonce") || error.error == "use_dpop_nonce",
@@ -165,6 +197,18 @@ public final class XRPCClient: Sendable {
             }
             throw error
         }
+    }
+
+    /// Checks the MAC on a response that carries a commit (`SpaceMAC`). A response without a
+    /// commit (a page of the change feed short of its head) has nothing to check.
+    private static func verifyMAC(
+        _ data: Data, response: HTTPURLResponse, request: SpaceMAC.Request, repo: String, space: String
+    )
+        throws
+    {
+        struct Output: Decodable { var commit: RepoCommit? }
+        guard let commit = (try? JSONDecoder().decode(Output.self, from: data))?.commit else { return }
+        try SpaceMAC.verify(commit, headers: { response.header($0) }, request: request, repo: repo, space: space)
     }
 
     private func decode<Output: Decodable>(_ data: Data, from method: String) throws -> Output {

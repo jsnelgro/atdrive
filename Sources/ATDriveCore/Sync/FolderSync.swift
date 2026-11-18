@@ -26,8 +26,8 @@ import Foundation
 /// Not thread-safe: use it from one task.
 public final class FolderSync {
     public let root: String
-    /// Unlocked: it has the drive's keys.
-    public private(set) var drive: Drive
+    /// Unlocked: it has the drive's keys. With the spaces mounted in it.
+    public private(set) var drive: JoinedDrive
     /// Files changed more recently than this are left for the next pass (still being written).
     public let settle: TimeInterval
     /// How often history is pruned.
@@ -40,7 +40,7 @@ public final class FolderSync {
     private var state: SyncState
     private var lockDescriptor: Int32
     /// The drive as last fetched.
-    private var remote: DriveSnapshot?
+    private var remote: JoinedSnapshot?
     /// Whether this process wrote to the drive since `remote` was fetched: it's brought up to
     /// date before it's trusted again.
     private var remoteIsStale = false
@@ -65,7 +65,7 @@ public final class FolderSync {
     /// Opens a folder for syncing with the drive, creating it if needed. Throws if it's synced
     /// with another account's drive or another `atdrive sync` is already syncing it.
     public init(
-        folder url: URL, drive: Drive, settle: TimeInterval = 2,
+        folder url: URL, drive: JoinedDrive, settle: TimeInterval = 2,
         log: @escaping @Sendable (SyncEvent) -> Void = { _ in }
     ) throws {
         let path = url.standardizedFileURL.path
@@ -99,14 +99,23 @@ public final class FolderSync {
         }
         // A head start for the first pass, which still brings it up to date before using it:
         // it may predate this folder's last writes.
-        remote = folder.loadSnapshot(drive: drive)
+        remote = folder.loadSnapshot(drive: drive.home).map { JoinedSnapshot(home: $0) }
         remoteIsStale = true
+    }
+
+    /// A folder synced with a drive that mounts nothing of other people's (their shares are held).
+    public convenience init(
+        folder url: URL, drive: Drive, settle: TimeInterval = 2, log: @escaping @Sendable (SyncEvent) -> Void = { _ in }
+    ) throws {
+        try self.init(folder: url, drive: JoinedDrive(home: drive, access: nil), settle: settle, log: log)
     }
 
     deinit { close(lockDescriptor) }
 
     /// Switches to a new session for the same account (after signing in again).
-    public func use(_ drive: Drive) throws {
+    public func use(_ drive: Drive) throws { try use(JoinedDrive(home: drive, access: nil)) }
+
+    public func use(_ drive: JoinedDrive) throws {
         guard drive.owner == state.owner, drive.space == state.space else {
             throw SyncError.otherAccount(folder: root, owner: state.owner)
         }
@@ -136,7 +145,7 @@ public final class FolderSync {
         if let problem = drive.accessProblem,
             problem == .encryptionRemoved || problem == .settingsRolledBack
                 || (drive.mode == .encrypted && drive.keyring == nil)
-                || (remote?.settings == nil && remote?.repo.cid(Lexicon.settings, Lexicon.settingsKey) != nil)
+                || (remote?.settings == nil && remote?.home.repo.cid(Lexicon.settings, Lexicon.settingsKey) != nil)
         {
             throw problem
         }
@@ -159,8 +168,9 @@ public final class FolderSync {
             throw DriveAccessError.noDrive
         }
         let snapshot = remote!
-        let view = RemoteView(snapshot.tree, base: base)
+        let view = RemoteView(snapshot.tree, base: base, held: snapshot.held)
         reportUnknown(view, base: base)
+        reportMounts(snapshot)
         let plan = SyncPlan(base: base.entries, local: local, remote: view.entries, unknown: view.unknown)
         let run = SyncRun(
             plan: plan, base: base, local: local, remote: view, root: root, folder: folder, drive: drive,
@@ -191,7 +201,7 @@ public final class FolderSync {
         if updated.listedAt != remote?.listedAt
             || (updated.revision != saved?.revision && now.timeIntervalSince(saved?.at ?? .distantPast) >= 60)
         {
-            folder.saveSnapshot(updated)
+            folder.saveSnapshot(updated.home)
             saved = (now, updated.revision)
         }
         remote = updated
@@ -225,6 +235,23 @@ public final class FolderSync {
             if try await drive.prune(remote!, now: now) > 0 { remoteIsStale = true }
         } catch {
             report(SyncEvent(.skipped, "/", "couldn't prune the drive's history (\(error)); trying again tomorrow"))
+        }
+    }
+
+    /// Mounts that can't be read, once each: what was synced from them stays as it is.
+    private func reportMounts(_ snapshot: JoinedSnapshot) {
+        for (id, state) in snapshot.mounts.sorted(by: { $0.key < $1.key }) {
+            guard let problem = state.problem, let node = snapshot.tree.nodes[id] ?? snapshot.home.tree.nodes[id]
+            else { continue }
+            let path = snapshot.tree.path(of: node).description
+            if problem.isDeletion {
+                report(
+                    SyncEvent(.skipped, path, "its owner deleted this shared folder, so its files are gone here too"))
+            } else {
+                report(
+                    SyncEvent(
+                        .skipped, path, "can't read this shared folder (\(problem)); its files here stay as they are"))
+            }
         }
     }
 
@@ -299,7 +326,7 @@ final class SyncRun {
     let remote: RemoteView
     let root: String
     let folder: StateFolder
-    let drive: Drive
+    let drive: JoinedDrive
     let log: (SyncEvent) -> Void
 
     /// Merged ID → local ID, growing as things are created here.
@@ -325,15 +352,15 @@ final class SyncRun {
     private var counter = 0
     private(set) var wroteRemote = false
     private(set) var changes = 0
-    /// The drive as fetched, for `known`.
-    private let snapshot: DriveSnapshot
+    /// The drive as fetched, for `known`, and which mounts are read-only.
+    private let snapshot: JoinedSnapshot
     /// Chunks the drive has, so uploads skip them: from the drive as fetched, plus what this
     /// pass uploaded. Worked out on the first upload.
     private lazy var known = snapshot.chunkCIDs
 
     init(
         plan: SyncPlan, base: SyncBase, local: LocalView, remote: RemoteView, root: String, folder: StateFolder,
-        drive: Drive, snapshot: DriveSnapshot, log: @escaping (SyncEvent) -> Void
+        drive: JoinedDrive, snapshot: JoinedSnapshot, log: @escaping (SyncEvent) -> Void
     ) {
         self.plan = plan
         self.base = base
@@ -531,9 +558,23 @@ final class SyncRun {
 
     // MARK: 2. The drive: new things, edits, moves, then deletions
 
+    /// Who shared the read-only folder a node (or new child of `parent`) is in, if it's in one.
+    private func readOnlyOwner(of id: String?) -> String? {
+        guard let id else { return nil }
+        let mount = NodeID.split(id).mount ?? (snapshot.mounts[id] != nil ? id : nil)
+        guard let mount, let state = snapshot.mounts[mount], state.readOnly else { return nil }
+        return state.owner
+    }
+
     func updateDrive() async throws {
         for id in order where pending[id]!.contains(.remote) && !blocked.contains(id) {
             let entry = plan.merged[id]!
+            let target = entry.parent.map { created[$0] ?? $0 }
+            if let owner = readOnlyOwner(of: target) ?? readOnlyOwner(of: nodes[id] != nil ? id : nil) {
+                // Shared with this account, read-only: the change stays here, never uploaded.
+                block(id, "read-only, shared by \(owner)")
+                continue
+            }
             var parent: String? = nil
             if let parentID = entry.parent {
                 let onDrive = remote.entries[parentID] != nil || plan.held.contains(parentID)
@@ -583,6 +624,18 @@ final class SyncRun {
         // Deleted here: delete on the drive, along with anything ignored inside deleted folders.
         // A folder that still holds something kept (whose move was skipped) waits for next time.
         var doomed = Set(remote.entries.keys.filter { plan.merged[$0] == nil })
+        for id in doomed where snapshot.mounts[id] == nil {
+            guard let owner = readOnlyOwner(of: id) else { continue }
+            // Deleted here from a read-only share: it stays on the drive.
+            doomed.remove(id)
+            blocked.insert(id)
+            if remote.entries[id]?.parent.map(doomed.contains) != true, let node = nodes[id] {
+                log(
+                    SyncEvent(
+                        .skipped, remote.tree.path(of: node).description,
+                        "read-only, shared by \(owner): not deleted from the drive"))
+            }
+        }
         var holding = Set(plan.merged.keys.compactMap { nodes[created[$0] ?? $0]?.record.parent })
         while let folder = holding.first(where: doomed.contains) {
             doomed.remove(folder)

@@ -117,7 +117,7 @@ struct RemoveDevice: AsyncParsableCommand {
               - It keeps what it could already read: everything written before now, and any
                 copies it has. Removing it can't take those back.
               - It can still sign in to your account, and so write to the drive, until you revoke
-                its session in your account's settings (or delete its app password). Until every
+                its session in your account's settings. Until every
                 other device has seen the removal, what it writes there may still be read.
             """)
         guard Prompt.confirm("Remove “\(target.name)”?") else { return }
@@ -138,6 +138,11 @@ struct RemoveDevice: AsyncParsableCommand {
         print(
             "✓ Removed “\(target.name)”. The drive has a new key, held by \(left) device\(left == 1 ? "" : "s") "
                 + "and the recovery key.")
+        // It had the sharing key too: a new one, so what's shared with you from now on is wrapped
+        // for a key it never had. People who share with you see it change, and check it.
+        if (try? await context.joined.rotateSharingKey()) != nil {
+            print("✓ Your sharing key is new too. People who share encrypted files with you will see it change.")
+        }
     }
 }
 

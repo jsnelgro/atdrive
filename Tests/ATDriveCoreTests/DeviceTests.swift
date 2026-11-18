@@ -300,6 +300,21 @@ import Testing
         #expect(try store.load() == trusting)
     }
 
+    /// A device saved before trust was kept per drive still loads, with its ID and key, and no
+    /// trust: an encrypted drive asks to approve it again.
+    @Test func aDeviceFromBeforePerDriveTrustLoads() throws {
+        let made = DeviceIdentity(name: "laptop")
+        var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(made)) as? [String: Any])
+        json["trust"] = ["knownKeys": ["ab"], "settingsGeneration": 3]
+        let loaded = try JSONDecoder().decode(DeviceIdentity.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(loaded.id == made.id && loaded.publicKeyBytes == made.publicKeyBytes)
+        #expect(loaded.trust.isEmpty)
+
+        json["trust"] = ["at://x": 3]  // anything else that doesn't fit is still an error
+        let broken = try JSONSerialization.data(withJSONObject: json)
+        #expect(throws: DecodingError.self) { try JSONDecoder().decode(DeviceIdentity.self, from: broken) }
+    }
+
     @Test func trustDecisions() throws {
         let me = DeviceIdentity(name: "me")
         let other = Curve25519.KeyAgreement.PrivateKey()

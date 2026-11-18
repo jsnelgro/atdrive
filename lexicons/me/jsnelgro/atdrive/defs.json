@@ -56,6 +56,30 @@
           "description": "A random 12-byte nonce, the ciphertext, then the 16-byte tag."
         }
       }
+    },
+    "mount": {
+      "type": "object",
+      "required": [
+        "space"
+      ],
+      "description": "Where a space appears in a drive. Never holds a keyring unless the record it's in is sealed.",
+      "properties": {
+        "space": {
+          "type": "string",
+          "description": "The space's address: at://<authority>/space/me.jsnelgro.atdrive.drive/<key>."
+        },
+        "keyring": {
+          "type": "array",
+          "items": {
+            "type": "bytes"
+          },
+          "description": "An encrypted space the drive's owner shared: its keys, oldest first."
+        },
+        "linkKey": {
+          "type": "bytes",
+          "description": "An encrypted share opened from its link (or, for its owner, whose link is on): the 32-byte link key."
+        }
+      }
     }
   }
 }

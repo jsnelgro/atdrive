@@ -2,8 +2,8 @@ import Foundation
 
 /// Saves the session to `~/.config/atdrive/session.json` (readable only by you).
 ///
-/// The directory can be moved with `ATDRIVE_CONFIG_DIR` or `XDG_CONFIG_HOME`. The password is
-/// never stored, only the tokens the server hands back, which `atdrive logout` revokes.
+/// The directory can be moved with `ATDRIVE_CONFIG_DIR` or `XDG_CONFIG_HOME`. Only the OAuth
+/// tokens the server hands back are stored, which `atdrive logout` revokes.
 public struct SessionStore: Sendable {
     public let directory: URL
 
@@ -25,9 +25,11 @@ public struct SessionStore: Sendable {
 
     public var file: URL { directory.appendingPathComponent("session.json") }
 
+    /// The saved session; `nil` if there's none, or it's from an older version of ATDrive (an
+    /// app-password session, say), which means signing in again.
     public func load() throws -> Session? {
         guard FileManager.default.fileExists(atPath: file.path) else { return nil }
-        return try JSONDecoder().decode(Session.self, from: Data(contentsOf: file))
+        return try? JSONDecoder().decode(Session.self, from: Data(contentsOf: file))
     }
 
     public func save(_ session: Session) throws {
@@ -84,17 +86,29 @@ private func writePrivately(_ value: some Encodable, to file: URL) throws {
         at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-    let temporary = directory.appendingPathComponent(".\(file.lastPathComponent).tmp")
+    // Its own name, so two processes saving at once (the Mac app and its extension share these
+    // files) don't take each other's.
+    let temporary = directory.appendingPathComponent(".\(file.lastPathComponent).\(UUID().uuidString).tmp")
     guard
         FileManager.default.createFile(
             atPath: temporary.path, contents: try encoder.encode(value), attributes: [.posixPermissions: 0o600])
     else { throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: temporary.path]) }
-    try replace(file, with: temporary)
+    do {
+        try replace(file, with: temporary)
+    } catch {
+        try? FileManager.default.removeItem(at: temporary)
+        throw error
+    }
 }
 
 /// Atomically moves `source` over `destination` (POSIX rename semantics).
 func replace(_ destination: URL, with source: URL) throws {
     guard rename(source.path, destination.path) == 0 else {
-        throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: destination.path])
+        throw CocoaError(
+            .fileWriteUnknown,
+            userInfo: [
+                NSFilePathErrorKey: destination.path,
+                NSUnderlyingErrorKey: POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO),
+            ])
     }
 }

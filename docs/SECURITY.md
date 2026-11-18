@@ -135,3 +135,70 @@ Ordered by how much they matter. None is new on this branch unless it says so.
 
 Not checked: the Mac app and extension at run time, anything against a real PDS, side channels,
 and the PDS's own enforcement of space policies.
+
+## Sharing (#42)
+
+Reviewed by the same hands that wrote it, as above: not an independent audit.
+
+| Who | Plain share | Encrypted share |
+|---|---|---|
+| People it isn't shared with | Kept out by the space's policy: the owner's PDS only issues credentials to members (or anyone, with the link on). The space key is 128 random bits, so a plain share's address can't be guessed | Same, and the content is sealed |
+| Whoever runs the owner's PDS | Reads everything, as with a plain drive | Can't read it. Sees the member list, when members read, and the same metadata as for an encrypted drive |
+| Whoever runs a member's PDS | Can read it, through the member's own credentials | Can't, unless the member's drive is plain (their sharing key is readable there): the owner is warned when adding them, and `share ls` marks them |
+| Someone with the link | Reads it | Reads it: the key is in the link's `#fragment`, which never reaches a server, but anyone the link reaches has it |
+| A removed member, or a link turned off | Keeps what they downloaded; the PDS refuses them from then on (credentials are revoked, or expire within minutes) | Same, and what's written afterwards is sealed with a new key they never get |
+
+**What protects an encrypted share's keys**
+
+- A share's keyring is never stored readable: the code refuses to write a mount holding one into
+  a plain drive, and switching a drive's encryption moves its shares back into it rather than
+  carrying a keyring across.
+- Member records are wrapped with HPKE auth mode from the owner's sharing key; a member accepts
+  one only if the sender is the key the owner publishes, and its sealed membership opens. The PDS
+  can't make one, or bring back a removed member's.
+- **The open risk: published sharing keys.** A malicious PDS could publish a key of its own for
+  someone, and receive the keyring wrapped for it. Verification codes (`atdrive share verify`)
+  close it for people who compare codes; for everyone else, ATDrive trusts the first key it sees
+  and warns when one changes (a changed key is refused unless the owner confirms). Medium.
+- Commits read from someone else's space are MAC-checked with the owner's KEM key, so a host that
+  isn't the owner's can't serve a commit that passes. Records themselves carry no MAC in a
+  listing: the LtHash check against the commit covers them.
+
+**Fixed after a second review** (a separate reviewer read the branch for key leaks and data loss):
+
+- The PDS could make an encrypted share's settings read plain, and a device would then write to it
+  in the clear. A mount now remembers that its space was encrypted (and holding a keyring or link
+  key means it was): plain settings there are refused as a downgrade, by owners and link holders.
+- Removing a member rotated the key but dropped the link key, so link holders silently stopped
+  getting new files. Rotation now keeps it, and rewraps for the link.
+- After sharing, turning encryption off failed on old mount versions holding a keyring. History
+  on a plain drive now keeps no keyring.
+- Deleting your own shared folder left it shared, with no command that listed it. It's now
+  unshared first (and stays restorable from the trash).
+- Ending a shared file's sharing deleted the mount before copying the file back. Now it copies
+  first.
+- Adding people after `unshare` failed (the space was `personalspace`). Now it's set back.
+- A mount whose own record can't be read made sync delete the share's local copies; a share never
+  read showed empty in Finder. Both are held now.
+- A member who verified the owner's key now refuses member records from any other key.
+- A credential read whose records don't match the MAC'd commit is held, and a MAC failure looks
+  the owner's KEM key up again once.
+
+**Open findings**
+
+- **Turning encryption off exposes history** (medium, by design of that switch): it publishes the
+  drive's keys, which open its history, including mounts' old versions. Shares of your own are
+  deleted when encryption is switched, so their keys there open nothing; but the link key of
+  someone else's share you had opened is in that history, and their space may still be public.
+
+- **The scope asks for too much until the lexicons are published** (medium): reading spaces of
+  any type from any account (`space:*?authority=*&action=read`), which the consent screen warns
+  about. Publishing them and setting `OAuthLogin.lexiconsPublished` narrows it to ATDrive's spaces.
+- **A plain drive keeps link keys readable** (low, by design): opening an encrypted share's link
+  into a plain drive stores the link key in the mount, where that drive's PDS can read it. The CLI
+  says so.
+- **A deleted share's copies are deleted on recipients' machines** (by design, as the protocol
+  asks): an owner can take back what they shared, including local copies of it.
+- **Nothing here has run against the live PDS,** and the Mac's sharing UI hasn't been tried on a
+  real Mac.
+

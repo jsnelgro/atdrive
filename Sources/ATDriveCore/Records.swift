@@ -1,3 +1,4 @@
+import Crypto
 import Foundation
 
 /// A reference to a blob, as it appears inside a record:
@@ -81,7 +82,9 @@ public struct ChunkRef: Codable, Sendable, Hashable {
 /// history), and it names the latest one (`version`).
 public struct NodeRecord: Codable, Sendable, Equatable {
     public enum Kind: String, Codable, Sendable {
-        case file, folder
+        /// `mount`: where another space (a shared folder) appears in the drive. It holds no
+        /// children of its own here: they're that space's (`mount`).
+        case file, folder, mount
     }
 
     public var name: String
@@ -111,6 +114,8 @@ public struct NodeRecord: Codable, Sendable, Equatable {
     /// The number of the first of those records, when it isn't 1 (see
     /// `VersionRecord.continuationsFrom`).
     public var continuationsFrom: Int?
+    /// Mounts only: the space that appears here.
+    public var mount: MountInfo?
 
     public init(
         name: String, parent: String?, kind: Kind, size: Int? = nil, sha256: String? = nil,
@@ -142,7 +147,9 @@ public struct NodeRecord: Codable, Sendable, Equatable {
 /// keep the blobs alive, and nothing else.
 public struct VersionRecord: Codable, Sendable, Equatable {
     public enum Change: String, Codable, Sendable {
-        case created, edited, moved, deleted, restored
+        /// `shared`: deleted from this space because it moved into a space of its own, to be
+        /// shared (`Sharing.share`). It isn't in the trash: it's still in the drive, in the mount.
+        case created, edited, moved, deleted, restored, shared
     }
 
     /// Record key of the node (file or folder) that changed.
@@ -175,6 +182,8 @@ public struct VersionRecord: Codable, Sendable, Equatable {
     /// (`Drive.convert`) writes the new records after the old ones, then switches the version to
     /// them in one write, so the list is whole at every moment.
     public var continuationsFrom: Int?
+    /// Mounts: the space that appeared there.
+    public var mount: MountInfo?
 
     /// A version recording `state` (`nil` for a delete). `holdsContents` puts the chunk list in
     /// it; otherwise it points to the version that has them, `state.contentsFrom`.
@@ -193,6 +202,7 @@ public struct VersionRecord: Codable, Sendable, Equatable {
         sha256 = state.sha256
         createdAt = state.createdAt
         modifiedAt = state.modifiedAt
+        mount = state.mount
         if state.kind == .file {
             if holdsContents || state.contentsFrom == nil {
                 chunks = state.chunks ?? []
@@ -204,7 +214,7 @@ public struct VersionRecord: Codable, Sendable, Equatable {
         }
     }
 
-    public var isDeletion: Bool { change == .deleted }
+    public var isDeletion: Bool { change == .deleted || change == .shared }
 
     /// The node as this version left it, without `chunks` if they're in another version
     /// (`contentsFrom`). `nil` for a delete.
@@ -215,7 +225,55 @@ public struct VersionRecord: Codable, Sendable, Equatable {
         record.modifiedAt = modifiedAt
         record.continuations = continuations
         record.continuationsFrom = continuationsFrom
+        record.mount = mount
         return record
+    }
+}
+
+/// Where a space appears in a drive: what a mount node holds (`NodeRecord.mount`).
+///
+/// It's how the drive keeps the spaces in it: its owner's shared folders, and other people's
+/// opened from a link. Being a node, a mount can be renamed, moved and deleted like a folder, and
+/// has history. Deleting one never deletes the space.
+public struct MountInfo: Codable, Sendable, Equatable {
+    /// The space's address: `at://<authority>/space/<type>/<key>`.
+    public var space: String
+    /// An encrypted space the drive's owner shared: its keyring (raw keys, oldest first), for
+    /// every one of the owner's devices. Only ever stored sealed, in an encrypted drive: a plain
+    /// drive refuses to write it (see `Drive.stored`).
+    public var keyring: [Bytes]?
+    /// Someone else's encrypted share opened from its link: the link's key, which opens the
+    /// keyring in the share's link record. Readable on a plain drive, as its owner was told.
+    public var linkKey: Bytes?
+    /// Whether the space was encrypted when it was mounted. A space that was can't become plain:
+    /// its settings saying so would be the PDS's doing, and writing there in the clear would leak.
+    public var encrypted: Bool?
+
+    public init(space: String, keyring: Keyring? = nil, linkKey: Data? = nil, encrypted: Bool? = nil) {
+        self.space = space
+        self.keyring = keyring.map { $0.keys.map { Bytes($0.rawRepresentation) } }
+        self.linkKey = linkKey.map(Bytes.init)
+        self.encrypted = encrypted ?? (keyring != nil || linkKey != nil ? true : nil)
+    }
+
+    /// Whether it must be encrypted: it was, or it holds keys for it.
+    var mustBeEncrypted: Bool { encrypted == true || keyring != nil || linkKey != nil }
+
+    /// Its keyring replaced (keeping everything else, the link key included).
+    func with(_ keyring: Keyring) -> MountInfo {
+        var copy = self
+        copy.keyring = keyring.keys.map { Bytes($0.rawRepresentation) }
+        copy.encrypted = true
+        return copy
+    }
+
+    /// The space's owner.
+    public var owner: String { XRPCClient.spaceParts(space)?.authority ?? "" }
+
+    /// The keyring, if it holds one.
+    public var spaceKeyring: Keyring? {
+        guard let keyring, !keyring.isEmpty else { return nil }
+        return try? Keyring(keyring.map { try DriveKey(rawRepresentation: $0.data) })
     }
 }
 
@@ -249,11 +307,24 @@ public struct DriveSettings: Codable, Sendable, Equatable {
     /// older than ones it has read (`DeviceTrust.settingsGeneration`): the PDS can't forge sealed
     /// settings, but it could serve an old copy, say one from while `converting` was on.
     public var generation: Int
+    /// The account's sharing key (raw X25519 private key), home drives only: sealed with the rest
+    /// on an encrypted drive, readable on a plain one (`SharingKeyPair`). Replaced whenever
+    /// encryption is turned on or off.
+    public var sharingKey: Bytes?
+    /// Shares only: the shared file's or folder's name, for those who open it.
+    public var name: String?
+    /// Shares only: it's one file (the space holds just that file), shown as the file rather than
+    /// a folder (`JoinedSnapshot.join`).
+    public var file: Bool
 
     public init(
         retentionDays: Int = defaultRetentionDays, driveID: String? = DriveSettings.newDriveID(),
-        converting: Bool = false, retiredKeys: [Bytes] = [], generation: Int = 0
+        converting: Bool = false, retiredKeys: [Bytes] = [], generation: Int = 0, sharingKey: Bytes? = nil,
+        name: String? = nil, file: Bool = false
     ) {
+        self.sharingKey = sharingKey
+        self.name = name
+        self.file = file
         self.retentionDays = retentionDays
         self.driveID = driveID
         self.generation = generation
@@ -276,7 +347,7 @@ public struct DriveSettings: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case retentionDays, driveID, converting, retiredKeys, generation
+        case retentionDays, driveID, converting, retiredKeys, generation, sharingKey, name, file
     }
 
     public init(from decoder: Decoder) throws {
@@ -286,6 +357,9 @@ public struct DriveSettings: Codable, Sendable, Equatable {
         converting = try container.decodeIfPresent(Bool.self, forKey: .converting) ?? false
         retiredKeys = try container.decodeIfPresent([Bytes].self, forKey: .retiredKeys) ?? []
         generation = try container.decodeIfPresent(Int.self, forKey: .generation) ?? 0
+        sharingKey = try container.decodeIfPresent(Bytes.self, forKey: .sharingKey)
+        name = try container.decodeIfPresent(String.self, forKey: .name)
+        file = try container.decodeIfPresent(Bool.self, forKey: .file) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -295,6 +369,16 @@ public struct DriveSettings: Codable, Sendable, Equatable {
         if converting { try container.encode(converting, forKey: .converting) }
         if !retiredKeys.isEmpty { try container.encode(retiredKeys, forKey: .retiredKeys) }
         try container.encode(generation, forKey: .generation)
+        try container.encodeIfPresent(sharingKey, forKey: .sharingKey)
+        try container.encodeIfPresent(name, forKey: .name)
+        if file { try container.encode(file, forKey: .file) }
+    }
+
+    /// The sharing key pair, if there is one. `encrypted`: whether these settings are stored sealed.
+    public func sharingKeyPair(encrypted: Bool) -> SharingKeyPair? {
+        guard let sharingKey, let key = try? Curve25519.KeyAgreement.PrivateKey(rawRepresentation: sharingKey.data)
+        else { return nil }
+        return SharingKeyPair(privateKey: key, protected: encrypted)
     }
 }
 

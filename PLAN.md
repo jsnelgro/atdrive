@@ -62,8 +62,8 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
   - **Not yet exercised:** any of it against the live alpha PDS, and the Mac app's new screens on a
     real Mac.
   - **Follow-ups:**
-    - **Live PDS:** run `LiveTests` and `LiveChangeFeedTests` (they need `ATDRIVE_LIVE_HANDLE`,
-      `ATDRIVE_LIVE_PASSWORD`, and `ATDRIVE_LIVE_RECOVERY_KEY` for an account that has a drive).
+    - **Live PDS:** run `LiveTests` and `LiveChangeFeedTests` (they need `ATDRIVE_LIVE_CONFIG`, a
+      folder `atdrive login` saved a session to; spaces refuse app passwords).
       Unverified there: `listRepoOps`, `listRecords` across collections, `createRecord`,
       `applyWrites` results, and the OAuth scope with the new collections.
     - **Mac:**
@@ -77,9 +77,20 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
       out of "the drive's settings can't be believed" other than the CLI.
     - **Encryption:** see *Step 3, open problems*, and `docs/SECURITY.md` for the review. A
       removed device keeps its session, and `.atdrive/drive.json` holds decrypted metadata.
+- [x] **Phase 5, sharing** (see *Sharing* below): share a file or folder with specific people, or
+  with anyone who has its link, read-only, from Finder and the CLI, on encrypted and unencrypted
+  drives alike. Tracked in #26; built in #42.
+  - **Tested** with unit tests against `FakePDS`, which now hosts several accounts and checks
+    credentials, request signatures and MACs as the protocol has them. The spaces crypto is
+    checked against the reference's vectors. macOS CI builds the app.
+  - **Not yet exercised:** against the live alpha PDS (two accounts: `ATDRIVE_LIVE_CONFIG` and
+    `_B`), and the Finder actions, badges, windows and `atdrive://` links on a real Mac.
+  - **Follow-ups:** publish the lexicons (`atdrive lexicons publish`, then a DNS TXT record at
+    `_lexicon.atdrive.jsnelgro.me`) and set `OAuthLogin.lexiconsPublished`, which narrows the
+    scope to ATDrive's spaces.
 - [ ] **Later:**
-  - Publish the lexicons and narrow the OAuth scope (see below).
-  - Shared folders (`memberspace`).
+  - Shared folders others can edit (#25).
+  - `x-callback-url` actions, for Shortcuts and other apps (#31).
 
 ## Folder sync
 
@@ -455,15 +466,15 @@ Checked against the sharing plan (#26, #27) and the web milestone while reworkin
   replayed from the home drive into a shared space or back, even if they ever share a key.
 - **Device trust is kept per space,** not one per device.
 - **Each space has its own mode,** so an encrypted drive can hold a plain share. Not the other
-  way round: a plain drive's mount would hold the share's keyring readable (see the sharing
-  plan, #27).
+  way round: a plain drive's mount would hold the share's keyring readable (see *Sharing →
+  Encrypted and plain shares*).
 - **Memberships are one sealed record each.** Member records for shares (#22) should take the
   same shape: one record per member, sealed with the share's current key, re-sealed on rotation.
 - **Turning a share's encryption off** publishes that share's keys, not the drive's.
 - **Switching a drive's encryption, either way, ends its sharing.** Turning it off publishes the
   home keys, and with them what's sealed in the home drive: the keyrings of encrypted shares (in
   mounts) and the account's sharing key. Rather than handle each case, a switch stops all
-  sharing first, and the user shares again afterwards (the sharing plan, #27).
+  sharing first, and the user shares again afterwards (*Sharing → Encrypted and plain shares*).
 - **A web client** needs no cryptography for a plain drive, which is the default, and only
   WebCrypto for an encrypted one. See `docs/FORMAT.md`, *A web client*.
 - **Not done here:** node IDs as (space, rkey), mounts, credentials for other accounts' spaces.
@@ -547,7 +558,166 @@ history itself is an open question.
   conflicted copies rely on it.
 - **Finder:** can it show history (File Provider has no obvious API for server-side versions)?
 
-## Protocol notes (alpha, as of 2026-11-05)
+## Sharing
+
+Share a file or folder with specific people, or with anyone who has its link. Read-only;
+editing together comes later (#25). Works on encrypted and plain drives. Built in #42; not
+backward compatible.
+
+- Share from Finder (right-click) and from the CLI.
+- What's shared with you shows up in your own drive: in Finder, and in `atdrive sync` folders.
+- **Links open ATDrive directly** (`atdrive://`). Nothing hosted.
+- An encrypted share stays unreadable to whoever runs the PDS, even behind a public link.
+
+### What shapes the design
+
+Checked against the proposal and the reference branch on 2026-11-17:
+
+- **Access is set per space, not per record,** so a shared folder is a space of its own.
+- **The `memberspace` policy:** a member list (`putMembers`, `removeMembers`, `listMembers`),
+  `publicRead`, and `allowedApps`. `updateSpace` replaces the policy; changing its type drops the
+  member list (which is all `unshare` needs). These take `manage=update`; `deleteSpace` takes
+  `manage=delete`.
+- **Reading someone else's space** (0016, "Credential flow"):
+  1. Your own PDS signs a delegation token (`getDelegationToken`). It takes a `read` grant for the
+     space, under any authority (`authority=*`). Skipped for a public space.
+  2. The owner's PDS trades it for a credential (`authorizeSpaceSync`), bound to a P-256 key made
+     fresh for each credential. Credentials last about 10 minutes.
+  3. Each read carries `Authorization: Atproto-Space-Credential <credential>` and
+     `Atproto-Space-Audience` (the repo's DID), signed per RFC 9421 (`ecdsa-p256-sha256`, raw
+     `r || s`, tag `atproto-space-credential`).
+  4. **Commits come with a MAC:** the reader derives a fresh secret from the owner's
+     `#atproto_kem` key (HPKE secret export, P-256) and checks an HMAC over
+     `Atproto-Space-Commit`, so a host that isn't the owner's can't serve a commit that passes.
+  - Non-members get `SpaceNotFound`; a deleted space answers `SpaceDeleted` (readers should then
+    delete their copies, and ATDrive does).
+- **Blobs belong to the account** and are linked to records per space; the reference PDS accepts
+  a record in a new space referencing a blob already uploaded, and garbage-collects across all
+  spaces. So sharing uploads nothing.
+- **There's no "shared with me" list:** a link has to reach the recipient some other way.
+- **Spaces refuse app passwords** (since 2026-11-16): OAuth only.
+
+### Shared folders are drives
+
+- **A shared folder is a space of the drive's type,** `at://<owner>/space/me.jsnelgro.atdrive.drive/<key>`,
+  under `memberspace`, its key 128 random bits in base32 (a plain share's public link has only its
+  address to protect it). It's a drive in every way: nodes, versions, chunks, and `settings`
+  (with its mode, and its `name`, for those who open it).
+- **A mount** (a node of kind `mount`) marks where a space appears in a drive. It holds the
+  space's address and, for an encrypted space you own, its keyring (and its link key, if its
+  link is on); for someone else's encrypted share opened by link, the link key. A plain drive
+  refuses to write a keyring into one.
+- **A shared file is the file.** Its space holds just that file, and its settings say `file`.
+  The joined tree shows the mount as the file (kind `file`, still with its `mount`, under the
+  mount's ID and name), not a folder holding it: for its owner, everyone it's shared with, sync
+  and Finder alike. Its contents (reading, new versions) go to the file in the space; renaming,
+  moving and deleting go to the mount.
+- **`JoinedDrive`** joins the home drive and its mounts into one tree. A node's ID is its record
+  key at home, `<mount>/<rkey>` in a mounted space: strings, as before, so sync state and the
+  Mac's identifiers didn't change shape. Each space follows its own change feed; the Mac's sync
+  anchor holds every space's revision.
+- **A move between spaces** is a copy, then a delete (a new ID). Chunks are reused between
+  spaces of the same mode, and transferred again otherwise.
+- **A mount that can't be read is held:** it keeps its last contents, or, never read, shows as an
+  unreadable record, so neither sync nor Finder takes what came from it for deleted. A share
+  its owner deleted (or unshared) is the exception: it disappears, and its copies go.
+- **Other people's shares are read-only:** Finder gives their items no write capabilities, and
+  in `atdrive sync` local changes inside one are held and reported, never uploaded or deleted.
+- **No nesting:** nothing inside a mount can be shared, and a mount can't go in another.
+
+### Sharing a folder
+
+`atdrive share <path>` (or `JoinedDrive.share`):
+1. Create the space, in the share's mode, and **write the mount first**, as `name (sharing…)`,
+   holding an encrypted share's keyring (sealed in the drive): nothing is ever lost if it's
+   interrupted.
+2. Copy the folder's contents (or the file) into it, keeping record keys, each with one
+   `created` version. Chunks and their IDs are reused; nothing is uploaded, except for `--plain`
+   from an encrypted drive.
+3. Delete the originals with a `shared` version (the trash skips it), and rename the mount.
+
+- **History stays behind.** Members see the share from the moment of sharing.
+- **Running it again** finishes an interrupted share: the mount is found by name, and what's
+  been copied by record key.
+- **`unshare`:** first back to `personalspace` (dropping members and `publicRead`) with member
+  and link records deleted, so access ends at once; then the share moves back into the drive,
+  where it is, an ordinary file or folder again, and its space is deleted. Those who had it see
+  it disappear. Run again, it finishes an interrupted one. Sharing it again makes a new space
+  (and link).
+
+### Encrypted and plain shares
+
+- A share takes its drive's mode; `--plain` makes a plain share from an encrypted drive. A plain
+  drive makes plain shares only.
+- **Switching the drive's encryption ends its sharing:** each share moves back into the drive
+  where it was (a shared file comes back as the file) and its space is deleted; mounts of other
+  people's shares are removed; the sharing key is replaced. The CLI lists what stops being
+  shared, and with whom, first. Moving back, rather than converting each share, means the
+  drive's own conversion covers everything, and no keyring is ever left readable.
+- Anyone can open either kind. An encrypted share sent to someone whose drive is plain warns the
+  owner (their sharing key is readable on their PDS) but isn't blocked.
+
+### Keys for encrypted shares
+
+- **A share's keyring** reaches the owner's devices through the mount (sealed in the drive),
+  members through their member record, and link holders through the link record.
+- **Each account has a sharing key** (X25519), kept in its home drive's settings (sealed on an
+  encrypted drive, readable on a plain one) and published as `me.jsnelgro.atdrive.shareKey`
+  (`self`), with `protected`. Signing in publishes it; switching encryption replaces it; removing
+  a device rotates it.
+- **Member records** (`me.jsnelgro.atdrive.member`, key = their DID): the keyring wrapped for their
+  sharing key with HPKE auth mode from the owner's, accepted only if the sender is the owner's
+  published key; and their membership sealed with the share's key, so the PDS can't make one.
+- **The link record** (`me.jsnelgro.atdrive.link`, `self`): the keyring sealed with a key derived
+  from a random 256-bit link key, which travels in the link's `#fragment`.
+- **Removing a member, or turning the link off,** rotates the key and wraps it again for those who
+  stay. What they already had stays theirs.
+- **Verification codes** (#30): 16 digits from both sharing keys, compared out of band. Verified
+  keys are kept in the home drive (`me.jsnelgro.atdrive.contact`). A key that changed since it was
+  verified or last wrapped for is refused unless the owner confirms.
+
+### Links
+
+- **Format:** `atdrive://open?at=<the space's address, URL-encoded>`, plus `#<link key>` for an
+  encrypted share's public link. The CLI also takes the bare `at://` address. A link works for
+  members and, with the link on, for anyone.
+- **Opening one:** the Mac app (`CFBundleURLTypes`: a window with Add to My Drive and
+  Download…), `atdrive open <link>` / `atdrive shared add`, or `atdrive get <link>` to download
+  once (signed out for a public link). `atdrive sync --install` makes ATDrive the
+  `x-scheme-handler/atdrive` on a Linux desktop.
+- **A link to another app's space** says so; the apps view (#28) will open those.
+- **Clickability:** many email and chat apps don't make `atdrive://` links clickable. If that's a
+  real problem, the smallest fix is one static redirect page (the key stays in the fragment).
+
+### Finder
+
+- **Right-click actions** (File Provider custom actions, by each item's `userInfo.sharing`):
+  Share…, Copy Link, Stop Sharing. The extension can't show UI, so it hands each to the menu-bar
+  app through the App Group container and a Darwin notification (`SharingRequest`).
+- **Badges:** `Sharing` decorations on your shares and on those shared with you.
+- **The Share window** (menu-bar app): people (with verified / unencrypted-drive / changed-key
+  notes), adding and removing them, and the link.
+
+### Lexicons and scope
+
+- **Records:** `mount` as a node and version kind; `shared` as a change; `sharingKey` and `name`
+  in `settings`; `member`, `link` and `contact` in the drive space type's collections;
+  `shareKey` in the public repo.
+- **Scope:** your drive spaces (read, write ATDrive's collections, `manage=create/update/delete`),
+  other accounts' drive spaces read-only (`authority=*&action=read`), and `repo:` the share key.
+  Naming the space type needs its lexicon published (the PDS resolves it for the consent
+  screen), so until then the scope uses `space:*`, which the consent screen warns about.
+  `atdrive lexicons publish` writes the schema records; then the DNS TXT record, then
+  `OAuthLogin.lexiconsPublished`.
+
+### Later
+
+- **Editing together (#25):** several writers' repos in one space; the tree is the union over
+  `listWriters`, and `ConflictRules` settles races between people as between devices.
+- **`x-callback-url` actions (#31).**
+- **Write notifications** (`authorizeSpaceSync`'s `notify`) need an HTTPS endpoint: ATDrive polls.
+
+## Protocol notes (alpha, as of 2026-11-17)
 
 - **Reference implementation:** `bluesky-social/atproto`, branch `permissioned-data-alpha`.
   Bluesky updates the hosted PDS on Thursdays.
@@ -557,17 +727,21 @@ history itself is an open question.
   - Blobs: the hosted alpha advertises a 300 MB limit, while the PDS default is 5 MB.
 - **Auth and privacy:**
   - **OAuth is how you sign in.** It's implemented here: PAR + PKCE + DPoP, a loopback client
-    ID, and a redirect to 127.0.0.1. App-password sessions still work, for scripts.
+    ID, and a redirect to 127.0.0.1. Spaces refuse app passwords.
   - **Naming a space type in a scope** (`space:me.jsnelgro.atdrive.drive?…`) makes the PDS
     resolve that type's lexicon for the consent screen. If the lexicon can't be resolved, the
     sign-in fails with `invalid_scope: Unable to retrieve space declarations`.
-  - **So ATDrive asks for `space:*`** (reads of your own spaces) until its lexicons are published:
-    1. Add a DNS TXT record `_lexicon.atdrive.jsnelgro.me` → `did=<publishing account DID>`.
-    2. Publish `com.atproto.lexicon.schema` records for `me.jsnelgro.atdrive.drive` and `.node`.
-    3. Switch `OAuthLogin.scope` to `narrowScope`.
+  - **So ATDrive asks for `space:*`** until its lexicons are published:
+    1. `atdrive lexicons publish <handle>` writes the `com.atproto.lexicon.schema` records.
+    2. Add the DNS TXT record it prints: `_lexicon.atdrive.jsnelgro.me` → `did=<that account's DID>`.
+    3. Set `OAuthLogin.lexiconsPublished`, which switches to `narrowScope`.
   - **Public OAuth clients get two-week sessions** on Bluesky's PDS, so you sign in again after
     that.
   - Spaces are **not** end-to-end encrypted.
 - **No compare-and-swap** on space writes, so conflict detection has to happen on the client.
   Creates do fail if the record exists (`RecordAlreadyExists`).
-- **Change feed:** `listRepoOps(since:)` lists writes after a revision. See *Storage v2*.
+- **Change feed:** `listRepoOps(since:)` lists writes after a revision. Since 2026-11-12 every
+  page carries the current commit (with its MAC), and the feed ends at the page with no cursor.
+  See *Storage v2*.
+- **Checked against the 2026-11-12 migration guide** (`alpha-migrations/prompt-11-12-26.md`):
+  that paging change was the only one ATDrive needed.
