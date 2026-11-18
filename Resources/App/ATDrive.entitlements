@@ -12,6 +12,14 @@
 	<!-- Download… from a link: saving into the folder the user picks. -->
 	<key>com.apple.security.files.user-selected.read-write</key>
 	<true/>
+	<!-- Settings: ~/.config/atdrive/config.toml, the same file the atdrive CLI reads. "/.config"
+	     (no trailing slash: that path alone, not what's in it) lets it create ~/.config if there's
+	     none. Temporary exceptions are fine outside the Mac App Store. -->
+	<key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
+	<array>
+		<string>/.config</string>
+		<string>/.config/atdrive/</string>
+	</array>
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>__APP_GROUP__</string>

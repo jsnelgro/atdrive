@@ -1,6 +1,9 @@
 #!/bin/bash
 # Builds build/ATDrive.app (macOS only): the menu-bar app with the File Provider extension inside
-# it at Contents/PlugIns/ATDriveFileProvider.appex, both signed.
+# it at Contents/PlugIns/ATDriveFileProvider.appex and the atdrive command at
+# Contents/Helpers/atdrive, all signed. The command is signed with the app's App Group, so it
+# shares the app's session and this Mac's key (ATDrive ▸ Install Command-Line Tool… puts it on the
+# PATH).
 #
 # A macOS app is just a folder. SwiftPM builds the two executables; this script assembles the
 # folders around them, fills in Info.plists and entitlements, and signs the extension, then the app.
@@ -47,11 +50,14 @@ APP_GROUP="${TEAM_ID:-ADHOC}.$BUNDLE_ID"
 
 swift build -c "$CONFIG" --product ATDriveApp
 swift build -c "$CONFIG" --product ATDriveFileProvider
+swift build -c "$CONFIG" --product atdrive
 BIN=$(swift build -c "$CONFIG" --show-bin-path)
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$EXT/Contents/MacOS" "$EXT/Contents/Frameworks"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources" "$EXT/Contents/MacOS" \
+  "$EXT/Contents/Frameworks"
 cp "$BIN/ATDriveApp" "$APP/Contents/MacOS/ATDrive"
+cp "$BIN/atdrive" "$APP/Contents/Helpers/atdrive"
 
 # The extension: its code is libATDriveFileProvider.dylib. Its executable has no code and no
 # `main`; the entry point is Foundation's NSExtensionMain (what Xcode does for app extensions),
@@ -69,6 +75,7 @@ render Resources/App/Info.plist "$APP/Contents/Info.plist"
 render Resources/FileProvider/Info.plist "$EXT/Contents/Info.plist"
 render Resources/App/ATDrive.entitlements build/ATDrive.entitlements
 render Resources/FileProvider/ATDriveFileProvider.entitlements build/ATDriveFileProvider.entitlements
+render Resources/CLI/atdrive.entitlements build/atdrive.entitlements
 [[ -f Resources/AppIcon.icns ]] && cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 [[ -n "${APP_PROFILE:-}" ]] && cp "$APP_PROFILE" "$APP/Contents/embedded.provisionprofile"
 [[ -n "${EXTENSION_PROFILE:-}" ]] && cp "$EXTENSION_PROFILE" "$EXT/Contents/embedded.provisionprofile"
@@ -84,10 +91,12 @@ done
 nm -u "$EXT/Contents/MacOS/ATDriveFileProvider" | grep -q '_NSExtensionMain' \
   || { echo "error: the extension binary doesn't use NSExtensionMain." >&2; exit 1; }
 
-# Inside out: the extension's library, the extension, then the app that contains them.
+# Inside out: the extension's library, the extension and the command, then the app that
+# contains them.
 SIGN=(codesign --force --sign "$CODESIGN_IDENTITY" --options runtime --timestamp=none)
 "${SIGN[@]}" "$EXT/Contents/Frameworks/libATDriveFileProvider.dylib"
 "${SIGN[@]}" --entitlements build/ATDriveFileProvider.entitlements "$EXT"
+"${SIGN[@]}" --entitlements build/atdrive.entitlements --identifier "$BUNDLE_ID.cli" "$APP/Contents/Helpers/atdrive"
 "${SIGN[@]}" --entitlements build/ATDrive.entitlements "$APP"
 codesign --verify --deep --strict "$APP"
 

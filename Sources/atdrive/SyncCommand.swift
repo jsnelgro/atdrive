@@ -6,7 +6,7 @@ struct Sync: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Keep a folder on this computer in sync with the drive.",
         discussion: """
-            Changes go both ways as they happen. Edit, add, move or delete files in the folder and the drive follows within seconds. Changes made elsewhere (the Mac app, other computers, other atdrive commands) show up in the folder within --interval seconds.
+            Changes go both ways as they happen. Edit, add, move or delete files in the folder and the drive follows within seconds. Changes made elsewhere (the Mac app, other computers, other atdrive commands) show up in the folder within --interval seconds (sync.interval in config.toml, 30 by default; see `atdrive config`).
 
               atdrive sync                  sync ~/atdrive until stopped
               atdrive sync ~/Drive --once   sync once, then exit
@@ -23,8 +23,8 @@ struct Sync: AsyncParsableCommand {
     @Flag(help: "Sync once, then exit.")
     var once = false
 
-    @Option(help: "Seconds between checks for changes on the drive.")
-    var interval = 30
+    @Option(help: "Seconds between checks for changes on the drive (default: sync.interval in config.toml, or 30).")
+    var interval: Int?
 
     @Flag(help: "Linux: sync in the background from now on, as a systemd user service.")
     var install = false
@@ -36,7 +36,9 @@ struct Sync: AsyncParsableCommand {
     static let fatalStatus: Int32 = 78
 
     func validate() throws {
-        if interval < 5 { throw ValidationError("--interval must be at least 5 seconds") }
+        if let interval, interval < LocalConfig.minimumSyncInterval {
+            throw ValidationError("--interval must be at least \(LocalConfig.minimumSyncInterval) seconds")
+        }
         if install && uninstall { throw ValidationError("choose --install or --uninstall") }
         if once && (install || uninstall) { throw ValidationError("--once can't be combined with --install") }
     }
@@ -45,6 +47,25 @@ struct Sync: AsyncParsableCommand {
         let url = URL(fileURLWithPath: NSString(string: folder ?? "~/atdrive").expandingTildeInPath)
         if install { return try Service.install(folder: url, interval: interval) }
         if uninstall { return try Service.uninstall() }
+        // Read again before each check of the drive, so editing config.toml takes effect without
+        // a restart. A file that stops making sense keeps the last settings that did.
+        let config = ConfigFile.standard()
+        var settings: LocalConfig
+        do { settings = try config.load() } catch let error as ConfigError { throw Self.fatal(error) }
+        var checkEvery: Int { interval ?? settings.syncInterval }
+        var configProblem: String?
+        func reloadConfig() {
+            guard interval == nil else { return }
+            do {
+                settings = try config.load()
+                configProblem = nil
+            } catch {
+                if configProblem != "\(error)" {
+                    SyncLog.write("Not using config.toml's changes: \(error)", toStandardError: true)
+                }
+                configProblem = "\(error)"
+            }
+        }
 
         // As a service (no terminal), wait to be signed in rather than fail.
         let waits = !once && isatty(STDIN_FILENO) == 0
@@ -77,14 +98,19 @@ struct Sync: AsyncParsableCommand {
             let mark = watcher.mark()
             do {
                 let result = try await sync.sync(checkRemote: clock.now >= nextDriveCheck)
-                if result.checkedRemote { nextDriveCheck = clock.now + .seconds(interval) }
+                if result.checkedRemote {
+                    let previous = checkEvery
+                    reloadConfig()
+                    if checkEvery != previous { SyncLog.write("Checking the drive every \(checkEvery)s now.") }
+                    nextDriveCheck = clock.now + .seconds(checkEvery)
+                }
                 watcher.watch(result.folders)
                 if !announced || failures > 0 {
                     SyncLog.write(
                         "✓ In sync. "
                             + (watcher.isWatching
-                                ? "Watching for changes; the drive is checked every \(interval)s."
-                                : "Checking the folder every 5s and the drive every \(interval)s."))
+                                ? "Watching for changes; the drive is checked every \(checkEvery)s."
+                                : "Checking the folder every 5s and the drive every \(checkEvery)s."))
                     announced = true
                     failures = 0
                 }
@@ -109,7 +135,7 @@ struct Sync: AsyncParsableCommand {
         }
     }
 
-    private static func fatal(_ error: SyncError) -> ExitCode {
+    private static func fatal(_ error: any Error) -> ExitCode {
         SyncLog.write("Error: \(error)", toStandardError: true)
         return ExitCode(fatalStatus)
     }
@@ -159,19 +185,25 @@ enum SyncLog {
 enum Service {
     static let name = "atdrive-sync.service"
 
-    static func install(folder: URL, interval: Int) throws {
+    /// `interval`: given on the command line, it's fixed; otherwise config.toml's is used, and
+    /// changing it there takes effect without reinstalling.
+    static func install(folder: URL, interval: Int?) throws {
         #if os(Linux)
-            guard let session = try SessionStore().load() else { throw ATDriveError.notLoggedIn }
+            let store = SessionStore()
+            guard let session = try store.load() else { throw ATDriveError.notLoggedIn }
             let executable = URL(fileURLWithPath: "/proc/self/exe").resolvingSymlinksInPath().path
             var command = [executable, "sync", folder.standardizedFileURL.path]
-            if interval != 30 { command += ["--interval", String(interval)] }
+            if let interval { command += ["--interval", String(interval)] }
+            // The same files this shell uses, whatever systemd's environment says.
+            var environment = ["ATDRIVE_CONFIG_DIR=\(ConfigFile.standard().url.deletingLastPathComponent().path)"]
+            if let directory = store.storage.directory { environment.append("ATDRIVE_STATE_DIR=\(directory.path)") }
             let unit = """
                 [Unit]
                 Description=ATDrive: keep \(escape(folder.path)) in sync with @\(session.handle)'s drive
 
                 [Service]
                 ExecStart=\(command.map { quote($0, forCommand: true) }.joined(separator: " "))
-                Environment=\(quote("ATDRIVE_CONFIG_DIR=\(SessionStore().directory.path)", forCommand: false))
+                \(environment.map { "Environment=\(quote($0, forCommand: false))" }.joined(separator: "\n"))
                 Restart=on-failure
                 RestartSec=30
                 RestartPreventExitStatus=\(Sync.fatalStatus)

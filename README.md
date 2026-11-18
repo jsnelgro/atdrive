@@ -148,6 +148,10 @@ That builds `ATDrive.app`, installs it to `~/Applications`, and launches it.
 3. **ATDrive** appears in Finder's sidebar under Locations.
 4. Drag files in, open them, rename them, delete them. Changes made elsewhere (another Mac, the
    CLI) show up within about 30 seconds.
+5. For the `atdrive` command too, choose **Install Command-Line Tool…** in the menu. It copies a
+   command that links the `atdrive` inside the app into `/usr/local/bin`. That `atdrive` shares
+   the app's sign-in and this Mac's key: there's no second sign-in, the drive counts the Mac as
+   one device, and signing out of either signs out of both.
 
 Files are downloaded the first time you open them. Right-click > Remove Download frees the space
 again. Changes made in two places at once are settled the same way as in a synced folder (see
@@ -252,13 +256,15 @@ Paths in the drive always start from the top (`/photos/cat.jpg`).
 
 **Signing in.** ATDrive uses atproto OAuth: you sign in on your own PDS's page in the browser,
 and ATDrive never sees your password.
-- **What it gets:** tokens that are tied to a key only it holds, saved in
-  `~/.config/atdrive/session.json` (mode 600) for the CLI, or in the app's container on the Mac.
+- **What it gets:** tokens that are tied to a key only it holds, kept as secrets on this machine:
+  in the login Keychain for the CLI on a Mac, in `~/.local/state/atdrive/session.json` (mode 600;
+  `$XDG_STATE_HOME/atdrive`) on Linux, or in the app's container for the Mac app. Never in
+  `~/.config`, so dotfiles in version control can't carry them off.
 - **Then it opens your drive:** the first `atdrive login` creates it, asking whether to encrypt
   it (an encrypted drive's recovery key is shown then). For an encrypted drive this device doesn't have the
   keys of yet, it asks how to get them (see [Encryption](#encryption)).
 - **What it keeps beside them, for an encrypted drive:** this device's own key pair, which the
-  drive's keys are wrapped for (`device.json`, also mode 600). `atdrive logout` leaves it, so
+  drive's keys are wrapped for (`device.json`, also mode 600, or in the Keychain). `atdrive logout` leaves it, so
   signing in again on the same device doesn't need another approval.
 - **What it asks for:**
   - writes only to ATDrive's own records;
@@ -275,6 +281,34 @@ browser lands on a page that won't load, at an address starting with `http://127
 address back into the terminal and you're signed in.
 
 Signing in is always through the browser: atproto spaces don't accept app passwords.
+
+## Settings
+
+This computer's settings are in `~/.config/atdrive/config.toml`. The CLI and the Mac app read
+the same file, and the Mac app's **Settings…** window writes to it, changing only the value you
+changed, so your comments and layout stay. Nothing secret is kept there, so it's safe to keep
+with your dotfiles. `atdrive config` lists every setting and says where the file and your secrets
+are.
+
+```toml
+[sync]
+interval = 60  # seconds between checks for changes made elsewhere (default 30, at least 5)
+```
+
+- **Changes take effect without a restart:** `atdrive sync` and the Mac app read the file again
+  before each check of the drive.
+- **The drive's own settings are kept in the drive,** not here, so every device follows them:
+  encryption (`atdrive encryption`) and how long history is kept.
+- **Your secrets are kept elsewhere:** your session and this device's key.
+  - **The Mac app** keeps them in its own container, and the `atdrive` inside it uses the same
+    ones.
+  - **An `atdrive` built on its own** keeps them in the login Keychain on a Mac. The first time a
+    newly built one opens its Keychain items, macOS asks whether to allow it. Where it can't ask
+    you (over SSH), set `ATDRIVE_STATE_DIR` to a folder to keep them in instead.
+  - **On Linux**, they're in `~/.local/state/atdrive`.
+- **The Mac app always uses `~/.config/atdrive`:** it can't see `XDG_CONFIG_HOME` or
+  `ATDRIVE_CONFIG_DIR` from your shell. If you set either, the CLI and the app read different
+  files.
 
 ## History and trash
 
@@ -483,7 +517,8 @@ device settles it the same way. The Mac app and `atdrive sync` share these rules
 
   | Variable | Default |
   |---|---|
-  | `ATDRIVE_CONFIG_DIR` | `~/.config/atdrive` (or `$XDG_CONFIG_HOME/atdrive`) |
+  | `ATDRIVE_CONFIG_DIR` | `~/.config/atdrive` (or `$XDG_CONFIG_HOME/atdrive`): `config.toml` |
+  | `ATDRIVE_STATE_DIR` | The login Keychain on a Mac; `~/.local/state/atdrive` (or `$XDG_STATE_HOME/atdrive`) elsewhere: the session and this device's key, as files only you can read |
   | `ATDRIVE_PLC_URL` | `https://plc.directory` |
   | `ATDRIVE_HANDLE_RESOLVER` | `https://public.api.bsky.app` (used when a handle has no `/.well-known/atproto-did`) |
 
@@ -504,14 +539,14 @@ ATDRIVE_LIVE_HANDLE=you.spaces-alpha.bsky.network scripts/test.sh --filter OAuth
 ```
 
 ```bash
-ATDRIVE_CONFIG_DIR=~/.atdrive-live-a atdrive login you.spaces-alpha.bsky.network
-ATDRIVE_LIVE_CONFIG=~/.atdrive-live-a scripts/test.sh --filter Live
+ATDRIVE_STATE_DIR=~/.atdrive-live-a atdrive login you.spaces-alpha.bsky.network
+ATDRIVE_LIVE_STATE=~/.atdrive-live-a scripts/test.sh --filter Live
 ```
 
 - `OAuthLiveTests` starts a real OAuth sign-in and checks the server accepts it, up to the point
   where a person would approve it.
-- The other live tests use the session `atdrive login` saved in `ATDRIVE_LIVE_CONFIG` (sign in
-  into a folder of its own with `ATDRIVE_CONFIG_DIR`, as above). `LiveTests` runs a full
+- The other live tests use the session `atdrive login` saved in `ATDRIVE_LIVE_STATE` (sign in
+  into a folder of its own with `ATDRIVE_STATE_DIR`, as above). `LiveTests` runs a full
   upload/download round trip, and `LiveChangeFeedTests` follows the change feed. Both clean up
   after themselves. It creates the account's drive if there's none (plain); for an account whose drive
   is encrypted, set `ATDRIVE_LIVE_RECOVERY_KEY` to its recovery key (each run then adds a device

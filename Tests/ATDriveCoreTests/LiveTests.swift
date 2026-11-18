@@ -10,11 +10,11 @@ import Testing
 /// End-to-end against a real spaces-enabled PDS, as an account signed in with `atdrive login`
 /// into a folder of its own (spaces take OAuth only, so tests reuse a saved session):
 ///
-///     ATDRIVE_CONFIG_DIR=~/.atdrive-live-a atdrive login you.example.com
-///     ATDRIVE_LIVE_CONFIG=~/.atdrive-live-a scripts/test.sh --filter Live
+///     ATDRIVE_STATE_DIR=~/.atdrive-live-a atdrive login you.example.com
+///     ATDRIVE_LIVE_STATE=~/.atdrive-live-a scripts/test.sh --filter Live
 ///
 /// Everything happens inside a uniquely named folder that is deleted at the end.
-@Suite(.enabled(if: LiveAccount.load() != nil, "set ATDRIVE_LIVE_CONFIG to a folder `atdrive login` saved to"))
+@Suite(.enabled(if: LiveAccount.load() != nil, "set ATDRIVE_LIVE_STATE to a folder `atdrive login` saved to"))
 struct LiveTests {
     @Test func roundTrip() async throws {
         let account = try #require(LiveAccount.load())
@@ -59,18 +59,18 @@ struct LiveTests {
 }
 
 /// An account signed in with `atdrive login` into a folder of its own, for live tests: the folder
-/// named by `variable` (`ATDRIVE_LIVE_CONFIG`; `ATDRIVE_LIVE_CONFIG_B` is a second account, for
+/// named by `variable` (`ATDRIVE_LIVE_STATE`; `ATDRIVE_LIVE_STATE_B` is a second account, for
 /// sharing). Token refreshes are saved back there.
 struct LiveAccount: Sendable {
     let store: SessionStore
     let session: Session
     let manager: SessionManager
 
-    static func load(_ variable: String = "ATDRIVE_LIVE_CONFIG") -> LiveAccount? {
+    static func load(_ variable: String = "ATDRIVE_LIVE_STATE") -> LiveAccount? {
         guard let path = ProcessInfo.processInfo.environment[variable], !path.isEmpty else { return nil }
         let store = SessionStore(directory: URL(fileURLWithPath: (path as NSString).expandingTildeInPath))
         guard let session = try? store.load() else { return nil }
-        return LiveAccount(store: store, session: session, manager: SessionManager(session) { try? store.save($0) })
+        return LiveAccount(store: store, session: session, manager: SessionManager(session, store: store))
     }
 
     var client: XRPCClient { XRPCClient(service: session.service, session: manager) }

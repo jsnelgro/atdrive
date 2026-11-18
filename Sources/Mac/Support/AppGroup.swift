@@ -16,17 +16,31 @@ public enum AppGroup {
         identifier.flatMap { FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: $0) }
     }
 
-    /// Where the logged-in session lives, readable by both the app and the extension.
+    /// Where the logged-in session lives, shared by the app, the extension and the `atdrive` inside
+    /// the app (`SecretStorage.appGroup`).
     public static func sessionStore() -> SessionStore? {
-        containerURL.map {
-            SessionStore(directory: $0.appendingPathComponent("Library/Application Support/ATDrive", isDirectory: true))
-        }
+        containerURL.map { SessionStore(storage: .appGroup(container: $0)) }
     }
 
     /// Where this Mac's device identity lives (its key pair, which the drive's keyring is wrapped
     /// for), beside the session. The app makes it; the extension uses it to unlock the drive.
     public static func deviceStore() -> DeviceStore? {
         sessionStore()?.devices
+    }
+}
+
+/// This Mac's settings: `~/.config/atdrive/config.toml`, the same file the `atdrive` CLI uses,
+/// so there's one place to change them.
+public enum UserConfig {
+    public static var file: ConfigFile { ConfigFile.inHome(home) }
+
+    /// The real home folder. Sandboxed, `FileManager`'s is the app's container; the app's
+    /// entitlements let it into `~/.config/atdrive` there and nowhere else.
+    static var home: URL {
+        if let entry = getpwuid(getuid()), let directory = entry.pointee.pw_dir {
+            return URL(fileURLWithPath: String(cString: directory), isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
     }
 }
 

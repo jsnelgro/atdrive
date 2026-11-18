@@ -46,10 +46,7 @@ struct Reset: AsyncParsableCommand {
             }
         }
         let result = try await AccountReset.run(client: context.drive.client, owner: session.did)
-        let devices = context.store.devices
-        if FileManager.default.fileExists(atPath: devices.file.path) {
-            try FileManager.default.removeItem(at: devices.file)
-        }
+        try context.store.devices.delete()
         let shared = result.spaces.filter { $0 != context.drive.space }.count
         print("✓ Deleted your drive\(shared > 0 ? " and \(shared) share\(shared == 1 ? "" : "s")" : "").")
         print("Your account has no drive now. Signing in (`atdrive login`, or the Mac app) makes one.")

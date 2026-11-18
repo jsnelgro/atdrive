@@ -18,8 +18,8 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
   on a plain drive, then on an encrypted one (`ATDRIVE_TEST_MODE=plain` or `=encrypted` runs one;
   `TestMode` in `FakePDS.swift`). Anything about how the drive behaves has to pass on both. They
   hit a real PDS only when enabled: `OAuthLiveTests` with `ATDRIVE_LIVE_HANDLE`, the others with
-  `ATDRIVE_LIVE_CONFIG` (and `ATDRIVE_LIVE_CONFIG_B`, a second account, for sharing): a folder
-  `ATDRIVE_CONFIG_DIR=<folder> atdrive login <handle>` saved a session to.
+  `ATDRIVE_LIVE_STATE` (and `ATDRIVE_LIVE_STATE_B`, a second account, for sharing): a folder
+  `ATDRIVE_STATE_DIR=<folder> atdrive login <handle>` saved a session to.
 - `scripts/build.sh`: release binary at `build/atdrive`. The Swift runtime is static on Linux.
 - `scripts/format.sh`: formatting (config in `.swift-format`).
 - `scripts/build-app.sh` / `scripts/run-app.sh` (macOS): build `build/ATDrive.app` (and install
@@ -38,6 +38,15 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
     DPoP, loopback client ID, browser redirect caught on 127.0.0.1). The only way to sign in:
     atproto spaces refuse app passwords.
   - `Identity.swift`: handle → DID → PDS. Never hardcode a PDS or account.
+  - Kept on this machine: secrets (the session, the device's key) in `SecretStorage.swift` (the
+    Keychain on a Mac, `$XDG_STATE_HOME/atdrive` elsewhere, the App Group container for the Mac
+    app and the `atdrive` inside it), read through `SessionStore.swift`. Several processes share a
+    session (app, extension, CLI): make every `SessionManager` for a saved session with
+    `store:`, so refreshing holds the store's lock and takes tokens another process refreshed to
+    (a refresh token works once); and settings in `config.toml` (`Config.swift`, with
+    the TOML subset in `TOML.swift`), shared by the CLI and the Mac app. **Never put a secret in
+    `config.toml` or `~/.config`**: people keep that in version control. The drive's own settings
+    are a record in the drive (`DriveSettings`), not local config.
   - `Spaces.swift`: **every** `com.atproto.space.*` call. The alpha API changes weekly, so keep it
     contained here.
   - `Records.swift`, `Lexicon.swift`: the `me.jsnelgro.atdrive.*` record model (matches `lexicons/`).
@@ -78,8 +87,10 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
     Finder's sharing actions reach the app (the extension can't show windows): a request in the
     App Group container plus a Darwin notification. The app's sharing windows and `atdrive://`
     handling are in `App/Sharing.swift`.
-- `Resources/{App,FileProvider}`: Info.plists and entitlements templates (`__BUNDLE_ID__`,
-  `__APP_GROUP__`).
+- `Resources/{App,FileProvider,CLI}`: Info.plists and entitlements templates (`__BUNDLE_ID__`,
+  `__APP_GROUP__`). `build-app.sh` puts the CLI in the app at `Contents/Helpers/atdrive`, signed
+  with the App Group, so it shares the app's session and device (`SecretStorage.standard`);
+  `App/CommandLineTool.swift` shows how to put it on the PATH.
 - `Tests/ATDriveCoreTests`: Swift Testing. `FakePDS` is an in-memory transport for drive-logic
   tests: several accounts (`addAccount`, `as(did)`), spaces with policies and members,
   credentials, MACs, DID documents and public repos.

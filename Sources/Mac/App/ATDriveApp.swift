@@ -73,6 +73,9 @@ struct MenuContent: View {
                     openSettings()
                 }
                 .keyboardShortcut(",")
+                MenuRow("Install Command-Line Tool…", systemImage: "terminal") {
+                    CommandLineTool.showInstructions()
+                }
                 MenuRow("Quit ATDrive", systemImage: "power", shortcut: "⌘Q") { NSApplication.shared.terminate(nil) }
                     .keyboardShortcut("q")
             }

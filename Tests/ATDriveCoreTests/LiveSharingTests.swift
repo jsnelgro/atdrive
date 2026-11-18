@@ -6,19 +6,19 @@ import Testing
 /// Sharing against a real spaces-enabled PDS, with two accounts signed in with `atdrive login`
 /// into folders of their own (see `LiveTests`):
 ///
-///     ATDRIVE_LIVE_CONFIG=~/.atdrive-live-a ATDRIVE_LIVE_CONFIG_B=~/.atdrive-live-b \
+///     ATDRIVE_LIVE_STATE=~/.atdrive-live-a ATDRIVE_LIVE_STATE_B=~/.atdrive-live-b \
 ///         scripts/test.sh --filter LiveSharingTests
 ///
 /// The first account shares a new folder with the second, by link and as a member; the second
 /// reads it; then it's unshared and its space deleted. Each account's drive must exist.
 @Suite(
     .enabled(
-        if: LiveAccount.load() != nil && LiveAccount.load("ATDRIVE_LIVE_CONFIG_B") != nil,
-        "set ATDRIVE_LIVE_CONFIG and ATDRIVE_LIVE_CONFIG_B to folders `atdrive login` saved to"))
+        if: LiveAccount.load() != nil && LiveAccount.load("ATDRIVE_LIVE_STATE_B") != nil,
+        "set ATDRIVE_LIVE_STATE and ATDRIVE_LIVE_STATE_B to folders `atdrive login` saved to"))
 struct LiveSharingTests {
     @Test func shareReadUnshare() async throws {
         let a = try #require(LiveAccount.load())
-        let b = try #require(LiveAccount.load("ATDRIVE_LIVE_CONFIG_B"))
+        let b = try #require(LiveAccount.load("ATDRIVE_LIVE_STATE_B"))
         let owner = JoinedDrive(
             home: try await a.openDrive(), access: SpaceAccess(ownClient: a.client, resolver: IdentityResolver()))
         let reader = JoinedDrive(

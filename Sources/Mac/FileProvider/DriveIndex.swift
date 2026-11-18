@@ -32,7 +32,7 @@ actor DriveIndex {
         else {
             throw NSFileProviderError(.notAuthenticated)
         }
-        let manager = SessionManager(session) { updated in try? store.save(updated) }
+        let manager = SessionManager(session, store: store)
         let drive = Drive(
             client: XRPCClient(service: session.service, session: manager), owner: session.did,
             device: identity.name, identity: identity

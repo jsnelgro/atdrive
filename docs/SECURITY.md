@@ -15,7 +15,7 @@ encrypted drive with anything that matters (#41).
 |---|---|---|
 | Other atproto accounts, the public | Kept out by the space's policy (the PDS enforces it) | Same |
 | Whoever runs the PDS, or breaks into it | **Can read and change everything.** That's the deal | Can't read file contents, names, folders, sizes of small parts, or history. Can't forge or alter a record without it showing. **Can** delete, withhold, or serve an older copy; sees record counts, chunk sizes, timing, which chunks are shared, and device names |
-| Someone with a device's files (`session.json`, `device.json`) | Has the account's session until it's revoked | Also has that device's key, so the drive, until the device is removed |
+| Someone with a device's secrets (`session.json` and `device.json`, or their Keychain items) | Has the account's session until it's revoked | Also has that device's key, so the drive, until the device is removed |
 | A removed device | n/a | Keeps what it could read. Can't read what's written afterwards. Can still write until its session is revoked (#14) |
 
 A plain drive is as private as a Dropbox or Google Drive account: private to you, readable by
@@ -69,10 +69,12 @@ Ordered by how much they matter. None is new on this branch unless it says so.
   keys, which other devices still read. Fix: revoke its OAuth session as part of `devices
   remove` if the PDS offers that, and have devices that have seen a rotation refuse records
   sealed with an older key that are newer than the rotation.
-- **Secrets are plain files** (#32: `session.json`, `device.json`, mode 600; on the Mac, in the App
-  Group container). Anything running as the user can read the OAuth tokens and the device key.
-  Fix: the Keychain on Apple platforms (shared access group for the extension); on Linux,
-  the Secret Service where there is one.
+- **Secrets are plain files, except for the CLI on a Mac** (#32). An `atdrive` built on its own
+  keeps them in the login Keychain on a Mac; the one inside ATDrive.app shares the app's. Elsewhere they're `session.json` and `device.json` (mode 600) in
+  `$XDG_STATE_HOME/atdrive` on Linux, or in the Mac app's App Group container. Anything running
+  as the user can read those. (They're never in `~/.config`, which people put in version
+  control.) Remaining fix: the Keychain for the Mac app (a shared access group for the
+  extension), and on Linux the Secret Service where there is one.
 
 **Medium**
 

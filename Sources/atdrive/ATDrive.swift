@@ -18,7 +18,7 @@ struct ATDrive: AsyncParsableCommand {
             MakeFolder.self, Move.self, Remove.self, Sync.self,
             Share.self, Unshare.self, Shares.self, OpenShare.self, Verify.self,
             ShowHistory.self, Restore.self, Trash.self,
-            Encryption.self, Devices.self,
+            Encryption.self, Devices.self, ShowConfig.self,
             Dev.self,
         ]
     )
@@ -47,8 +47,9 @@ struct Context {
     static func locked(makingIdentity: Bool = false) async throws -> Context {
         let store = SessionStore()
         guard let saved = try store.load() else { throw ATDriveError.notLoggedIn }
-        // Token refreshes are saved as they happen, so the next command starts fresh.
-        let session = SessionManager(saved) { updated in try? store.save(updated) }
+        // Token refreshes are saved as they happen (and taken from other processes sharing the
+        // session, which have to), so the next command starts fresh.
+        let session = SessionManager(saved, store: store)
         let devices = store.devices
         let identity = makingIdentity ? try devices.loadOrCreate() : try devices.load()
         // What it trusts changes as keys arrive and rotate; saved as it happens.
