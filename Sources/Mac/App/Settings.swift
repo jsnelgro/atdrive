@@ -125,7 +125,7 @@ final class EncryptionModel {
             do {
                 try await step(joined)
                 status = try await joined.home.convert { done, total in
-                    Task { @MainActor [weak self] in self?.progress = (done, total) }
+                    Task { @MainActor in self.progress = (done, total) }
                 }
             } catch {
                 logger.error("switching encryption failed: \(String(describing: error), privacy: .public)")
