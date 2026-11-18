@@ -38,6 +38,10 @@ final class AppModel {
     private(set) var state: State = .signedOut
     private(set) var busy = false
     private(set) var message: String?
+    /// Whether the open drive is encrypted (Settings changes it: `driveModeChanged`).
+    private(set) var driveMode: DriveMode?
+    /// When the menu last asked Finder to check for changes.
+    private(set) var lastChecked: Date?
     var handle = ""
 
     /// Waiting for another device to approve this Mac, with this Mac's codes.
@@ -122,6 +126,8 @@ final class AppModel {
         arrived = nil
         drive = nil
         joined = nil
+        driveMode = nil
+        lastChecked = nil
         do {
             // Keeps a copy of any edits that hadn't finished uploading.
             if let preserved = try await NSFileProviderManager.remove(
@@ -279,6 +285,7 @@ final class AppModel {
 
     private func finishOpening(handle: String) async {
         message = nil
+        driveMode = drive?.mode
         state = .signedIn(handle: handle)
         await addToFinder(handle: handle)
     }
@@ -337,6 +344,14 @@ final class AppModel {
         }
     }
 
+    func dismissMessage() {
+        message = nil
+    }
+
+    func driveModeChanged() {
+        driveMode = drive?.mode
+    }
+
     // MARK: Finder
 
     /// Shows the drive in Finder. A sandboxed app can't *open* a folder outside its container
@@ -357,6 +372,7 @@ final class AppModel {
         guard case .signedIn = state, let manager = DriveDomain.manager else { return }
         do {
             try await manager.signalEnumerator(for: .workingSet)
+            lastChecked = Date()
         } catch {
             logger.error("signal failed: \(String(describing: error), privacy: .public)")
         }

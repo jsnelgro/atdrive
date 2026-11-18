@@ -132,6 +132,7 @@ final class EncryptionModel {
                 message = String(describing: error)
             }
             await app?.syncNow()
+            app?.driveModeChanged()
             working = false
             await refresh()
         }
@@ -142,12 +143,20 @@ final class EncryptionModel {
 struct SettingsView: View {
     @Bindable var app: AppModel
     @Bindable var encryption: EncryptionModel
+    @State private var confirmingSignOut = false
 
     var body: some View {
         Form {
             Section("Account") {
                 if let handle = app.signedInHandle {
-                    LabeledContent("Signed in as", value: "@\(handle)")
+                    LabeledContent("Signed in as") {
+                        HStack {
+                            Text("@\(handle)")
+                            Button("Sign Out…") { confirmingSignOut = true }
+                                .disabled(encryption.working)
+                        }
+                    }
+                    LabeledContent("This Mac", value: app.deviceName)
                 } else {
                     Text("Not signed in. Sign in from ATDrive in the menu bar.")
                         .foregroundStyle(.secondary)
@@ -178,6 +187,13 @@ struct SettingsView: View {
         .frame(width: 460)
         .fixedSize(horizontal: false, vertical: true)
         .task(id: app.signedInHandle) { await encryption.refresh() }
+        .confirmationDialog("Sign out of ATDrive?", isPresented: $confirmingSignOut) {
+            Button("Sign Out", role: .destructive) { Task { await app.signOut() } }
+        } message: {
+            Text(
+                "ATDrive leaves Finder on this Mac. Your files stay in your account, and edits that hadn't finished uploading are kept."
+            )
+        }
         .alert(
             encryption.pending?.encrypt == true ? "Turn encryption on?" : "Turn encryption off?",
             isPresented: Binding(get: { encryption.pending != nil }, set: { if !$0 { encryption.cancel() } }),
