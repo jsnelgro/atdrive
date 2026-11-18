@@ -3,12 +3,61 @@
 > [!WARNING]
 > Warning: this tool is a proof of concept and seems to work but was totally vibe-coded. I am not a professional Swift developer. Also ATProto spaces are Alpha, so don't use this for data you care about. Just assume it _will_ be deleted at some point.
 
-## Human-written
+# Human-written
 
 A cli and macOS app providing an iCloud-like experience using ATProto Spaces. The macOS app includes Apple File Provider support, so it plays nicely with Finder (and potentially the iOS files app if I ever decide to dig into that). In Finder, you can drag and drop files, move them, open in a terminal, etc. On linux, you can use the `atdrive sync` command to sync a folder (`~/atdrive` by default) and use it in the same way.
 
 <img width="742" height="494" alt="macOS Finder Screenshot" src="https://github.com/user-attachments/assets/69353fcd-bd79-4906-ad38-7f70d043dc39" />
 
+## Building & Running
+
+Requires a Swift 6 toolchain: Xcode or the Command Line Tools on macOS,
+[swift.org](https://www.swift.org/install/). There's also a `scripts/setup-swift.sh` command but I haven't tried it personally. Claude used it in its sandbox.
+
+Build the cli:
+
+```bash
+scripts/build.sh
+```
+
+Then start the macOS Finder app with this command:
+```bash
+scripts/run-app.sh
+```
+
+A menubar item should appear. Click it and login with your handle. In Finder, you should now see an ATDrive Location next to iCloud Drive. You're done, start using it as sync/cloud storage!
+
+## Usage
+
+If you don't care about the Finder/macOS integration, you can also use the cli directly for everything. Here are some useful commands and examples:
+
+```bash
+# optionally copy the cli to somewhere on your path. Or just run commands with build/atdrive from the project root
+cp build/atdrive ~/.local/bin/
+
+atdrive login alice.example.com
+atdrive login alice.example.com     # opens your browser to sign in
+atdrive put -r ~/Documents/taxes /  # upload a folder
+atdrive ls -l /taxes
+atdrive tree
+atdrive get /taxes/2026.pdf ~/Downloads/
+atdrive mv /taxes /archive/taxes
+atdrive rm -r /archive/taxes
+```
+
+| Command | What it does |
+|---|---|
+| `login <handle>` / `logout` / `whoami` | Start, end, or show the session |
+| `ls [-l] [path]`, `tree [path]` | Browse the drive |
+| `put [-r] <local>… [dest]` | Upload. Works like `cp`. Existing files are replaced in place, and unchanged ones are skipped |
+| `get [-r] <path>… [local]` | Download. Works like `cp`. Files that are already identical locally are skipped |
+| `cat <path>` | Print a file to stdout |
+| `mkdir [-p] <path>…`, `mv <from> <to>`, `rm [-r] <path>…` | What you'd expect |
+| `sync [folder]` | Keep a folder in sync with the drive (see [above](#a-synced-folder-linux)) |
+
+
+<details>
+<summary><h1>View Claude Slop</h1></summary>
 
 # Claude Slop
 
@@ -134,7 +183,7 @@ atdrive rm -r /archive/taxes
 | `get [-r] <path>… [local]` | Download. Works like `cp`. Files that are already identical locally are skipped |
 | `cat <path>` | Print a file to stdout |
 | `mkdir [-p] <path>…`, `mv <from> <to>`, `rm [-r] <path>…` | What you'd expect. `rm` puts things in the trash |
-| `sync [folder]` | Keep a folder in sync with the drive (see [above](#a-synced-folder-linux)) |
+| `sync [folder]` | Keep a folder in sync with the drive (see [claude notes here](#a-synced-folder-linux)) |
 | `ls`, `tree`, `get`, `cat` with `--at <when>` | The drive as it was then (see [History and trash](#history-and-trash)) |
 | `history [path]` | What changed, when, and on which device: for a file, a folder, or the whole drive |
 | `restore <path> --at <when>` | Put a file or folder back as it was then: contents, name and place |
@@ -449,3 +498,5 @@ See [PLAN.md](PLAN.md) for the roadmap and design notes.
   account's settings too. See [Encryption](#encryption) for what removal does and doesn't do.
 - **Device names aren't encrypted,** even on an encrypted drive: the PDS sees what your devices
   are called.
+
+</details>
