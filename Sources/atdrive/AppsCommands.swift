@@ -222,25 +222,30 @@ struct Apps: AsyncParsableCommand {
                 written += 1
             }
             Output.clearStatus()
-            var removed = 0
-            if delete, let walker = manager.enumerator(at: root, includingPropertiesForKeys: nil) {
-                var stale: [URL] = []
-                let prefix = root.standardizedFileURL.path + "/"
-                for case let url as URL in walker {
-                    let relative = String(url.standardizedFileURL.path.dropFirst(prefix.count))
-                    if !expected.contains(relative) {
-                        stale.append(url)
-                        walker.skipDescendants()
-                    }
-                }
-                for url in stale {
-                    try manager.removeItem(at: url)
-                    removed += 1
-                }
-            }
+            let removed = delete ? try Self.removeAllBut(expected, in: root) : 0
             print(
                 "✓ \(files) file\(files == 1 ? "" : "s") in \(root.path): \(written) new or changed"
                     + (delete ? ", \(removed) removed" : ""))
+        }
+
+        /// Deletes what's in `root` but not at one of the `expected` paths (relative to it).
+        /// Returns how many were deleted (a folder counts once).
+        static func removeAllBut(_ expected: Set<String>, in root: URL) throws -> Int {
+            guard let walker = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else {
+                return 0
+            }
+            var stale: [URL] = []
+            // Resolved on both sides: on a Mac, /tmp and /var are links to /private/….
+            let prefix = root.resolvingSymlinksInPath().path + "/"
+            while let url = walker.nextObject() as? URL {
+                let relative = String(url.resolvingSymlinksInPath().path.dropFirst(prefix.count))
+                if !expected.contains(relative) {
+                    stale.append(url)
+                    walker.skipDescendants()
+                }
+            }
+            for url in stale { try FileManager.default.removeItem(at: url) }
+            return stale.count
         }
     }
 }

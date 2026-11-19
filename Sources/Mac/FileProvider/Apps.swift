@@ -199,7 +199,7 @@ final class AppsEnumerator: NSObject, NSFileProviderEnumerator {
     }
 
     private func listing(in tree: AppTree) throws -> [AppTree.Item] {
-        guard let container else { return tree.descendants(of: nil) }
+        guard container != nil else { return tree.descendants(of: nil) }
         guard let id = folderID else { return tree.children(of: nil) }
         guard let item = tree.items[id] else { throw NSFileProviderError(.noSuchItem) }
         return item.isFolder ? tree.children(of: id) : [item]
