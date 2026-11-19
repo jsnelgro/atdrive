@@ -1,7 +1,7 @@
 import Crypto
 import Foundation
 
-/// A keyring wrapped for one device, for its `me.jsnelgro.atdrive.device` record.
+/// A keyring wrapped for one device, for its `app.atdrive.device` record.
 ///
 /// Each device has a Curve25519 key pair, made on the device and stored with its session (the raw
 /// representations are what's stored). Wrapping is HPKE (RFC 9180) with X25519, HKDF-SHA256 and

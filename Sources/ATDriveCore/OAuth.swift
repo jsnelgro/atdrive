@@ -52,7 +52,7 @@ public enum OAuthLogin {
     public static var spacesNeedNewSignIn: Bool { lexiconsPublished }
 
     /// Whether ATDrive's lexicons are published (`atdrive dev lexicons publish`, plus a DNS TXT
-    /// record at `_lexicon.atdrive.jsnelgro.me`). Flip it once they are: sign-in then asks for
+    /// record at `_lexicon.atdrive.app`). Flip it once they are: sign-in then asks for
     /// ATDrive's spaces only (`narrowScope`).
     public static let lexiconsPublished = false
 

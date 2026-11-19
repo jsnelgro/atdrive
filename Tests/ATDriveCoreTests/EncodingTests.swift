@@ -46,7 +46,7 @@ import Testing
         let record = NodeRecord(name: "Docs", parent: nil, kind: .folder)
         let stored = try drive.stored(record, id: "3jzfcijpj2z2a")
         let object = try JSONSerialization.jsonObject(with: stored.serialized()) as! [String: Any]
-        #expect(object["$type"] as? String == "me.jsnelgro.atdrive.node")
+        #expect(object["$type"] as? String == "app.atdrive.node")
         #expect(Set(object.keys) == ["$type", "sealed"])  // no chunks
         let sealed = try #require(SealedRecord(stored)).sealed
         let payload = try keyring.open(

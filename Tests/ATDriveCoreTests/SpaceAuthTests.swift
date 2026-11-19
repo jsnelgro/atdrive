@@ -61,7 +61,7 @@ import Testing
 
     @Test func verifiesCommitMACsAndRefusesForgeries() throws {
         let author = P256.KeyAgreement.PrivateKey()
-        let space = "at://did:plc:alice/space/me.jsnelgro.atdrive.drive/abc"
+        let space = "at://did:plc:alice/space/app.atdrive.drive/abc"
         let commit = RepoCommit(
             rev: "3kbcq3p7ad400", data: Data(repeating: 7, count: 32), ver: 1, repo: "did:plc:alice", space: space)
         let request = try SpaceMAC.request(kemKey: author.publicKey)

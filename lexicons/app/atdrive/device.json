@@ -1,6 +1,6 @@
 {
   "lexicon": 1,
-  "id": "me.jsnelgro.atdrive.device",
+  "id": "app.atdrive.device",
   "defs": {
     "main": {
       "type": "record",
@@ -20,12 +20,12 @@
           },
           "keyring": {
             "type": "ref",
-            "ref": "me.jsnelgro.atdrive.defs#wrappedKeyring",
+            "ref": "app.atdrive.defs#wrappedKeyring",
             "description": "The drive's keyring, wrapped for this device. Absent while it waits to be approved."
           },
           "member": {
             "type": "ref",
-            "ref": "me.jsnelgro.atdrive.defs#sealedValue",
+            "ref": "app.atdrive.defs#sealedValue",
             "description": "That this device is approved: {id, name, publicKey}, sealed with the drive's current key for this record. Devices wrap new keys only for devices whose member opens, and take keyrings only from them. Absent while it waits."
           },
           "approvedBy": {
@@ -38,7 +38,7 @@
           },
           "recoveryKeyring": {
             "type": "ref",
-            "ref": "me.jsnelgro.atdrive.defs#recoveryWrappedKeyring",
+            "ref": "app.atdrive.defs#recoveryWrappedKeyring",
             "description": "Only in the record with key 'recovery': the keyring wrapped with the recovery key."
           }
         }

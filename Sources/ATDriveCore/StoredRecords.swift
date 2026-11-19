@@ -6,13 +6,13 @@ import Foundation
 ///
 /// Plain, on a drive that isn't encrypted:
 ///
-///     {"$type": "me.jsnelgro.atdrive.node",
+///     {"$type": "app.atdrive.node",
 ///      "name": "notes.txt", "kind": "file", "size": 42, "sha256": "…", …,
 ///      "chunks": [{"$type": "blob", …}, …]}
 ///
 /// Sealed, on an encrypted drive, where only what the PDS needs stays readable:
 ///
-///     {"$type": "me.jsnelgro.atdrive.node",
+///     {"$type": "app.atdrive.node",
 ///      "chunks": [{"$type": "blob", …}, …],
 ///      "sealed": {"keyID": "…", "sealed": {"$bytes": "…"}}}
 ///

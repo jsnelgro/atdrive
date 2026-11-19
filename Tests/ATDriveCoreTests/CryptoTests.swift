@@ -10,7 +10,7 @@ private struct Metadata: Codable, Equatable {
     var chunks: [ChunkID]
 }
 
-private let node = "me.jsnelgro.atdrive.node"
+private let node = "app.atdrive.node"
 
 /// The same data with one bit flipped at `index`.
 private func flipping(_ data: Data, at index: Int) -> Data {
@@ -176,7 +176,7 @@ private func randomData(_ count: Int) -> Data {
         }
         #expect(throws: DriveCryptoError.authenticationFailed) {
             try keyring.open(
-                sealed, as: Metadata.self, space: FakePDS.space, collection: "me.jsnelgro.atdrive.version",
+                sealed, as: Metadata.self, space: FakePDS.space, collection: "app.atdrive.version",
                 rkey: "3jzfcijpj2z2a")
         }
         // The separator keeps collection and rkey apart: "ab" + "c" isn't "a" + "bc".

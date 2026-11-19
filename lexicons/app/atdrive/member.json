@@ -1,6 +1,6 @@
 {
   "lexicon": 1,
-  "id": "me.jsnelgro.atdrive.member",
+  "id": "app.atdrive.member",
   "defs": {
     "main": {
       "type": "record",
@@ -15,12 +15,12 @@
         "properties": {
           "keyring": {
             "type": "ref",
-            "ref": "me.jsnelgro.atdrive.defs#wrappedKeyring",
+            "ref": "app.atdrive.defs#wrappedKeyring",
             "description": "The share's keyring, wrapped (HPKE auth mode) for the member's published sharing key, from the owner's: the member accepts it only if the sender is the key the owner published."
           },
           "membership": {
             "type": "ref",
-            "ref": "me.jsnelgro.atdrive.defs#sealedValue",
+            "ref": "app.atdrive.defs#sealedValue",
             "description": "{did, publicKey}: who it's for, sealed with the share's current key for this record, so the PDS can't make one or bring back a removed member's."
           },
           "createdAt": {

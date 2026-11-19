@@ -1,6 +1,6 @@
 {
   "lexicon": 1,
-  "id": "me.jsnelgro.atdrive.link",
+  "id": "app.atdrive.link",
   "defs": {
     "main": {
       "type": "record",

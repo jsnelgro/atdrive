@@ -13,7 +13,7 @@
 # work for Apple Development. The first matching certificate in your keychain is used; override:
 #   CODESIGN_IDENTITY="Apple Development: you@example.com (XXXXXXXXXX)"   which certificate
 #   TEAM_ID=ABCDE12345           if it can't be read from the certificate
-#   BUNDLE_ID=me.jsnelgro.atdrive
+#   BUNDLE_ID=app.atdrive
 #   APP_PROFILE=… EXTENSION_PROFILE=…   .provisionprofile files to embed, if macOS insists
 #   ALLOW_ADHOC=1                build without a certificate (for CI; Finder integration won't work)
 #   CONFIG=debug                 faster builds while developing
@@ -21,7 +21,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CONFIG="${CONFIG:-release}"
-BUNDLE_ID="${BUNDLE_ID:-me.jsnelgro.atdrive}"
+BUNDLE_ID="${BUNDLE_ID:-app.atdrive}"
 APP=build/ATDrive.app
 EXT="$APP/Contents/PlugIns/ATDriveFileProvider.appex"
 

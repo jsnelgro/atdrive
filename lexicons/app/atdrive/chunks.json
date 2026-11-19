@@ -1,6 +1,6 @@
 {
   "lexicon": 1,
-  "id": "me.jsnelgro.atdrive.chunks",
+  "id": "app.atdrive.chunks",
   "defs": {
     "main": {
       "type": "record",
@@ -33,7 +33,7 @@
           },
           "sealed": {
             "type": "ref",
-            "ref": "me.jsnelgro.atdrive.defs#sealedValue",
+            "ref": "app.atdrive.defs#sealedValue",
             "description": "On an encrypted drive: every other field, as a JSON object, sealed for this space, collection and record key. The record then has only this and chunks."
           }
         }

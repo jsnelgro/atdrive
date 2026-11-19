@@ -4,10 +4,10 @@
 # Finder's sidebar under Locations.
 #
 # Debugging:
-#   /usr/bin/log stream --level debug --predicate 'subsystem == "me.jsnelgro.atdrive"'   app + extension logs
+#   /usr/bin/log stream --level debug --predicate 'subsystem == "app.atdrive"'   app + extension logs
 #     (/usr/bin/log, not log: zsh has a built-in `log` command that shadows it)
 #   ls -t ~/Library/Logs/DiagnosticReports/ | grep ATDrive                    crash reports
-#   pluginkit -m -v -i me.jsnelgro.atdrive.fileprovider                        is the extension registered?
+#   pluginkit -m -v -i app.atdrive.fileprovider                        is the extension registered?
 #   fileproviderctl dump                                                         what macOS thinks is synced
 set -euo pipefail
 cd "$(dirname "$0")/.."

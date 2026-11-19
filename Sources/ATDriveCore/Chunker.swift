@@ -57,7 +57,7 @@ public struct Chunker: Sendable {
         largeMask = UInt64.max << (64 - max(bits - 2, 1))
         let table = HKDF<SHA256>.deriveKey(
             inputKeyMaterial: seed ?? SymmetricKey(data: Data(count: 32)),
-            info: Data("me.jsnelgro.atdrive chunker gear table".utf8), outputByteCount: 256 * 8)
+            info: Data("app.atdrive chunker gear table".utf8), outputByteCount: 256 * 8)
         gear = table.withUnsafeBytes { bytes in
             (0..<256).map { UInt64(littleEndian: bytes.loadUnaligned(fromByteOffset: 8 * $0, as: UInt64.self)) }
         }

@@ -90,5 +90,5 @@ public enum SpacesShare {
 }
 
 public enum Log {
-    public static let subsystem = "me.jsnelgro.atdrive"
+    public static let subsystem = "app.atdrive"
 }

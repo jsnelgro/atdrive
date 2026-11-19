@@ -36,7 +36,7 @@ enum FileProviderErrors {
 
     private static func describe(_ error: CustomStringConvertible) -> Error {
         NSError(
-            domain: "me.jsnelgro.atdrive", code: 1,
+            domain: "app.atdrive", code: 1,
             userInfo: [NSLocalizedDescriptionKey: error.description])
     }
 }

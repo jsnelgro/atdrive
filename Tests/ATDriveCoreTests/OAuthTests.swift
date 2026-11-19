@@ -38,7 +38,7 @@ import Testing
 
     @Test func loopbackClientIDCarriesTheScope() {
         let id = OAuthLogin.clientID(environment: [:])
-        #expect(id.hasPrefix("http://localhost?scope=atproto%20space%3A%2A%3Fcollection%3Dme.jsnelgro.atdrive.node"))
+        #expect(id.hasPrefix("http://localhost?scope=atproto%20space%3A%2A%3Fcollection%3Dapp.atdrive.node"))
         #expect(
             OAuthLogin.clientID(environment: ["ATDRIVE_OAUTH_CLIENT_ID": "https://x.test/c.json"])
                 == "https://x.test/c.json")

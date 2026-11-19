@@ -34,7 +34,7 @@ public struct SecretStorage: Sendable, CustomStringConvertible {
     static let names = ["session", "device"]
 
     /// The Keychain items' service, and the Secret Service items' `service` attribute.
-    public static let service = "me.jsnelgro.atdrive"
+    public static let service = "app.atdrive"
 
     /// Files in `directory` (`session.json`, `device.json`), readable only by you.
     public static func directory(_ directory: URL) -> SecretStorage {

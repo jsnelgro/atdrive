@@ -7,7 +7,7 @@ import Testing
 /// collections the sign-in scope asks to write, and both scopes ask for what sharing needs.
 @Suite struct LexiconTests {
     static let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        .deletingLastPathComponent().appendingPathComponent("lexicons/me/jsnelgro/atdrive")
+        .deletingLastPathComponent().appendingPathComponent("lexicons/app/atdrive")
 
     @Test func lexiconsMatchTheCode() throws {
         var ids: Set<String> = []

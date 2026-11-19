@@ -50,7 +50,7 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
     are a record in the drive (`DriveSettings`), not local config.
   - `Spaces.swift`: **every** `com.atproto.space.*` call. The alpha API changes weekly, so keep it
     contained here.
-  - `Records.swift`, `Lexicon.swift`: the `me.jsnelgro.atdrive.*` record model (matches `lexicons/`).
+  - `Records.swift`, `Lexicon.swift`: the `app.atdrive.*` record model (matches `lexicons/`).
   - `DriveTree.swift`: in-memory tree and path lookup. `Drive.swift`: upload, download, move, delete.
     One `Drive` is one space; a drive made of several spaces (shared folders) is several of them.
   - `Mounts.swift`: `JoinedDrive` / `JoinedSnapshot`, the home drive with the spaces mounted in

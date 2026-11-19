@@ -2,7 +2,7 @@ import Foundation
 
 /// Secrets in the Secret Service (freedesktop.org's API for keyrings: GNOME Keyring, KWallet,
 /// KeePassXC…), through `secret-tool`, libsecret's command. Each is an item with the attributes
-/// `service me.jsnelgro.atdrive` and `account <name>`.
+/// `service app.atdrive` and `account <name>`.
 ///
 /// `secret-tool` rather than linking libsecret, so `atdrive` stays one static binary that runs on
 /// a server without libsecret or a desktop. Secrets go to it on standard input and come back on
