@@ -8,21 +8,33 @@ import Foundation
 /// they're bound to) and the device's identity (the private key an encrypted drive's keyring is
 /// wrapped for).
 ///
-/// Never in `~/.config`: people keep that in version control with their dotfiles, and these
-/// must never leave the device. Settings that aren't secret go in `config.toml` there instead
-/// (`ConfigFile`).
+/// In the system's own store for secrets where there is one, and never in `~/.config`: people
+/// keep that in version control with their dotfiles, and these must never leave the device.
+/// Settings that aren't secret go in `config.toml` there instead (`ConfigFile`).
 ///
-/// - `ATDRIVE_STATE_DIR` names a folder to keep them in, as files only you can read.
-/// - The `atdrive` inside ATDrive.app (`Contents/Helpers/atdrive`) shares the app's, in its App
-///   Group container: one sign-in, and one device, for the whole Mac.
-/// - Otherwise, on a Mac, the CLI keeps them in the login Keychain.
-/// - Elsewhere, in `$XDG_STATE_HOME/atdrive` (`~/.local/state/atdrive`): the XDG place for state
-///   that has to last but belongs to this machine alone.
-///
-/// The Mac app keeps them in its App Group container (`.directory`), where its File Provider
-/// extension can read them too.
+/// - **The Mac app**, its Finder extension and the `atdrive` inside it (`Contents/Helpers/atdrive`)
+///   share files in their App Group container: one sign-in, and one device, for the whole Mac
+///   (`appGroup`).
+/// - **`atdrive` built on its own, on a Mac:** the login Keychain (`keychain`).
+/// - **Linux:** the Secret Service (GNOME Keyring, KWallet, KeePassXC…) where the session bus
+///   offers one, through `secret-tool`; otherwise files in `$XDG_STATE_HOME/atdrive`
+///   (`~/.local/state/atdrive`), readable only by you (`linux`).
+/// - `ATDRIVE_STATE_DIR` names a folder to keep them in as files instead, anywhere.
 public struct SecretStorage: Sendable, CustomStringConvertible {
     let backend: any SecretBackend
+    /// The Mac app's (`appGroup`).
+    public let isSharedWithApp: Bool
+
+    init(backend: any SecretBackend, isSharedWithApp: Bool = false) {
+        self.backend = backend
+        self.isSharedWithApp = isSharedWithApp
+    }
+
+    /// The secrets there are, by name.
+    static let names = ["session", "device"]
+
+    /// The Keychain items' service, and the Secret Service items' `service` attribute.
+    public static let service = "me.jsnelgro.atdrive"
 
     /// Files in `directory` (`session.json`, `device.json`), readable only by you.
     public static func directory(_ directory: URL) -> SecretStorage {
@@ -30,24 +42,32 @@ public struct SecretStorage: Sendable, CustomStringConvertible {
     }
 
     /// The Mac app's, in its App Group container (`container`): its Finder extension's too, and
-    /// the `atdrive` inside it.
+    /// the `atdrive` inside it. Files, for now: on macOS an App Group isn't a Keychain access
+    /// group, and sharing Keychain items between the three needs provisioning profiles (#54).
     public static func appGroup(container: URL) -> SecretStorage {
         SecretStorage(
             backend: DirectoryBackend(
-                directory: container.appendingPathComponent("Library/Application Support/ATDrive", isDirectory: true),
-                sharedWithApp: true))
+                directory: container.appendingPathComponent("Library/Application Support/ATDrive", isDirectory: true)),
+            isSharedWithApp: true)
     }
 
     #if canImport(Security)
-        /// The Keychain items that `atdrive` on a Mac keeps them in (generic passwords, one per
-        /// secret, by account name).
-        public static let keychainService = "me.jsnelgro.atdrive"
-
-        /// Generic-password items in the login Keychain, under `service`.
-        public static func keychain(service: String = keychainService) -> SecretStorage {
+        /// Generic-password items in the login Keychain: `atdrive` built on its own, on a Mac.
+        public static func keychain(service: String = service) -> SecretStorage {
             SecretStorage(backend: KeychainBackend(service: service))
         }
     #endif
+
+    /// Linux: the Secret Service, if `secretTool` (what `SecretTool.find` found) can reach one
+    /// the first time a secret is saved, and files in `directory` if not. Decided once, and
+    /// remembered in `directory/storage`; delete that to decide again.
+    static func linux(directory: URL, secretTool: SecretToolBackend.Runner?) -> SecretStorage {
+        let files = DirectoryBackend(directory: directory)
+        return SecretStorage(
+            backend: LinuxBackend(
+                files: files,
+                secretService: secretTool.map { SecretToolBackend(lockFile: files.lockFile, run: $0) }))
+    }
 
     /// Where the CLI keeps them (see the type's description).
     public static func standard(environment: [String: String] = ProcessInfo.processInfo.environment)
@@ -64,13 +84,15 @@ public struct SecretStorage: Sendable, CustomStringConvertible {
             }
             return .keychain()
         #else
-            return .directory(defaultDirectory(environment: environment))
+            return .linux(
+                directory: defaultDirectory(environment: environment),
+                secretTool: SecretTool.find(environment: environment))
         #endif
     }
 
     /// The App Group of the ATDrive.app that `executable` is inside, at `Contents/Helpers/` (through
     /// a symlink, too: how it's put on the PATH). `build-app.sh` puts it there, signed with that
-    /// group, which is what lets it into the app's container.
+    /// group, which is what lets it into the app's container and Keychain items.
     static func enclosingAppGroup(executable: URL) -> String? {
         let contents = executable.resolvingSymlinksInPath().deletingLastPathComponent().deletingLastPathComponent()
         guard contents.lastPathComponent == "Contents", contents.deletingLastPathComponent().pathExtension == "app",
@@ -90,13 +112,26 @@ public struct SecretStorage: Sendable, CustomStringConvertible {
             .appendingPathComponent(".local/state/atdrive", isDirectory: true)
     }
 
-    /// The folder they're kept in; `nil` when they're in the Keychain.
-    public var directory: URL? { (backend as? DirectoryBackend)?.directory }
+    /// The folder of their files, or (Linux) of the files there'd be without a Secret Service;
+    /// `nil` when they're in the Keychain.
+    public var directory: URL? {
+        switch backend {
+        case let files as DirectoryBackend: files.directory
+        case let linux as LinuxBackend: linux.files.directory
+        default: nil
+        }
+    }
 
-    /// The Mac app's (`appGroup`).
-    public var isSharedWithApp: Bool { (backend as? DirectoryBackend)?.sharedWithApp == true }
+    /// The variables that make another process (the sync service) use this same storage.
+    public var environment: [String: String] {
+        switch backend {
+        case let files as DirectoryBackend: ["ATDRIVE_STATE_DIR": files.directory.path]
+        case let linux as LinuxBackend: ["XDG_STATE_HOME": linux.files.directory.deletingLastPathComponent().path]
+        default: [:]
+        }
+    }
 
-    public var description: String { backend.description }
+    public var description: String { backend.description + (isSharedWithApp ? " (shared with the ATDrive app)" : "") }
 
     /// Runs `body` holding a lock that every process using this storage respects: a `flock` on
     /// a file beside the secrets (for the Keychain, in the temporary folder). Refreshing the
@@ -138,9 +173,8 @@ protocol SecretBackend: Sendable, CustomStringConvertible {
 /// `<name>.json` in a folder only its owner can open, each file readable only by its owner.
 struct DirectoryBackend: SecretBackend {
     let directory: URL
-    var sharedWithApp = false
 
-    var description: String { directory.path + (sharedWithApp ? " (the ATDrive app's, shared with it)" : "") }
+    var description: String { directory.path }
 
     var lockFile: URL { directory.appendingPathComponent(".lock") }
 
@@ -177,6 +211,116 @@ struct DirectoryBackend: SecretBackend {
         if FileManager.default.fileExists(atPath: file.path) {
             try FileManager.default.removeItem(at: file)
         }
+    }
+}
+
+/// Secrets kept in `new`, which those still in files in `old` (from an older version) move into:
+/// the first time each is read, it's copied over and its file deleted, so no copy is left behind.
+struct MovingBackend: SecretBackend {
+    let old: DirectoryBackend
+    let new: any SecretBackend
+
+    var description: String { new.description }
+    var lockFile: URL { new.lockFile }
+
+    func read(_ name: String) throws -> Data? {
+        if let data = try new.read(name) {
+            try? old.delete(name)  // a leftover, if a move was cut short
+            return data
+        }
+        guard let data = try old.read(name) else { return nil }
+        try new.write(data, as: name)
+        try old.delete(name)
+        return data
+    }
+
+    func write(_ data: Data, as name: String) throws {
+        try new.write(data, as: name)
+        try? old.delete(name)
+    }
+
+    func delete(_ name: String) throws {
+        try new.delete(name)
+        try old.delete(name)
+    }
+}
+
+/// Linux: the Secret Service where there is one, files where there isn't. Which is decided the
+/// first time a secret is saved, by trying the Secret Service, and remembered in `storage` beside
+/// the files: a later failure to reach it (a locked keyring, a session without a bus) is then an
+/// error, never a quiet switch to files.
+struct LinuxBackend: SecretBackend {
+    let files: DirectoryBackend
+    /// `nil` where there's no `secret-tool`, or no session bus to reach a Secret Service on.
+    let secretService: SecretToolBackend?
+
+    enum Choice: String {
+        case secretService = "secret-service"
+        case files
+    }
+
+    var choiceFile: URL { files.directory.appendingPathComponent("storage") }
+
+    /// `nil`: not decided yet (nothing has been saved since there could be a Secret Service).
+    var choice: Choice? {
+        guard let data = FileManager.default.contents(atPath: choiceFile.path) else { return nil }
+        return Choice(rawValue: String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    var description: String {
+        choice == .secretService ? secretServiceDescription : files.description
+    }
+
+    private var secretServiceDescription: String {
+        "the Secret Service (your desktop's keyring), service \(SecretStorage.service)"
+    }
+
+    var lockFile: URL { files.lockFile }
+
+    /// The Secret Service, which this machine chose.
+    private func chosenService() throws -> MovingBackend {
+        guard let secretService else { throw SecretServiceError.unreachable(choiceFile) }
+        return MovingBackend(old: files, new: secretService)
+    }
+
+    func read(_ name: String) throws -> Data? {
+        choice == .secretService ? try chosenService().read(name) : try files.read(name)
+    }
+
+    func write(_ data: Data, as name: String) throws {
+        switch choice {
+        case .secretService: try chosenService().write(data, as: name)
+        case .files: try files.write(data, as: name)
+        case nil:
+            guard let secretService else { return try files.write(data, as: name) }
+            // Decide: everything goes to the Secret Service if it takes it, or stays in files.
+            var moved: [String] = []
+            do {
+                for other in SecretStorage.names where other != name {
+                    guard let existing = try files.read(other) else { continue }
+                    try secretService.write(existing, as: other)
+                    moved.append(other)
+                }
+                try secretService.write(data, as: name)
+                try decide(.secretService)
+            } catch {
+                for other in moved + [name] { try? secretService.delete(other) }
+                // No Secret Service here (a server without a desktop, say): files from now on.
+                try? decide(.files)
+                return try files.write(data, as: name)
+            }
+            for other in SecretStorage.names { try? files.delete(other) }
+        }
+    }
+
+    func delete(_ name: String) throws {
+        choice == .secretService ? try chosenService().delete(name) : try files.delete(name)
+    }
+
+    private func decide(_ choice: Choice) throws {
+        try FileManager.default.createDirectory(
+            at: files.directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try Data((choice.rawValue + "\n").utf8).write(to: choiceFile, options: .atomic)
     }
 }
 

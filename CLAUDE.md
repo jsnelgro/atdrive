@@ -39,8 +39,9 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
     atproto spaces refuse app passwords.
   - `Identity.swift`: handle → DID → PDS. Never hardcode a PDS or account.
   - Kept on this machine: secrets (the session, the device's key) in `SecretStorage.swift` (the
-    Keychain on a Mac, `$XDG_STATE_HOME/atdrive` elsewhere, the App Group container for the Mac
-    app and the `atdrive` inside it), read through `SessionStore.swift`. Several processes share a
+    login Keychain for `atdrive` on a Mac; the App Group container for the Mac app and the
+    `atdrive` inside it; on Linux the Secret Service through `secret-tool`, in `SecretService.swift`,
+    or files in `$XDG_STATE_HOME/atdrive` where there's none), read through `SessionStore.swift`. Several processes share a
     session (app, extension, CLI): make every `SessionManager` for a saved session with
     `store:`, so refreshing holds the store's lock and takes tokens another process refreshed to
     (a refresh token works once); and settings in `config.toml` (`Config.swift`, with

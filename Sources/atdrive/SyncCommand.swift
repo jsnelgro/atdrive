@@ -147,7 +147,19 @@ struct Sync: AsyncParsableCommand {
         var said = expired != nil
         var saidLocked: String?
         while true {
-            if let saved = try? SessionStore().load(), saved != expired {
+            let saved: Session?
+            do {
+                saved = try SessionStore().load()
+            } catch {
+                // E.g. the keyring is still locked, at startup before you've logged in.
+                if saidLocked != "\(error)" {
+                    SyncLog.write("Waiting: \(error). Syncing starts once it can be read.")
+                    saidLocked = "\(error)"
+                }
+                try await Task.sleep(for: .seconds(15))
+                continue
+            }
+            if let saved, saved != expired {
                 do {
                     return try await Context.load()
                 } catch let error as DriveAccessError {
@@ -196,7 +208,7 @@ enum Service {
             if let interval { command += ["--interval", String(interval)] }
             // The same files this shell uses, whatever systemd's environment says.
             var environment = ["ATDRIVE_CONFIG_DIR=\(ConfigFile.standard().url.deletingLastPathComponent().path)"]
-            if let directory = store.storage.directory { environment.append("ATDRIVE_STATE_DIR=\(directory.path)") }
+            environment += store.storage.environment.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }
             let unit = """
                 [Unit]
                 Description=ATDrive: keep \(escape(folder.path)) in sync with @\(session.handle)'s drive

@@ -305,7 +305,15 @@ interval = 60  # seconds between checks for changes made elsewhere (default 30, 
   - **An `atdrive` built on its own** keeps them in the login Keychain on a Mac. The first time a
     newly built one opens its Keychain items, macOS asks whether to allow it. Where it can't ask
     you (over SSH), set `ATDRIVE_STATE_DIR` to a folder to keep them in instead.
-  - **On Linux**, they're in `~/.local/state/atdrive`.
+  - **On Linux**, they're in your desktop's keyring (GNOME Keyring, KWallet, KeePassXC: whatever
+    offers the Secret Service) where there is one, through `secret-tool` (package
+    `libsecret-tools` on Debian and Ubuntu, `libsecret` on Fedora and Arch). On a server without a
+    desktop there isn't one, and they're files only you can read in `~/.local/state/atdrive`.
+    Which one is decided the first time you sign in and remembered in
+    `~/.local/state/atdrive/storage`: delete that file to decide again (after installing
+    `secret-tool`, say). `atdrive config` says which this computer uses.
+  - **A synced folder started before you log in** (the systemd service, with lingering) waits
+    until your keyring is unlocked, if your secrets are in it.
 - **The Mac app always uses `~/.config/atdrive`:** it can't see `XDG_CONFIG_HOME` or
   `ATDRIVE_CONFIG_DIR` from your shell. If you set either, the CLI and the app read different
   files.
