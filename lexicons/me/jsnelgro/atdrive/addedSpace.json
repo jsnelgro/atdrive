@@ -5,7 +5,7 @@
     "main": {
       "type": "record",
       "key": "any",
-      "description": "In a home drive: a space from another app, added by address to the apps view (spaces shared with the account that it never wrote to aren't listed by com.atproto.space.listSpaces). The record key is the first 16 bytes of the SHA-256 of the space's URI, in lowercase base32. Sealed on an encrypted drive.",
+      "description": "In a home drive: a space added by address to the spaces view (spaces shared with the account that it never wrote to aren't listed by com.atproto.space.listSpaces). The record key is the first 16 bytes of the SHA-256 of the space's URI, in lowercase base32. Sealed on an encrypted drive.",
       "record": {
         "type": "object",
         "properties": {

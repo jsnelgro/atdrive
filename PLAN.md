@@ -88,15 +88,17 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
   - **Follow-ups:** publish the lexicons (`atdrive dev lexicons publish`, then a DNS TXT record at
     `_lexicon.atdrive.jsnelgro.me`) and set `OAuthLogin.lexiconsPublished`, which narrows the
     scope to ATDrive's spaces.
-- [x] **Other apps' data** (#28, see *Apps view* below): everything in the spaces you're in, not
-  just ATDrive's files, read-only, in Finder (a second domain, **Apps**) and `atdrive apps`. Off
-  unless `apps.enabled` is on in config.toml.
-  - **Tested** with unit tests against `FakePDS` (`listWriters`, `repoRev` in `listSpaces`, and
-    `AppNotAuthorized` added). macOS CI builds the app.
+- [x] **Spaces** (#28, see *Spaces* below): everything in the spaces you're in, not just
+  ATDrive's files, read-only, in Finder (a second domain, **Spaces**) and `atdrive spaces`. Off
+  unless `spaces.enabled` is on in config.toml.
+  - **Tested** with unit tests against `FakePDS` (`listWriters`, `repoRev` in `listSpaces`,
+    `resolveLexicon` and `AppNotAuthorized` added). macOS CI builds the app.
   - **Not yet exercised:** against the live alpha PDS (#17's probes for it: is a member-only
-    space listed, what does a Bulletin space look like, the scope string, `allowedApps`), and
-    the Apps location on a real Mac, Spotlight's handling of it included.
-  - **Later:** the space type's `title` as the folder's name, once space lexicons resolve.
+    space listed, what does a Bulletin space look like, the scope string, `allowedApps`;
+    whether the PDS answers `resolveLexicon`), and the Spaces location on a real Mac: the
+    "can't be read" badge and Spotlight's handling of it included.
+  - **Later:** spaces shared with you found without their address (#56); public repo data as a
+    view of its own, with record type filters (#57).
 - [ ] **Later:**
   - Shared folders others can edit (#25).
   - `x-callback-url` actions, for Shortcuts and other apps (#31).
@@ -701,7 +703,7 @@ Checked against the proposal and the reference branch on 2026-11-17:
   Download…), `atdrive open-share <link>`, or `atdrive get <link>` to download
   once (signed out for a public link). `atdrive sync --install` makes ATDrive the
   `x-scheme-handler/atdrive` on a Linux desktop.
-- **A link to another app's space** says so; the apps view (#28) shows those (`atdrive apps add`).
+- **A link to another app's space** says so; the spaces view (#28) shows those (`atdrive spaces add`).
 - **Clickability:** many email and chat apps don't make `atdrive://` links clickable. If that's a
   real problem, the smallest fix is one static redirect page (the key stays in the fragment).
 
@@ -733,32 +735,44 @@ Checked against the proposal and the reference branch on 2026-11-17:
 - **`x-callback-url` actions (#31).**
 - **Write notifications** (`authorizeSpaceSync`'s `notify`) need an HTTPS endpoint: ATDrive polls.
 
-## Apps view
+## Spaces
 
-Other apps' spaces (#28), read-only: `AppData` reads them, `AppTree` lays them out as files, the
-CLI (`atdrive apps`) and the Mac extension's second domain (`AppsDomain`, `Mac/FileProvider/Apps.swift`)
-show that tree. None of the drive's sync or conflict code is involved.
+What's in every space you're in (#28), read-only: `SpaceData` reads it, `SpaceTree` lays it out
+as files, and the CLI (`atdrive spaces`) and the Mac extension's second domain (`SpacesDomain`,
+`Mac/FileProvider/SpacesLocation.swift`) show that tree. None of the drive's sync or conflict code
+is involved.
 
 - **Where it comes from:**
   1. `listSpaces` on your PDS: the spaces you own or wrote to, with your repo's revision in each.
      Your own repos are read with your session (`listRecords` with no collection).
   2. Everyone else's: a credential from the space's host (`SpaceCredentials`, as for shares),
      `listWriters` there, then each writer's repo at their PDS with that credential.
-  3. Spaces shared with you that you never wrote to: `listSpaces` doesn't list them, so they're
-     added by address and kept as `me.jsnelgro.atdrive.addedSpace` records in the home drive
-     (sealed when it's encrypted), so every device has them.
+  3. Spaces shared with you that you never wrote to: `listSpaces` doesn't list them, and nothing
+     else does (#56), so they're added by address and kept as `me.jsnelgro.atdrive.addedSpace`
+     records in the home drive (sealed when it's encrypted), so every device has them.
 - **Not shown:** ATDrive's own drive spaces (any `me.jsnelgro.atdrive.drive`): they're the drive.
+- **Layout:** `<app>/<space>/<record type>/<record>.json`, blobs in `<record>.blobs/`.
+  - The app folder is per space type: its declaration's `title` (`resolveLexicon` on your PDS),
+    else the type's domain (`my.bulletin.board` → `bulletin.my`). Types that would share a name
+    get their last segment added.
+  - Spaces are named by key; someone else's start with `@<owner handle> `.
+  - Record types drop the space type's authority (`my.bulletin.note` → `note`); ones from
+    another domain keep their full NSID.
+  - Records are `<rkey>.json`; someone else's start with `@<handle> `, so each person's sort
+    together (a record key is unique only within one account's records).
 - **Refreshing:** a repo whose revision (`repoRev`, or the writer's from `listWriters`) hasn't
   moved is reused. One that moved follows `listRepoOps` from the last revision; a gap (an op whose
   `prev` isn't what's held, or a value never seen) lists it again in full.
 - **Unreadable spaces:** `AppNotAuthorized`, `SpaceNotFound` and the like keep your own records
-  and drop everyone else's, with `UNREADABLE.txt` saying why. Network trouble keeps what was read
-  last time. Losing access only removes a read-only copy, so nothing is held back for it.
-- **Item IDs** are built from the space URI, DID, collection and rkey, so they survive handle
-  changes; the tree's anchor (a hash of every item) is the File Provider sync anchor.
-- **Scope:** `space:*?authority=*&action=read` (`OAuthLogin.appsScope`). The broad scope already
-  includes it; with the narrow one it's asked for only when `apps.enabled` is on.
-- **Spotlight:** off by default (`apps.spotlight`). Items carry
+  and drop everyone else's; the space's folder is marked (`SpaceTree.Item.unreadable`): a badge
+  in Finder, the reason in `atdrive spaces ls`. Network trouble keeps what was read last time.
+  Losing access only removes a read-only copy, so nothing is held back for it.
+- **Item IDs** are built from the space type, space URI, DID, collection and rkey, so they
+  survive handle and title changes; the tree's anchor (a hash of every item) is the File Provider
+  sync anchor.
+- **Scope:** `space:*?authority=*&action=read` (`OAuthLogin.spacesScope`). The broad scope already
+  includes it; with the narrow one it's asked for only when `spaces.enabled` is on.
+- **Spotlight:** off by default (`spaces.spotlight`). Items carry
   `com.apple.metadata:kMDItemSupportFileType = MDSystemFile`, which keeps them out of Spotlight's
   results. It's deprecated and undocumented, so check it on a real Mac. The app passes the
   setting to the extension through the App Group's defaults, since the extension can't read

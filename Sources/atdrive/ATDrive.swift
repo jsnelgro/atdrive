@@ -19,7 +19,7 @@ struct ATDrive: AsyncParsableCommand {
             Share.self, Unshare.self, Shares.self, OpenShare.self, Verify.self,
             ShowHistory.self, Restore.self, Trash.self,
             Encryption.self, Devices.self, ShowConfig.self,
-            Apps.self,
+            Spaces.self,
             Dev.self,
         ]
     )

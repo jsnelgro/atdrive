@@ -4,8 +4,8 @@ import AppKit
 import Observation
 import SwiftUI
 
-/// The spaces added to the apps view by address, as the Settings window shows and changes them:
-/// the same as `atdrive apps add` and `remove`, for all the account's devices.
+/// The spaces added to the spaces view by address, as the Settings window shows and changes
+/// them: the same as `atdrive spaces add` and `remove`, for all the account's devices.
 @MainActor @Observable
 final class AddedSpacesModel {
     private(set) var spaces: [String] = []
@@ -20,12 +20,12 @@ final class AddedSpacesModel {
     }
 
     func refresh() async {
-        guard let apps = await app?.appData() else {
+        guard let data = await app?.spaceData() else {
             spaces = []
             return
         }
         do {
-            spaces = try await apps.addedSpaces()
+            spaces = try await data.addedSpaces()
             message = nil
         } catch {
             message = String(describing: error)
@@ -34,26 +34,26 @@ final class AddedSpacesModel {
 
     func add() {
         let address = address
-        change { apps in
-            try await apps.add(address)
+        change { data in
+            try await data.add(address)
             self.address = ""
         }
     }
 
     func remove(_ space: String) {
-        change { apps in try await apps.remove(space) }
+        change { data in try await data.remove(space) }
     }
 
-    private func change(_ step: @escaping @MainActor (AppData) async throws -> Void) {
+    private func change(_ step: @escaping @MainActor (SpaceData) async throws -> Void) {
         guard !working else { return }
         working = true
         message = nil
         Task {
             defer { working = false }
-            guard let apps = await app?.appData() else { return }
+            guard let data = await app?.spaceData() else { return }
             do {
-                try await step(apps)
-                await app?.appsChanged()
+                try await step(data)
+                await app?.spacesChanged()
             } catch {
                 message = String(describing: error)
             }
@@ -62,8 +62,8 @@ final class AddedSpacesModel {
     }
 }
 
-/// Settings ▸ Other Apps: the apps location (on or off), Spotlight, and spaces added by address.
-struct AppsSection: View {
+/// Settings ▸ Spaces: the Spaces location (on or off), Spotlight, and spaces added by address.
+struct SpacesSection: View {
     @Bindable var app: AppModel
     @State private var added: AddedSpacesModel
 
@@ -73,28 +73,28 @@ struct AppsSection: View {
     }
 
     var body: some View {
-        Section("Other Apps") {
-            Toggle(isOn: Binding(get: { app.config.appsEnabled }, set: { app.setAppsEnabled($0) })) {
-                Text("Show data from my other apps")
+        Section("Spaces") {
+            Toggle(isOn: Binding(get: { app.config.spacesEnabled }, set: { app.setSpacesEnabled($0) })) {
+                Text("Show what's in my spaces")
                 Text(
-                    "What other atproto apps keep in your spaces, and spaces people share with you, read-only, in Finder under Apps. It downloads other people's data to this Mac."
+                    "What other atproto apps keep in your spaces, and spaces people share with you, read-only, in Finder under Spaces. It downloads other people's data to this Mac."
                 )
             }
-            if app.config.appsEnabled {
-                if OAuthLogin.appsNeedNewSignIn {
+            if app.config.spacesEnabled {
+                if OAuthLogin.spacesNeedNewSignIn {
                     Text("This needs access to all your spaces: sign out and in again to grant it.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Toggle(isOn: Binding(get: { app.config.appsSpotlight }, set: { app.setAppsSpotlight($0) })) {
+                Toggle(isOn: Binding(get: { app.config.spacesSpotlight }, set: { app.setSpacesSpotlight($0) })) {
                     Text("Show in Spotlight searches")
-                    Text("Off, what's in Apps (other people's data included) stays out of search results.")
+                    Text("Off, what's in Spaces (other people's data included) stays out of search results.")
                 }
                 if app.signedInHandle != nil { addedSpaces }
             }
         }
-        .task(id: "\(app.signedInHandle ?? "")\(app.config.appsEnabled)") {
-            if app.config.appsEnabled { await added.refresh() }
+        .task(id: "\(app.signedInHandle ?? "")\(app.config.spacesEnabled)") {
+            if app.config.spacesEnabled { await added.refresh() }
         }
     }
 

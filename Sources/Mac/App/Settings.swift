@@ -181,7 +181,7 @@ struct SettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            AppsSection(app: app)
+            SpacesSection(app: app)
             Section("Encryption") {
                 if app.signedInHandle == nil {
                     Text("Sign in to change your drive's encryption.").foregroundStyle(.secondary)

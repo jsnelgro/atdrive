@@ -81,6 +81,17 @@
 				<key>BadgeImageType</key>
 				<string>com.apple.icon-decoration.shared</string>
 			</dict>
+			<!-- Spaces: a space some of which can't be read (`SpacesItem.decorations`). -->
+			<dict>
+				<key>Identifier</key>
+				<string>__BUNDLE_ID__.fileprovider.unreadable</string>
+				<key>Category</key>
+				<string>Badge</string>
+				<key>Label</key>
+				<string>Can't be read</string>
+				<key>BadgeImageType</key>
+				<string>com.apple.icon-decoration.badge.warning</string>
+			</dict>
 		</array>
 	</dict>
 	<key>ATDriveAppGroup</key>

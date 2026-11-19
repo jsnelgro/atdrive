@@ -115,6 +115,8 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
     /// Spaces whose policy lets only other apps in (`allowedApps`): `authorizeSpaceSync` says
     /// `AppNotAuthorized`.
     var refusingApps: Set<String> = []
+    /// Lexicons `com.atproto.lexicon.resolveLexicon` finds, by NSID (the schema record).
+    var lexicons: [String: [String: Any]] = [:]
     /// MAC commits with someone else's key, as a host that isn't the owner's would.
     var forgeMACs = false
     /// The biggest `applyWrites` request so far, in bytes.
@@ -430,6 +432,13 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
             guard let caller, body["repo"] as? String == caller else { return error(401, "AuthRequired") }
             publicRecords[caller]?["\(body["collection"] as! String)/\(body["rkey"] as! String)"] = nil
             return json([:])
+
+        case "com.atproto.lexicon.resolveLexicon":
+            guard let nsid = query["nsid"], let schema = lexicons[nsid] else { return error(400, "LexiconNotFound") }
+            return json([
+                "uri": "at://did:plc:lexicons/com.atproto.lexicon.schema/\(nsid)", "cid": "bafylexicon",
+                "schema": schema,
+            ])
 
         case "com.atproto.identity.resolveHandle":
             guard let did = accounts.first(where: { $0.value.handle == query["handle"] })?.key else {

@@ -61,29 +61,29 @@ public enum DriveDomain {
     }
 }
 
-/// The second Finder location: data from the account's other apps' spaces, and spaces shared
-/// with it, read-only (`AppData`). There only while `apps.enabled` is on in config.toml: the app
-/// adds and removes it.
-public enum AppsDomain {
-    public static let identifier = NSFileProviderDomainIdentifier(rawValue: "apps")
+/// The second Finder location: what's in every space the account is in (other apps' data, and
+/// spaces shared with it), read-only (`SpaceData`). There only while `spaces.enabled` is on in
+/// config.toml: the app adds and removes it.
+public enum SpacesDomain {
+    public static let identifier = NSFileProviderDomainIdentifier(rawValue: "spaces")
 
-    /// Finder shows it as "Apps" under ATDrive in the sidebar.
+    /// Finder shows it as "Spaces" under ATDrive in the sidebar.
     public static func make() -> NSFileProviderDomain {
-        let domain = NSFileProviderDomain(identifier: identifier, displayName: "Apps")
+        let domain = NSFileProviderDomain(identifier: identifier, displayName: "Spaces")
         domain.supportsSyncingTrash = false
         return domain
     }
 
     public static var manager: NSFileProviderManager? { NSFileProviderManager(for: make()) }
 
-    /// Whether Spotlight may index it (`apps.spotlight` in config.toml). The extension can't read
+    /// Whether Spotlight may index it (`spaces.spotlight` in config.toml). The extension can't read
     /// config.toml, so the app passes it on through the App Group's defaults.
     public static var spotlight: Bool {
         get { defaults?.bool(forKey: spotlightKey) ?? false }
         set { defaults?.set(newValue, forKey: spotlightKey) }
     }
 
-    private static let spotlightKey = "appsSpotlight"
+    private static let spotlightKey = "spacesSpotlight"
     private static var defaults: UserDefaults? { AppGroup.identifier.flatMap { UserDefaults(suiteName: $0) } }
 }
 

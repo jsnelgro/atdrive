@@ -110,6 +110,20 @@ extension XRPCClient {
         return writers.values.sorted { $0.did < $1.did }
     }
 
+    /// A space type's title from its declaration (`"AtmoBoards Forum"`), resolved by the PDS
+    /// (`com.atproto.lexicon.resolveLexicon`); `nil` if it doesn't resolve, isn't a space type, or
+    /// has no title.
+    public func spaceTypeTitle(_ type: String) async throws -> String? {
+        let output: JSONValue
+        do {
+            output = try await queryJSON("com.atproto.lexicon.resolveLexicon", ["nsid": type])
+        } catch let error as XRPCError where error.error == "LexiconNotFound" {
+            return nil
+        }
+        guard let main = output["schema"]?["defs"]?["main"], main["type"]?.string == "space" else { return nil }
+        return main["title"]?.string
+    }
+
     // MARK: Members (`com.atproto.memberspace.*`)
 
     /// Adds members to a `memberspace` space, or changes their access.

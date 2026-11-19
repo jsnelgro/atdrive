@@ -32,23 +32,24 @@ public enum OAuthLogin {
     /// (`lexiconsPublished`), the scope names spaces with `*` instead (`broadScope`): reading
     /// spaces of any type from anyone, which the consent screen warns about.
     ///
-    /// `apps` (`apps.enabled` in config.toml) adds reading every space the account is in, of any
-    /// app (`appsScope`), for the apps view (`AppData`). The broad scope already covers it.
+    /// `spaces` (`spaces.enabled` in config.toml) adds reading every space the account is in, of
+    /// any app (`spacesScope`), for the spaces view (`SpaceData`). The broad scope already covers
+    /// it.
     public static func scope(
-        environment: [String: String] = ProcessInfo.processInfo.environment, apps: Bool = false
+        environment: [String: String] = ProcessInfo.processInfo.environment, spaces: Bool = false
     ) -> String {
         if let configured = environment["ATDRIVE_OAUTH_SCOPE"], !configured.isEmpty { return configured }
         guard lexiconsPublished else { return broadScope }
-        return apps ? "\(narrowScope) \(appsScope)" : narrowScope
+        return spaces ? "\(narrowScope) \(spacesScope)" : narrowScope
     }
 
     /// Reading every space the account is in, of any app and any authority (read isn't limited
-    /// by collection): what the apps view needs, asked for only when it's turned on.
-    public static let appsScope = "space:*?authority=*&action=read"
+    /// by collection): what the spaces view needs, asked for only when it's turned on.
+    public static let spacesScope = "space:*?authority=*&action=read"
 
-    /// Whether turning the apps view on needs a new sign-in, for `appsScope`: only once the
+    /// Whether turning the spaces view on needs a new sign-in, for `spacesScope`: only once the
     /// narrow scope is in use, since the broad one covers it.
-    public static var appsNeedNewSignIn: Bool { lexiconsPublished }
+    public static var spacesNeedNewSignIn: Bool { lexiconsPublished }
 
     /// Whether ATDrive's lexicons are published (`atdrive dev lexicons publish`, plus a DNS TXT
     /// record at `_lexicon.atdrive.jsnelgro.me`). Flip it once they are: sign-in then asks for
@@ -72,10 +73,10 @@ public enum OAuthLogin {
     ].map { "collection=\($0)" }.joined(separator: "&")
 
     public static func clientID(
-        environment: [String: String] = ProcessInfo.processInfo.environment, apps: Bool = false
+        environment: [String: String] = ProcessInfo.processInfo.environment, spaces: Bool = false
     ) -> String {
         if let configured = environment["ATDRIVE_OAUTH_CLIENT_ID"], !configured.isEmpty { return configured }
-        return "http://localhost?scope=\(FormEncoding.escape(scope(environment: environment, apps: apps)))"
+        return "http://localhost?scope=\(FormEncoding.escape(scope(environment: environment, spaces: spaces)))"
     }
 
     /// The whole sign-in: `open` should show the URL in a browser. Returns once the user has
@@ -85,10 +86,10 @@ public enum OAuthLogin {
     /// redirect to 127.0.0.1 can't reach this machine; the page fails to load, but its address
     /// holds the result. Pass `pastedRedirect` to accept that address from the user as well:
     /// whichever arrives first wins. (The code in it is useless without this process's PKCE
-    /// verifier and DPoP key, so pasting it is safe.) `apps` asks for `appsScope` too.
+    /// verifier and DPoP key, so pasting it is safe.) `spaces` asks for `spacesScope` too.
     public static func signIn(
         identifier: String, resolver: IdentityResolver = IdentityResolver(),
-        environment: [String: String] = ProcessInfo.processInfo.environment, apps: Bool = false,
+        environment: [String: String] = ProcessInfo.processInfo.environment, spaces: Bool = false,
         transport: any HTTPTransport = URLSessionTransport(), timeout: TimeInterval = 600,
         open: @Sendable (URL) async throws -> Void,
         pastedRedirect: (@Sendable () async throws -> String)? = nil
@@ -96,7 +97,7 @@ public enum OAuthLogin {
         let listener = try LoopbackServer()
         let pending = try await prepare(
             identifier: identifier, redirectURI: "http://127.0.0.1:\(listener.port)/", resolver: resolver,
-            environment: environment, apps: apps, transport: transport)
+            environment: environment, spaces: spaces, transport: transport)
         try await open(pending.authorizationURL)
         let params: [String: String]
         if let pastedRedirect {
@@ -127,12 +128,12 @@ public enum OAuthLogin {
     /// Steps 1–2: resolve the account, find its authorization server, and push the request.
     public static func prepare(
         identifier: String, redirectURI: String, resolver: IdentityResolver = IdentityResolver(),
-        environment: [String: String] = ProcessInfo.processInfo.environment, apps: Bool = false,
+        environment: [String: String] = ProcessInfo.processInfo.environment, spaces: Bool = false,
         transport: any HTTPTransport = URLSessionTransport()
     ) async throws -> PendingAuthorization {
         let identity = try await resolver.resolve(identifier)
         let server = try await AuthorizationServer.discover(pds: identity.pds, transport: transport)
-        let clientID = clientID(environment: environment, apps: apps)
+        let clientID = clientID(environment: environment, spaces: spaces)
         let key = DPoPKey()
         let verifier = Base64URL.random(bytes: 32)
         let state = Base64URL.random(bytes: 16)
@@ -144,7 +145,7 @@ public enum OAuthLogin {
                 ("response_type", "code"),
                 ("response_mode", "query"),
                 ("redirect_uri", redirectURI),
-                ("scope", scope(environment: environment, apps: apps)),
+                ("scope", scope(environment: environment, spaces: spaces)),
                 ("state", state),
                 ("code_challenge", Base64URL.encode(SHA256.hash(data: Data(verifier.utf8)))),
                 ("code_challenge_method", "S256"),

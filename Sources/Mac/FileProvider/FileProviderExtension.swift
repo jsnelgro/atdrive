@@ -11,18 +11,18 @@ import os
 /// The system keeps the local copies; this class only moves data between them and the drive.
 /// Every callback starts a task, does its work through `Drive`, and calls the completion handler.
 ///
-/// It serves the apps location too (`AppsDomain`), read-only, through `AppsProvider`.
+/// It serves the Spaces location too (`SpacesDomain`), read-only, through `SpacesProvider`.
 @objc(ATDriveFileProviderExtension)
 final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, NSFileProviderCustomAction {
     private let domain: NSFileProviderDomain
     private let index = DriveIndex()
-    /// For the apps location; `nil` for the drive's.
-    private let apps: AppsProvider?
+    /// For the Spaces location; `nil` for the drive's.
+    private let spaces: SpacesProvider?
     private let logger = Logger(subsystem: Log.subsystem, category: "extension")
 
     required init(domain: NSFileProviderDomain) {
         self.domain = domain
-        apps = domain.identifier == AppsDomain.identifier ? AppsProvider(domain: domain) : nil
+        spaces = domain.identifier == SpacesDomain.identifier ? SpacesProvider(domain: domain) : nil
         super.init()
         logger.info("started for domain \(domain.identifier.rawValue, privacy: .public)")
     }
@@ -38,8 +38,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         completionHandler: @escaping (NSFileProviderItem?, Error?) -> Void
     ) -> Progress {
         let progress = Progress(totalUnitCount: 1)
-        if let apps {
-            apps.item(for: identifier) { item, error in
+        if let spaces {
+            spaces.item(for: identifier) { item, error in
                 progress.completedUnitCount = 1
                 completionHandler(item, error)
             }
@@ -62,7 +62,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
     func enumerator(for containerItemIdentifier: NSFileProviderItemIdentifier, request: NSFileProviderRequest) throws
         -> NSFileProviderEnumerator
     {
-        if let apps { return try apps.enumerator(for: containerItemIdentifier) }
+        if let spaces { return try spaces.enumerator(for: containerItemIdentifier) }
         switch containerItemIdentifier {
         case .workingSet: return Enumerator(scope: .workingSet, index: index)
         case .rootContainer: return Enumerator(scope: .container(nil), index: index)
@@ -75,7 +75,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         for itemIdentifier: NSFileProviderItemIdentifier, version requestedVersion: NSFileProviderItemVersion?,
         request: NSFileProviderRequest, completionHandler: @escaping (URL?, NSFileProviderItem?, Error?) -> Void
     ) -> Progress {
-        if let apps { return apps.fetchContents(for: itemIdentifier, completionHandler: completionHandler) }
+        if let spaces { return spaces.fetchContents(for: itemIdentifier, completionHandler: completionHandler) }
         let progress = Progress(totalUnitCount: 100)
         Task {
             do {
@@ -108,8 +108,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
     ) -> Progress {
         let progress = Progress(totalUnitCount: 100)
-        if apps != nil {
-            completionHandler(nil, [], false, AppsProvider.readOnly)
+        if spaces != nil {
+            completionHandler(nil, [], false, SpacesProvider.readOnly)
             return progress
         }
         Task {
@@ -173,13 +173,13 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
     ) -> Progress {
         let progress = Progress(totalUnitCount: 100)
-        if apps != nil {
+        if spaces != nil {
             // Nothing here can change. What the system keeps for itself (tags, last used) is fine.
             let changes: NSFileProviderItemFields = [.contents, .filename, .parentItemIdentifier]
             if changedFields.isDisjoint(with: changes) {
                 completionHandler(item, [], false, nil)
             } else {
-                completionHandler(nil, [], false, AppsProvider.readOnly)
+                completionHandler(nil, [], false, SpacesProvider.readOnly)
             }
             return progress
         }
@@ -296,9 +296,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         completionHandler: @escaping (Error?) -> Void
     ) -> Progress {
         let progress = Progress(totalUnitCount: 1)
-        if apps != nil {
+        if spaces != nil {
             progress.completedUnitCount = 1
-            completionHandler(AppsProvider.readOnly)
+            completionHandler(SpacesProvider.readOnly)
             return progress
         }
         Task {
@@ -417,7 +417,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         let progress = Progress(totalUnitCount: 1)
         defer { progress.completedUnitCount = 1 }
         let name = actionIdentifier.rawValue.split(separator: ".").last.map(String.init) ?? ""
-        guard apps == nil, let action = SharingRequest.Action(rawValue: name), let item = itemIdentifiers.first else {
+        guard spaces == nil, let action = SharingRequest.Action(rawValue: name), let item = itemIdentifiers.first else {
             completionHandler(CocoaError(.featureUnsupported))
             return progress
         }

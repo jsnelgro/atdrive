@@ -1,24 +1,24 @@
 import Crypto
 import Foundation
 
-// The apps view (#28): everything in the spaces the account is in, not just ATDrive's files.
-// Other atproto apps keep data in spaces too (a Bulletin board's notes, say), and people share
-// spaces with you. This reads them all, read-only: ATDrive writes with `validate = false`, so
-// letting edits through could quietly corrupt another app's data.
+// Spaces (#28): everything in the spaces the account is in, not just ATDrive's files. Other
+// atproto apps keep data in spaces (a Bulletin board's notes, say), and people share spaces with
+// you. This reads them all, read-only: ATDrive writes with `validate = false`, so letting edits
+// through could quietly corrupt another app's data.
 //
 // Where it comes from:
 // 1. `listSpaces` on the account's own PDS: the spaces it owns or has written to, with its repo's
 //    revision in each. Its own repos are read with its session.
 // 2. Everyone else's repos in those spaces: a credential from the space's host (as for shares,
 //    `SpaceCredentials`), `listWriters` there, then each writer's repo at their own PDS.
-// 3. Spaces shared with the account that it never wrote to, which `listSpaces` doesn't list:
+// 3. Spaces shared with the account that it never wrote to, which `listSpaces` doesn't list (#56):
 //    added by address, and remembered in the home drive (`AddedSpace`) for every device.
 //
 // ATDrive's own drive spaces aren't shown: they're the drive. A space that won't let ATDrive in
 // (`allowedApps`, say) is shown with why, not hidden.
 
-/// A space from another app, added to the apps view by address: `me.jsnelgro.atdrive.addedSpace`
-/// in the home drive, sealed on an encrypted drive.
+/// A space added to the spaces view by address: `me.jsnelgro.atdrive.addedSpace` in the home
+/// drive, sealed on an encrypted drive.
 public struct AddedSpace: Codable, Sendable, Equatable {
     public var space: String
     public var addedAt: String
@@ -35,101 +35,12 @@ public struct AddedSpace: Codable, Sendable, Equatable {
     }
 }
 
-/// A record in another app's space, as stored.
-public struct AppRecord: Sendable, Equatable {
-    public var collection: String
-    public var rkey: String
-    public var cid: String
-    public var value: JSONValue
-
-    public init(collection: String, rkey: String, cid: String, value: JSONValue) {
-        self.collection = collection
-        self.rkey = rkey
-        self.cid = cid
-        self.value = value
-    }
-}
-
-/// One account's repo in a space, at a revision.
-public struct AppRepo: Sendable, Equatable {
-    public var did: String
-    public var rev: String
-    /// By `collection/rkey`.
-    public var records: [String: AppRecord]
-
-    public init(did: String, rev: String, records: [String: AppRecord]) {
-        self.did = did
-        self.rev = rev
-        self.records = records
-    }
-}
-
-/// Why some of a space isn't shown.
-public enum AppSpaceProblem: Sendable, Equatable, CustomStringConvertible {
-    /// Its host refused: not shared with this account (any more), deleted, or not letting
-    /// ATDrive in. Other people's repos in it aren't shown.
-    case access(SpaceAccessProblem)
-    /// Couldn't be reached just now: what was there last time is still shown.
-    case unreachable(String)
-
-    public var description: String {
-        switch self {
-        case .access(.appNotAllowed): "its owner lets only certain apps read it, and ATDrive isn't one of them"
-        case .access(let problem): problem.description
-        case .unreachable(let detail): "it couldn't be reached just now (\(detail))"
-        }
-    }
-}
-
-/// A space the account is in, with every repo in it that could be read.
-public struct AppSpace: Sendable, Equatable {
-    public var uri: String
-    public var authority: String
-    public var type: String
-    public var key: String
-    /// Added by address (`AddedSpace`), rather than (only) listed by the account's PDS.
-    public var added: Bool
-    /// By DID.
-    public var repos: [String: AppRepo]
-    public var problem: AppSpaceProblem?
-
-    public init(uri: String, added: Bool, repos: [String: AppRepo] = [:], problem: AppSpaceProblem? = nil) {
-        let parts = XRPCClient.spaceParts(uri)
-        self.uri = uri
-        authority = parts?.authority ?? ""
-        type = parts?.type ?? ""
-        key = parts?.key ?? ""
-        self.added = added
-        self.repos = repos
-        self.problem = problem
-    }
-}
-
-/// Everything in the apps view at one moment. Give it to the next `AppData.update`, which reads
-/// again only the repos whose revision moved.
-public struct AppDataSnapshot: Sendable, Equatable {
-    public var account: String
-    /// By URI.
-    public var spaces: [String: AppSpace]
-    /// Handles of the accounts in it, by DID, where they resolved.
-    public var handles: [String: String]
-
-    public init(account: String, spaces: [String: AppSpace], handles: [String: String] = [:]) {
-        self.account = account
-        self.spaces = spaces
-        self.handles = handles
-    }
-
-    /// As files and folders.
-    public var tree: AppTree { AppTree(self) }
-}
-
-public enum AppDataError: Error, Equatable, CustomStringConvertible {
+public enum SpaceDataError: Error, Equatable, CustomStringConvertible {
     case notASpace(String)
     /// ATDrive's own spaces are the drive (`atdrive open-share` for one shared with you).
     case driveSpace
     case notAdded(String)
-    /// The apps view is off (`apps.enabled` in config.toml).
+    /// The spaces view is off (`spaces.enabled` in config.toml).
     case off
     /// The session wasn't granted what this needs: sign in again.
     case needsSignIn
@@ -142,16 +53,112 @@ public enum AppDataError: Error, Equatable, CustomStringConvertible {
             "that's an ATDrive space: open it with `atdrive open-share <link>` to put it in your drive"
         case .notAdded(let space): "\(space) wasn't added"
         case .off:
-            "the apps view is off. Turn it on with `atdrive apps on` (apps.enabled in config.toml)"
+            "the spaces view is off. Turn it on with `atdrive spaces on` (spaces.enabled in config.toml)"
         case .needsSignIn:
             "this sign-in doesn't allow that. Sign in again (`atdrive login <handle>`) to grant it"
         }
     }
 }
 
-/// Reads the apps view for the signed-in account: `update` gives an `AppDataSnapshot`, and
-/// `contents` reads a file in its tree. Credentials and identities are kept between updates.
-public actor AppData {
+/// Reads the spaces view for the signed-in account: `update` gives a `Snapshot`, and `contents`
+/// reads a file in its tree. Credentials, identities and space type titles are kept between
+/// updates.
+public actor SpaceData {
+    /// A record in a space, as stored.
+    public struct Record: Sendable, Equatable {
+        public var collection: String
+        public var rkey: String
+        public var cid: String
+        public var value: JSONValue
+
+        public init(collection: String, rkey: String, cid: String, value: JSONValue) {
+            self.collection = collection
+            self.rkey = rkey
+            self.cid = cid
+            self.value = value
+        }
+    }
+
+    /// One account's records in a space, at a revision.
+    public struct Repo: Sendable, Equatable {
+        public var did: String
+        public var rev: String
+        /// By `collection/rkey`.
+        public var records: [String: Record]
+
+        public init(did: String, rev: String, records: [String: Record]) {
+            self.did = did
+            self.rev = rev
+            self.records = records
+        }
+    }
+
+    /// Why some of a space isn't shown.
+    public enum Problem: Sendable, Equatable, CustomStringConvertible {
+        /// Its host refused: not shared with this account (any more), deleted, or not letting
+        /// ATDrive in. Other people's records in it aren't shown.
+        case access(SpaceAccessProblem)
+        /// Couldn't be reached just now: what was there last time is still shown.
+        case unreachable(String)
+
+        public var description: String {
+            switch self {
+            case .access(.appNotAllowed): "its owner lets only certain apps read it, and ATDrive isn't one of them"
+            case .access(let problem): problem.description
+            case .unreachable(let detail): "it couldn't be reached just now (\(detail))"
+            }
+        }
+    }
+
+    /// A space the account is in, with everyone's records in it that could be read.
+    public struct Space: Sendable, Equatable {
+        public var uri: String
+        public var authority: String
+        public var type: String
+        public var key: String
+        /// Added by address (`AddedSpace`), rather than (only) listed by the account's PDS.
+        public var added: Bool
+        /// By DID.
+        public var repos: [String: Repo]
+        public var problem: Problem?
+
+        public init(uri: String, added: Bool, repos: [String: Repo] = [:], problem: Problem? = nil) {
+            let parts = XRPCClient.spaceParts(uri)
+            self.uri = uri
+            authority = parts?.authority ?? ""
+            type = parts?.type ?? ""
+            key = parts?.key ?? ""
+            self.added = added
+            self.repos = repos
+            self.problem = problem
+        }
+    }
+
+    /// Everything in the spaces view at one moment. Give it to the next `update`, which reads
+    /// again only the repos whose revision moved.
+    public struct Snapshot: Sendable, Equatable {
+        public var account: String
+        /// By URI.
+        public var spaces: [String: Space]
+        /// Handles of the accounts in it, by DID, where they resolved.
+        public var handles: [String: String]
+        /// Space types' titles, from their declarations (`"AtmoBoards Forum"`), where they
+        /// resolved.
+        public var titles: [String: String]
+
+        public init(
+            account: String, spaces: [String: Space], handles: [String: String] = [:], titles: [String: String] = [:]
+        ) {
+            self.account = account
+            self.spaces = spaces
+            self.handles = handles
+            self.titles = titles
+        }
+
+        /// As files and folders.
+        public var tree: SpaceTree { SpaceTree(self) }
+    }
+
     public let client: XRPCClient
     public let account: String
     let access: SpaceAccess
@@ -160,6 +167,8 @@ public actor AppData {
     private var credentials: [String: SpaceCredentials] = [:]
     private var identities: [String: ResolvedIdentity] = [:]
     private var unresolvable: Set<String> = []
+    /// Space types' titles, `nil` where a type's declaration has none or didn't resolve.
+    private var titles: [String: String?] = [:]
 
     public init(home: Drive, access: SpaceAccess) {
         client = home.client
@@ -175,7 +184,7 @@ public actor AppData {
         home = nil
     }
 
-    /// Whether a space belongs in the apps view: not ATDrive's own (that's the drive).
+    /// Whether a space belongs in the spaces view: not ATDrive's own (that's the drive).
     public static func isShown(_ space: String) -> Bool {
         guard let parts = XRPCClient.spaceParts(space) else { return false }
         return parts.type != Lexicon.driveSpace
@@ -183,24 +192,24 @@ public actor AppData {
 
     // MARK: Reading
 
-    /// The apps view now. Repos whose revision hasn't moved since `previous` are taken from it,
+    /// The spaces view now. Repos whose revision hasn't moved since `previous` are taken from it,
     /// and the rest follow their change feed from there (or are listed again in full). A space
     /// that can't be read is in it with its problem; one that can't be reached keeps what
     /// `previous` had. Throws only if the account's own PDS can't be read.
-    public func update(_ previous: AppDataSnapshot? = nil) async throws -> AppDataSnapshot {
+    public func update(_ previous: Snapshot? = nil) async throws -> Snapshot {
         let views: [SpaceView]
         do {
             views = try await client.listSpaceViews()
         } catch let error as XRPCError where Self.isScopeRefusal(error) {
-            throw AppDataError.needsSignIn
+            throw SpaceDataError.needsSignIn
         }
         var known: [String: (rev: String?, added: Bool)] = [:]
         for view in views where Self.isShown(view.space) { known[view.space] = (view.repoRev, false) }
         for space in try await addedSpaces() where Self.isShown(space) {
             known[space] = (known[space]?.rev, true)
         }
-        var spaces: [String: AppSpace] = [:]
-        await withTaskGroup(of: AppSpace.self) { group in
+        var spaces: [String: Space] = [:]
+        await withTaskGroup(of: Space.self) { group in
             for (uri, info) in known {
                 let before = previous?.spaces[uri]
                 group.addTask { await self.read(uri, ownRev: info.rev, added: info.added, previous: before) }
@@ -216,11 +225,15 @@ public actor AppData {
         for did in dids {
             if let handle = await identity(of: did)?.handle { handles[did] = handle }
         }
-        return AppDataSnapshot(account: account, spaces: spaces, handles: handles)
+        var titles: [String: String] = [:]
+        for type in Set(spaces.values.map(\.type)) {
+            if let title = await title(of: type) { titles[type] = title }
+        }
+        return Snapshot(account: account, spaces: spaces, handles: handles, titles: titles)
     }
 
-    private func read(_ uri: String, ownRev: String?, added: Bool, previous: AppSpace?) async -> AppSpace {
-        var space = AppSpace(uri: uri, added: added)
+    private func read(_ uri: String, ownRev: String?, added: Bool, previous: Space?) async -> Space {
+        var space = Space(uri: uri, added: added)
         if let ownRev {
             do {
                 space.repos[account] = try await Self.readRepo(
@@ -261,14 +274,14 @@ public actor AppData {
 
     /// A repo at `rev`: `previous` if that's where it was, else followed from there by its change
     /// feed, else listed in full.
-    static func readRepo(_ client: XRPCClient, space: String, did: String, rev: String, previous: AppRepo?)
-        async throws -> AppRepo
+    static func readRepo(_ client: XRPCClient, space: String, did: String, rev: String, previous: Repo?)
+        async throws -> Repo
     {
         if let previous {
             if previous.rev == rev { return previous }
             if let followed = try? await follow(client, space: space, did: did, from: previous) { return followed }
         }
-        var records: [String: AppRecord] = [:]
+        var records: [String: Record] = [:]
         var cursor: String?
         repeat {
             let page = try await client.listRawSpaceRecords(space: space, repo: did, collection: nil, cursor: cursor)
@@ -277,19 +290,17 @@ public actor AppData {
                     throw ATDriveError.unexpectedResponse(
                         "com.atproto.space.listRecords: a record without its collection")
                 }
-                records["\(collection)/\(record.rkey)"] = AppRecord(
+                records["\(collection)/\(record.rkey)"] = Record(
                     collection: collection, rkey: record.rkey, cid: record.cid, value: record.value ?? .null)
             }
             cursor = page.records.isEmpty ? nil : page.cursor
         } while cursor != nil
-        return AppRepo(did: did, rev: rev, records: records)
+        return Repo(did: did, rev: rev, records: records)
     }
 
     /// `previous` brought up to date with the change feed; `nil` if the feed has a gap (it was
     /// compacted, or `previous` was listed mid-write), so it has to be listed again.
-    static func follow(_ client: XRPCClient, space: String, did: String, from previous: AppRepo) async throws
-        -> AppRepo?
-    {
+    static func follow(_ client: XRPCClient, space: String, did: String, from previous: Repo) async throws -> Repo? {
         var records = previous.records
         // Written, but replaced by a later op not seen yet: a later op must give its value.
         var withoutValue: Set<String> = []
@@ -301,8 +312,7 @@ public actor AppData {
                 let key = "\(op.collection)/\(op.rkey)"
                 guard records[key]?.cid == op.prev else { return nil }
                 if let cid = op.cid {
-                    records[key] = AppRecord(
-                        collection: op.collection, rkey: op.rkey, cid: cid, value: op.value ?? .null)
+                    records[key] = Record(collection: op.collection, rkey: op.rkey, cid: cid, value: op.value ?? .null)
                     if op.value == nil { withoutValue.insert(key) } else { withoutValue.remove(key) }
                 } else {
                     records[key] = nil
@@ -313,15 +323,14 @@ public actor AppData {
             cursor = page.cursor
         } while cursor != nil
         guard withoutValue.isEmpty else { return nil }
-        return AppRepo(did: did, rev: head, records: records)
+        return Repo(did: did, rev: head, records: records)
     }
 
-    /// What a file in the tree holds: a record as JSON, a note, or a blob (downloaded).
-    public func contents(of item: AppTree.Item) async throws -> Data {
+    /// What a file in the tree holds: a record as JSON, or a blob (downloaded).
+    public func contents(of item: SpaceTree.Item) async throws -> Data {
         switch item.content {
         case .folder: throw ATDriveError.isAFolder(item.name)
         case .record(let data): return data
-        case .note(let text): return Data(text.utf8)
         case .blob(let space, let repo, let cid, _): return try await blob(space: space, repo: repo, cid: cid)
         }
     }
@@ -360,6 +369,14 @@ public actor AppData {
         return resolved
     }
 
+    /// A space type's title, from its declaration; looked up once.
+    private func title(of type: String) async -> String? {
+        if let known = titles[type] { return known }
+        let title = try? await client.spaceTypeTitle(type)
+        titles[type] = .some(title)
+        return title
+    }
+
     // MARK: Spaces added by address
 
     /// The spaces added by address, from the home drive (for every device).
@@ -386,7 +403,7 @@ public actor AppData {
     /// Adding one that's there already is fine. Returns its URI (with the authority's DID).
     @discardableResult
     public func add(_ address: String) async throws -> String {
-        guard let home else { throw AppDataError.notAdded(address) }
+        guard let home else { throw SpaceDataError.notAdded(address) }
         let space = try await parse(address)
         let rkey = AddedSpace.key(for: space)
         let value = try home.stored(AddedSpace(space: space), collection: Lexicon.addedSpace, rkey: rkey)
@@ -394,29 +411,29 @@ public actor AppData {
             try await home.apply([.create(collection: Lexicon.addedSpace, rkey: rkey, value: value)])
         } catch let error as XRPCError where error.error == "RecordAlreadyExists" {
         } catch let error as XRPCError where Self.isScopeRefusal(error) {
-            throw AppDataError.needsSignIn
+            throw SpaceDataError.needsSignIn
         }
         return space
     }
 
-    /// Takes a space added by address out of the apps view (on every device).
+    /// Takes a space added by address out of the spaces view (on every device).
     public func remove(_ address: String) async throws {
-        guard let home else { throw AppDataError.notAdded(address) }
+        guard let home else { throw SpaceDataError.notAdded(address) }
         let space = try await parse(address)
         do {
             try await home.apply([.delete(collection: Lexicon.addedSpace, rkey: AddedSpace.key(for: space))])
         } catch let error as XRPCError where error.error == "RecordNotFound" {
-            throw AppDataError.notAdded(space)
+            throw SpaceDataError.notAdded(space)
         }
     }
 
     /// A space's URI from its address, the authority given by handle or DID.
     public func parse(_ address: String) async throws -> String {
         let text = address.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard text.hasPrefix("at://") else { throw AppDataError.notASpace(address) }
+        guard text.hasPrefix("at://") else { throw SpaceDataError.notASpace(address) }
         let parts = text.dropFirst(5).split(separator: "/", omittingEmptySubsequences: false).map(String.init)
         guard parts.count == 4, parts[1] == "space", !parts[0].isEmpty, !parts[2].isEmpty, !parts[3].isEmpty else {
-            throw AppDataError.notASpace(address)
+            throw SpaceDataError.notASpace(address)
         }
         var authority = parts[0]
         if !authority.hasPrefix("did:") {
@@ -426,8 +443,8 @@ public actor AppData {
             authority = did
         }
         let space = XRPCClient.spaceURI(authority: authority, type: parts[2], key: parts[3])
-        guard XRPCClient.spaceParts(space) != nil else { throw AppDataError.notASpace(address) }
-        guard Self.isShown(space) else { throw AppDataError.driveSpace }
+        guard XRPCClient.spaceParts(space) != nil else { throw SpaceDataError.notASpace(address) }
+        guard Self.isShown(space) else { throw SpaceDataError.driveSpace }
         return space
     }
 
@@ -447,17 +464,25 @@ public actor AppData {
 
 // MARK: - As files
 
-/// The apps view as files and folders, read-only:
+/// The spaces view as files and folders, read-only, by app (space type), then space, then record
+/// type:
 ///
-///     <authority>/<space type> – <space key>/<writer>/<collection>/<rkey>.json
-///                                                     /<collection>/<rkey>.blobs/<cid>.<ext>
+///     Bulletin/home/note/3l2kabc.json                 your record in your space
+///     Bulletin/home/note/@bob.test 3l2mxyz.json       someone else's, in it too
+///     Bulletin/home/note/@bob.test 3l2mxyz.blobs/bafkrei….png
+///     Bulletin/@carol.test kitchen/note/…             a space someone else owns
 ///
-/// Accounts by handle (DID if it doesn't resolve). Records are pretty-printed JSON as stored,
-/// `$type`, blob refs and `$link`/`$bytes` included; the blobs a record references are beside it.
-/// A space with a problem holds `UNREADABLE.txt`, saying what's missing and why.
+/// - An app's folder is its space type's title (`"AtmoBoards Forum"`), else its domain
+///   (`bulletin.my` for `my.bulletin.board`).
+/// - A record type is named without the space type's domain (`note` for `my.bulletin.note`), or
+///   in full if it's from another domain.
+/// - Records are pretty-printed JSON as stored, `$type`, blob refs and `$link`/`$bytes` included;
+///   the blobs a record references are beside it. Other people's start with their handle (DID if
+///   it doesn't resolve), so they sort together.
+/// - A space with a problem is marked (`Item.unreadable`), with why.
 ///
 /// Item IDs stay the same as long as the thing does (handles changing renames, nothing else).
-public struct AppTree: Sendable, Equatable {
+public struct SpaceTree: Sendable, Equatable {
     public struct Item: Sendable, Equatable {
         public enum Content: Sendable, Equatable {
             case folder
@@ -465,8 +490,6 @@ public struct AppTree: Sendable, Equatable {
             case record(Data)
             /// A blob a record references.
             case blob(space: String, repo: String, cid: String, size: Int?)
-            /// An explanation (`UNREADABLE.txt`).
-            case note(String)
         }
 
         public var id: String
@@ -474,6 +497,8 @@ public struct AppTree: Sendable, Equatable {
         public var parent: String?
         public var name: String
         public var content: Content
+        /// For a space some of which can't be read: why.
+        public var unreadable: String?
 
         public var isFolder: Bool { content == .folder }
 
@@ -482,26 +507,18 @@ public struct AppTree: Sendable, Equatable {
             case .folder: nil
             case .record(let data): data.count
             case .blob(_, _, _, let size): size
-            case .note(let text): text.utf8.count
             }
         }
 
-        /// Changes exactly when the contents do: the record's or blob's CID, or the note.
+        /// Changes exactly when the contents do: the record's or blob's CID.
         public var contentVersion: String {
             switch content {
             case .folder: "folder"
-            case .record(let data): "r" + Self.hash(data)
+            case .record(let data): "r" + SHA256.hash(data: data).prefix(12).map { String(format: "%02x", $0) }.joined()
             case .blob(_, _, let cid, _): cid
-            case .note(let text): "n" + Self.hash(Data(text.utf8))
             }
         }
-
-        static func hash(_ data: Data) -> String {
-            SHA256.hash(data: data).prefix(12).map { String(format: "%02x", $0) }.joined()
-        }
     }
-
-    public static let unreadableName = "UNREADABLE.txt"
 
     /// By ID.
     public private(set) var items: [String: Item] = [:]
@@ -511,35 +528,36 @@ public struct AppTree: Sendable, Equatable {
 
     private static let rootKey = ""
 
-    public init(_ snapshot: AppDataSnapshot) {
+    public init(_ snapshot: SpaceData.Snapshot) {
         let handles = snapshot.handles
-        func name(of did: String) -> String { handles[did] ?? did }
+        func person(_ did: String) -> String { "@\(handles[did] ?? did)" }
+        let apps = Self.appNames(Set(snapshot.spaces.values.map(\.type)), titles: snapshot.titles)
         for space in snapshot.spaces.values {
-            let authority = "a|\(space.authority)"
-            add(Item(id: authority, parent: nil, name: name(of: space.authority), content: .folder))
+            let app = "t|\(space.type)"
+            add(Item(id: app, parent: nil, name: apps[space.type]!, content: .folder))
             let spaceID = "s|\(space.uri)"
-            add(Item(id: spaceID, parent: authority, name: "\(space.type) – \(space.key)", content: .folder))
-            if let problem = space.problem {
-                add(
-                    Item(
-                        id: "u|\(space.uri)", parent: spaceID, name: Self.unreadableName,
-                        content: .note(Self.explain(problem, space: space, account: snapshot.account))))
-            }
+            let spaceName = space.authority == snapshot.account ? space.key : "\(person(space.authority)) \(space.key)"
+            add(
+                Item(
+                    id: spaceID, parent: app, name: spaceName, content: .folder,
+                    unreadable: space.problem?.description))
             for repo in space.repos.values {
-                let writer = "w|\(space.uri)|\(repo.did)"
-                add(Item(id: writer, parent: spaceID, name: name(of: repo.did), content: .folder))
+                let prefix = repo.did == snapshot.account ? "" : "\(person(repo.did)) "
                 for record in repo.records.values {
-                    let collection = "c|\(space.uri)|\(repo.did)|\(record.collection)"
-                    add(Item(id: collection, parent: writer, name: record.collection, content: .folder))
+                    let collection = "c|\(space.uri)|\(record.collection)"
+                    add(
+                        Item(
+                            id: collection, parent: spaceID,
+                            name: Self.shortName(of: record.collection, in: space.type), content: .folder))
                     let base = "\(space.uri)|\(repo.did)|\(record.collection)|\(record.rkey)"
                     add(
                         Item(
-                            id: "r|\(base)", parent: collection, name: "\(record.rkey).json",
+                            id: "r|\(base)", parent: collection, name: "\(prefix)\(record.rkey).json",
                             content: .record(record.value.prettySerialized())))
                     let blobs = Self.blobs(in: record.value)
                     guard !blobs.isEmpty else { continue }
                     let folder = "b|\(base)"
-                    add(Item(id: folder, parent: collection, name: "\(record.rkey).blobs", content: .folder))
+                    add(Item(id: folder, parent: collection, name: "\(prefix)\(record.rkey).blobs", content: .folder))
                     for blob in blobs {
                         add(
                             Item(
@@ -555,7 +573,9 @@ public struct AppTree: Sendable, Equatable {
         }
         var hasher = SHA256()
         for item in items.values.sorted(by: { $0.id < $1.id }) {
-            hasher.update(data: Data("\(item.id)\t\(item.parent ?? "")\t\(item.name)\t\(item.contentVersion)\n".utf8))
+            let line =
+                "\(item.id)\t\(item.parent ?? "")\t\(item.name)\t\(item.contentVersion)\t\(item.unreadable ?? "")\n"
+            hasher.update(data: Data(line.utf8))
         }
         anchor = hasher.finalize().prefix(16).map { String(format: "%02x", $0) }.joined()
     }
@@ -606,9 +626,9 @@ public struct AppTree: Sendable, Equatable {
         return DrivePath(components: names.reversed())
     }
 
-    /// What changed since `old`: items new or different (contents, name or folder), and the IDs
-    /// of items gone.
-    public func changes(since old: AppTree) -> (updated: [Item], deleted: [String]) {
+    /// What changed since `old`: items new or different (contents, name, folder or problem), and
+    /// the IDs of items gone.
+    public func changes(since old: SpaceTree) -> (updated: [Item], deleted: [String]) {
         let updated = items.values.filter { item in
             guard let before = old.items[item.id] else { return true }
             return before != item
@@ -618,24 +638,35 @@ public struct AppTree: Sendable, Equatable {
         return (updated.sorted { path(of: $0.id).components.count < path(of: $1.id).components.count }, deleted)
     }
 
-    // MARK: Building
+    // MARK: Names
 
-    /// What `UNREADABLE.txt` says.
-    static func explain(_ problem: AppSpaceProblem, space: AppSpace, account: String) -> String {
-        let shown =
-            space.repos.isEmpty
-            ? "Nothing in it is shown"
-            : Array(space.repos.keys) == [account]
-                ? "Only your own records in it are shown" : "What's shown may be out of date"
-        switch problem {
-        case .access:
-            return "ATDrive can't read this space: \(problem).\n\n\(shown).\n\nSpace: \(space.uri)\n"
-        case .unreachable:
-            return
-                "ATDrive couldn't read this space just now: \(problem). It tries again on the next check.\n\n"
-                + "\(space.repos.isEmpty ? "Nothing in it is shown yet" : "What's shown is what it read last time").\n\n"
-                + "Space: \(space.uri)\n"
+    /// Each space type's folder: its title, else its domain (`my.bulletin.board` →
+    /// `bulletin.my`). Types that would share a name get their last segment too.
+    static func appNames(_ types: Set<String>, titles: [String: String]) -> [String: String] {
+        var names: [String: String] = [:]
+        for type in types {
+            let title = titles[type]?.trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "/", with: "∕")
+            names[type] = title.flatMap { $0.isEmpty ? nil : $0 } ?? domain(of: type)
         }
+        let clashing = Dictionary(grouping: names.keys, by: { names[$0]! }).filter { $0.value.count > 1 }
+        for (name, types) in clashing {
+            for type in types { names[type] = "\(name) (\(type.split(separator: ".").last!))" }
+        }
+        return names
+    }
+
+    /// The domain an NSID's authority is: `my.bulletin.board` → `bulletin.my`.
+    static func domain(of nsid: String) -> String {
+        nsid.split(separator: ".").dropLast().reversed().joined(separator: ".")
+    }
+
+    /// A record type's folder in a space of `type`: without the type's authority if it shares it
+    /// (`my.bulletin.note` → `note`), else in full.
+    static func shortName(of collection: String, in type: String) -> String {
+        let authority = type.split(separator: ".").dropLast().joined(separator: ".") + "."
+        guard collection.hasPrefix(authority), collection.count > authority.count else { return collection }
+        return String(collection.dropFirst(authority.count))
     }
 
     /// The blobs a record references (`{"$type": "blob", "ref": {"$link": cid}, …}`), each once.

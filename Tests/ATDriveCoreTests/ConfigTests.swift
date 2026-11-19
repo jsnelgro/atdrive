@@ -29,7 +29,7 @@ import Testing
         let loaded = try configFile().loadInDetail()
         #expect(loaded.config == LocalConfig())
         #expect(!loaded.exists)
-        #expect(loaded.entries.map(\.key) == ["sync.interval", "apps.enabled", "apps.spotlight"])
+        #expect(loaded.entries.map(\.key) == ["sync.interval", "spaces.enabled", "spaces.spotlight"])
         #expect(loaded.entries.allSatisfy { !$0.isSet })
     }
 
@@ -51,19 +51,19 @@ import Testing
         #expect(config.syncInterval == 1200)
     }
 
-    @Test func theAppsViewIsOffUnlessTurnedOn() throws {
-        #expect(!LocalConfig().appsEnabled)
-        #expect(!LocalConfig().appsSpotlight)
-        let config = try configFile("[apps]\nenabled = true\nspotlight = true\n").load()
-        #expect(config.appsEnabled)
-        #expect(config.appsSpotlight)
-        let wrong = try configFile("[apps]\nenabled = \"yes\"\n")
+    @Test func theSpacesViewIsOffUnlessTurnedOn() throws {
+        #expect(!LocalConfig().spacesEnabled)
+        #expect(!LocalConfig().spacesSpotlight)
+        let config = try configFile("[spaces]\nenabled = true\nspotlight = true\n").load()
+        #expect(config.spacesEnabled)
+        #expect(config.spacesSpotlight)
+        let wrong = try configFile("[spaces]\nenabled = \"yes\"\n")
         let error = try #require(throws: ConfigError.self) { try wrong.load() }
         #expect(error.message.contains("true or false"))
 
         let file = try configFile("[sync]\ninterval = 60\n")
-        try file.update { $0.appsEnabled = true }
-        #expect(try file.load().appsEnabled)
+        try file.update { $0.spacesEnabled = true }
+        #expect(try file.load().spacesEnabled)
         #expect(try file.load().syncInterval == 60)
     }
 

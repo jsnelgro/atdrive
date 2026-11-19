@@ -294,9 +294,9 @@ are.
 [sync]
 interval = 60  # seconds between checks for changes made elsewhere (default 30, at least 5)
 
-[apps]
-enabled = true     # show data from your other apps' spaces, read-only (default false)
-spotlight = false  # let Spotlight search ATDrive Apps in Finder (default false)
+[spaces]
+enabled = true     # show what's in every space you're in, read-only (default false)
+spotlight = false  # let Spotlight search Spaces in Finder (default false)
 ```
 
 - **Changes take effect without a restart:** `atdrive sync` and the Mac app read the file again
@@ -474,41 +474,59 @@ To start over while trying things out, `atdrive dev reset` deletes your whole dr
 everything you shared), as if ATDrive had never been used on your account. The next sign-in makes
 a new drive, and asks whether to encrypt it.
 
-## Other apps' data
+## Spaces
 
 Other atproto apps keep data in spaces too: the sticky notes on a [Bulletin](https://bulletin.my)
 board, say, yours and your friends'. ATDrive can show all of it, **read-only**: in Finder under
-**Apps** (next to your drive), and with `atdrive apps`. It's off until you turn it on, because it
-downloads other people's data to your computer.
+**Spaces** (next to your drive), and with `atdrive spaces`. It's off until you turn it on, because
+it downloads other people's data to your computer.
 
 ```bash
-atdrive apps on                    # or apps.enabled = true in config.toml, or Settings… on a Mac
-atdrive apps ls
-atdrive apps tree
-atdrive apps cat 'alice.test/my.bulletin.board – home/bob.test/my.bulletin.note/3l2k.json'
-atdrive apps add at://alice.test/space/my.bulletin.board/home   # a space shared with you
-atdrive apps remove at://alice.test/space/my.bulletin.board/home
-atdrive apps export ~/apps-backup  # a one-way copy you can do anything with
+atdrive spaces on                     # or spaces.enabled = true in config.toml, or Settings… on a Mac
+atdrive spaces ls
+atdrive spaces tree
+atdrive spaces cat 'Bulletin/home/note/@bob.test 3l2mxyz.json'
+atdrive spaces add at://carol.test/space/my.bulletin.board/kitchen   # a space shared with you
+atdrive spaces remove at://carol.test/space/my.bulletin.board/kitchen
+atdrive spaces export ~/spaces-backup  # a one-way copy you can do anything with
 ```
 
-It's laid out by who owns each space, then the space, then whose records they are:
+It's laid out by app, then space, then record type:
 
 ```
-<owner>/<space type> – <space key>/<writer>/<collection>/<record key>.json
-                                                         <record key>.blobs/<cid>.<ext>
+Spaces/
+├── Bulletin/                             ← the app (its own name for this kind of space)
+│   ├── home/                             ← your board
+│   │   ├── note/                         ← record type
+│   │   │   ├── 3l2kabc.json              ← your note
+│   │   │   ├── @bob.test 3l2mxyz.json    ← Bob's note on your board
+│   │   │   └── @bob.test 3l2mxyz.blobs/  ← the files his note references
+│   │   │       └── bafkreih….png
+│   │   └── pin/
+│   │       └── 3l2kabe.json
+│   └── @carol.test kitchen/              ← Carol's board
+│       └── note/
+│           ├── 3l3aqrs.json
+│           └── @carol.test 3l39tuv.json
+└── AtmoBoards Forum/
+    └── @dana.test default/               ← badged: can't be read
 ```
 
 - **Records are JSON as stored**, `$type`, blob references and `$link`/`$bytes` included. The
   files a record references (images, say) are beside it.
+- **Other people's** records and spaces start with their handle, so each person's sort together.
+- **App folders** are named as the app names its kind of space ("AtmoBoards Forum"), or by its
+  domain (`bulletin.my`) if it doesn't say.
 - **Read-only throughout.** ATDrive writes without validating records against their app's
   schema, so letting edits through could quietly break another app's data.
 - **Your ATDrive files aren't here:** they're the drive.
 - **Spaces you own or have written to show up by themselves.** One shared with you that you've
-  never written to doesn't (atproto has no way to list those): add it by its address, in Settings…
-  on a Mac or with `atdrive apps add`. It's remembered in your drive, so all your devices see it.
+  never written to doesn't (atproto has no way to list those yet: #56): add it by its address, in
+  Settings… on a Mac or with `atdrive spaces add`. It's remembered in your drive, so all your
+  devices see it.
 - **A space that won't let ATDrive in** (its owner allows only certain apps), or that you've lost
-  access to, holds `UNREADABLE.txt` saying why, rather than vanishing.
-- **Spotlight** leaves it out of search results unless you turn `apps.spotlight` on.
+  access to, is badged in Finder, and `atdrive spaces ls` says why. Your own records in it stay.
+- **Spotlight** leaves it out of search results unless you turn `spaces.spotlight` on.
 - **Sign-in:** while ATDrive asks for broad access (its lexicons aren't published yet), this
   needs nothing more. Once it asks for its own spaces only, turning this on means signing in
   again, to grant read access to all your spaces.

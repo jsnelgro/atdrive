@@ -13,15 +13,15 @@ public struct LocalConfig: Sendable, Equatable {
 
     public static let minimumSyncInterval = 5
 
-    /// Show data from your other apps' spaces, and spaces shared with you, read-only: in
-    /// `atdrive apps`, and on a Mac as a second Finder location (ATDrive Apps). Off by default:
-    /// it downloads other people's data, and (once ATDrive's scope is narrow) needs a wider
-    /// sign-in (`OAuthLogin.appsScope`).
-    public var appsEnabled = false
+    /// Show what's in every space you're in (other apps' data, and spaces shared with you),
+    /// read-only: in `atdrive spaces`, and on a Mac as a second Finder location (Spaces). Off by
+    /// default: it downloads other people's data, and (once ATDrive's scope is narrow) needs a
+    /// wider sign-in (`OAuthLogin.spacesScope`).
+    public var spacesEnabled = false
 
-    /// Let Spotlight index the apps location in Finder. Off by default, so other people's data
+    /// Let Spotlight search the Spaces location in Finder. Off by default, so other people's data
     /// shared with you doesn't turn up in searches.
-    public var appsSpotlight = false
+    public var spacesSpotlight = false
 
     public init() {}
 
@@ -41,24 +41,24 @@ public struct LocalConfig: Sendable, Equatable {
             },
             value: { .integer($0.syncInterval) }),
         Setting(
-            key: "apps.enabled",
+            key: "spaces.enabled",
             help:
-                "Show data from your other apps' spaces, and spaces shared with you, read-only (atdrive apps; ATDrive Apps in Finder).",
+                "Show what's in every space you're in (other apps' data, spaces shared with you), read-only (atdrive spaces; Spaces in Finder).",
             read: { config, value in
                 guard case .boolean(let enabled) = value else { return "must be true or false" }
-                config.appsEnabled = enabled
+                config.spacesEnabled = enabled
                 return nil
             },
-            value: { .boolean($0.appsEnabled) }),
+            value: { .boolean($0.spacesEnabled) }),
         Setting(
-            key: "apps.spotlight",
-            help: "Let Spotlight index ATDrive Apps in Finder (other people's data included).",
+            key: "spaces.spotlight",
+            help: "Let Spotlight search Spaces in Finder (other people's data included).",
             read: { config, value in
                 guard case .boolean(let indexed) = value else { return "must be true or false" }
-                config.appsSpotlight = indexed
+                config.spacesSpotlight = indexed
                 return nil
             },
-            value: { .boolean($0.appsSpotlight) }),
+            value: { .boolean($0.spacesSpotlight) }),
     ]
 
     struct Setting: Sendable {

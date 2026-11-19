@@ -34,9 +34,9 @@ public enum Lexicon {
     /// Record collection, in the home drive, holding one record per person (keyed by their DID)
     /// whose sharing key was verified with a code (`VerifiedKey`).
     public static let contact = "me.jsnelgro.atdrive.contact"
-    /// Record collection, in the home drive, holding one record per space from another app the
-    /// account added to its apps view by address (`AddedSpace`): spaces shared with it that it
-    /// never wrote to, which `listSpaces` doesn't list. Keyed by `AddedSpace.key(for:)`.
+    /// Record collection, in the home drive, holding one record per space the account added to
+    /// the spaces view by address (`AddedSpace`): spaces shared with it that it never wrote to,
+    /// which `listSpaces` doesn't list. Keyed by `AddedSpace.key(for:)`.
     public static let addedSpace = "me.jsnelgro.atdrive.addedSpace"
     /// Space key of the default drive.
     public static let defaultDriveKey = "default"
