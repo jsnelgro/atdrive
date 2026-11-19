@@ -133,7 +133,8 @@ struct Apps: AsyncParsableCommand {
         func run() async throws {
             let (apps, tree) = try await Apps.tree()
             guard let item = try tree.locate(DrivePath(path)) else { throw ATDriveError.isAFolder("/") }
-            FileHandle.standardOutput.write(try await apps.contents(of: item))
+            let data = try await apps.contents(of: item)
+            FileHandle.standardOutput.write(data)
         }
     }
 
