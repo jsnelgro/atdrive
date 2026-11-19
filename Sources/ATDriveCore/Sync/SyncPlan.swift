@@ -227,11 +227,45 @@ struct RemoteView {
     }
 }
 
+/// Folders only the drive can change: other people's shares, by mount ID. In one, the drive's
+/// version always wins: what changed here is undone at the next sync, so the folder shows what's
+/// really there. `keepsCopies`: whether what was edited or added here is first kept as a copy at
+/// the top of the drive (a share, where it may be someone's work), or just undone.
+struct ReadOnlyFolders {
+    var keepsCopies: [String: Bool] = [:]
+
+    init(keepsCopies: [String: Bool] = [:]) {
+        self.keepsCopies = keepsCopies
+    }
+
+    /// The read-only mount a node on the drive is inside, if any.
+    func mount(of id: String) -> String? {
+        guard let mount = NodeID.split(id).mount, keepsCopies[mount] != nil else { return nil }
+        return mount
+    }
+
+    /// The read-only mount something put in `folder` would be inside, if any: following new
+    /// folders made here (temporary IDs) up through `local`.
+    func mount(containing folder: String?, local: [String: SyncEntry]) -> String? {
+        var current = folder
+        var depth = 0
+        while let id = current, depth < 4096 {
+            if keepsCopies[id] != nil { return id }
+            if let mount = mount(of: id) { return mount }
+            guard id.hasPrefix("+") else { return nil }
+            current = local[id]?.parent
+            depth += 1
+        }
+        return nil
+    }
+}
+
 /// What the folder and the drive should both look like after this sync, worked out from the
 /// last sync's view and each side's changes since, by `ConflictRules` (the same rules the Mac
 /// app follows). Per item, it asks those rules about contents, location and deletions; across
 /// items, it keeps folders that something kept is in, and gives each name in a folder to one
-/// item (the one already on the drive; identical ones are paired up).
+/// item (the one already on the drive; identical ones are paired up). In a read-only folder
+/// (`ReadOnlyFolders`) the drive's version wins outright.
 struct SyncPlan {
     /// By node ID, or a temporary ID for things the drive doesn't have yet.
     var merged: [String: SyncEntry] = [:]
@@ -247,12 +281,33 @@ struct SyncPlan {
     /// that the drive now has but this device can't read (`RemoteView.unknown`). Merged as they
     /// are here (or were), so what's inside them keeps its place.
     var held: Set<String> = []
+    /// Changed here inside a read-only folder (or moved into one), and put back as the drive has
+    /// it.
+    var undone: Set<String> = []
+    /// Taken out of a read-only folder to the top of the drive (merged ID → its path here).
+    var movedOut: [String: String] = [:]
 
-    init(base: [String: SyncEntry], local: LocalView, remote: [String: SyncEntry], unknown: Set<String> = []) {
+    init(
+        base: [String: SyncEntry], local: LocalView, remote: [String: SyncEntry], unknown: Set<String> = [],
+        readOnly: ReadOnlyFolders = ReadOnlyFolders()
+    ) {
         var candidates: [String: (entry: SyncEntry, local: Bool)] = [:]
         var remap: [String: String] = [:]
         // A fresh ID for something that has to be created again on the drive.
         func renewed(_ id: String) -> String { temporaryID(local.paths[id]!) }
+        // Taken out of a read-only folder to the top of the drive: what's here (`localID`), as
+        // `id`, under a conflicted copy's name if `conflicted`.
+        var outNames: Set<String> = []
+        func keepAtTop(_ id: String, from localID: String, conflicted: Bool) {
+            let here = local.entries[localID]!
+            var name = here.name
+            if conflicted {
+                name = ConflictName.make(for: name) { outNames.contains($0) }
+            }
+            outNames.insert(name)
+            add(id, SyncEntry(parent: nil, name: name, isFolder: here.isFolder, sha256: here.sha256), from: localID)
+            movedOut[id] = local.paths[localID]
+        }
 
         for id in Set(base.keys).union(local.entries.keys).union(remote.keys).sorted() {
             if unknown.contains(id) {
@@ -266,6 +321,44 @@ struct SyncPlan {
                     } else {
                         add(id, before)
                     }
+                }
+                continue
+            }
+            if let mount = readOnly.mount(of: id) {
+                // Read-only: the drive's version stands, wherever and whatever it is here.
+                let keep = readOnly.keepsCopies[mount] == true
+                let here = local.entries[id]
+                let editedHere = here.map { !$0.isFolder && $0.sha256 != base[id]?.sha256 } ?? false
+                if let there = remote[id] {
+                    if keep, editedHere, let here, here.sha256 != there.sha256 {
+                        // Someone's edit: the local file becomes a copy at the top of the drive
+                        // once the drive's version is downloaded in its place.
+                        add(id, there)
+                        let copy = renewed(id)
+                        keepAtTop(copy, from: id, conflicted: true)
+                        splitFrom[copy] = id
+                    } else {
+                        add(id, there, from: here == nil ? nil : id)
+                    }
+                    if here == nil || here?.location != there.location || here?.sha256 != there.sha256 {
+                        undone.insert(id)
+                    }
+                } else if keep, editedHere {
+                    // Deleted on the drive, edited here: the edit is kept, at the top.
+                    keepAtTop(renewed(id), from: id, conflicted: true)
+                }
+                continue
+            }
+            if base[id] == nil, remote[id] == nil, let here = local.entries[id],
+                let mount = readOnly.mount(containing: here.parent, local: local.entries)
+            {
+                // New here, in a read-only folder: a share keeps it at the top of the drive
+                // (just the outermost new thing; what's inside comes along); otherwise it goes.
+                guard readOnly.keepsCopies[mount] == true else { continue }
+                if readOnly.mount(containing: here.parent, local: [:]) != nil {
+                    keepAtTop(id, from: id, conflicted: false)
+                } else {
+                    add(id, here, from: id)
                 }
                 continue
             }
@@ -289,8 +382,14 @@ struct SyncPlan {
                     add(id, there)  // edited on the drive: kept
                 }
             case (let before?, let here?, let there?):
-                let location = ConflictRules.location(
+                var location = ConflictRules.location(
                     base: before.location, local: here.location, remote: there.location)
+                if location != there.location, readOnly.mount(containing: location.parent, local: local.entries) != nil
+                {
+                    // Moved into a read-only folder here: it goes back.
+                    location = there.location
+                    undone.insert(id)
+                }
                 switch ConflictRules.contents(base: before.sha256, local: here.sha256, remote: there.sha256) {
                 case .local:
                     add(id, here.at(location), from: id)

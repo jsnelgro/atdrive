@@ -49,6 +49,11 @@ public struct SyncEvent: Sendable, CustomStringConvertible {
         /// On the drive, but this device can't read it (`detail` says why). Left as it is, here
         /// and on the drive, until it can.
         case unreadable
+        /// Changed here inside a read-only folder: put back as the drive has it.
+        case undone
+        /// Edited or added here inside a read-only folder: kept at the top of the drive
+        /// (`detail` is where), and the folder put back as the drive has it.
+        case keptOutside
     }
 
     public var kind: Kind
@@ -78,6 +83,8 @@ public struct SyncEvent: Sendable, CustomStringConvertible {
         case .raced: "! \(path) was changed on two devices at once: \(detail ?? "")"
         case .skipped: "? skipped \(path): \(detail ?? "")"
         case .unreadable: "? can't read \(path) on the drive: \(detail ?? ""). Left as it is, here and there"
+        case .undone: "! \(path) is read-only: put back as it is on the drive"
+        case .keptOutside: "! \(path) is read-only: your version is now \(detail ?? ""), and the original is back"
         }
     }
 }
