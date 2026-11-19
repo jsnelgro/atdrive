@@ -57,11 +57,6 @@ struct MenuContent: View {
                 Divider()
                 VStack(spacing: 0) {
                     MenuRow("Open in Finder", systemImage: "folder") { Task { await model.showInFinder() } }
-                    if model.config.spacesEnabled {
-                        MenuRow("Open Spaces in Finder", systemImage: "square.grid.2x2") {
-                            Task { await model.showSpacesInFinder() }
-                        }
-                    }
                     MenuRow("Add Shared Link…", systemImage: "link.badge.plus") {
                         SharingCoordinator.shared.askForLink()
                     }

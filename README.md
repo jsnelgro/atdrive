@@ -520,8 +520,8 @@ Spaces/
 - **Records are JSON as stored**, `$type`, blob references and `$link`/`$bytes` included. The
   files a record references (images, say) are beside it.
 - **Other people's** records and spaces start with their handle, so each person's sort together.
-- **App folders** are named as the app names its kind of space ("AtmoBoards Forum"), or by its
-  domain (`bulletin.my`) if it doesn't say.
+- **App folders** are named as the app names its kind of space ("AtmoBoards Forum"), or after
+  its domain (`Bulletin` for `bulletin.my`) if it doesn't say.
 - **Read-only, and always what's on the server.** ATDrive writes without validating records
   against their app's schema, so letting edits through could quietly break another app's data.
   Finder won't change anything in it, and in a synced folder whatever you change there is put

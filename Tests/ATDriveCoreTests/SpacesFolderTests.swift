@@ -14,7 +14,7 @@ import Testing
     let folder: URL
     let events = Events()
 
-    static let note = "/Spaces/bulletin.my/home/note"
+    static let note = "/Spaces/Bulletin/home/note"
 
     init() async throws {
         let home = pds.device("here")
@@ -86,8 +86,33 @@ import Testing
         _ = try await drive.createFolder(named: "Spaces", in: nil)
         let tree = try await drive.update(nil).tree
         #expect(tree.nodes[SpacesFolder.id]?.name == "Spaces (2)")
-        #expect(try tree.locate(DrivePath("/Spaces (2)/bulletin.my/home/note/n1.json")) != nil)
+        #expect(try tree.locate(DrivePath("/Spaces (2)/Bulletin/home/note/n1.json")) != nil)
         #expect(try tree.locate(DrivePath("/Spaces"))?.id != SpacesFolder.id)
+    }
+
+    @Test func renamingItIsAChange() async throws {
+        let before = try await drive.update(nil)
+        try await later()
+        drive.showSpaces(SpacesSettings(folder: "Other"))
+        let after = try await drive.update(before)
+        #expect(after.tree.nodes[SpacesFolder.id]?.name == "Other")
+        #expect(after.anchor != before.anchor)
+        // What Finder's enumerators are told: the folder changed.
+        #expect(after.tree.changes(since: before.tree).updated.map(\.id).contains(SpacesFolder.id))
+    }
+
+    @Test func foldersAreAsNewAsWhatsInThem() async throws {
+        try await pds.client().putSpaceRecord(
+            space: board, repo: me, collection: "my.bulletin.note", rkey: "n2",
+            record: JSONValue.object(["text": .string("dated"), "createdAt": .string("2026-11-02T08:00:00.000Z")]))
+        let tree = try await drive.update(nil).tree
+        let dated = try #require(Timestamp.parse("2026-11-02T08:00:00.000Z"))
+        for path in ["/Spaces", "/Spaces/Bulletin", "/Spaces/Bulletin/home", Self.note] {
+            let folder = try #require(try tree.locate(DrivePath(path)))
+            #expect(folder.record.createdDate.map { $0 >= dated } == true, "\(path)")
+        }
+        let file = try #require(try tree.locate(DrivePath("\(Self.note)/n2.json")))
+        #expect(file.record.modifiedDate == dated)
     }
 
     @Test func offMeansNoFolder() async throws {
@@ -100,12 +125,12 @@ import Testing
     @Test func aSyncedFolderShowsWhatsThereAndPutsBackWhatsChanged() async throws {
         let sync = try sync()
         try await sync.sync()
-        let n1 = "Spaces/bulletin.my/home/note/n1.json"
+        let n1 = "Spaces/Bulletin/home/note/n1.json"
         #expect(local(n1)?.contains("first") == true)
 
         // Edited, added, deleted and renamed here: all put back, nothing written to any space.
         try Data("mine now".utf8).write(to: folder.appendingPathComponent(n1))
-        try Data("new".utf8).write(to: folder.appendingPathComponent("Spaces/bulletin.my/home/new.txt"))
+        try Data("new".utf8).write(to: folder.appendingPathComponent("Spaces/Bulletin/home/new.txt"))
         let fm = FileManager.default
         try fm.moveItem(
             at: folder.appendingPathComponent("Spaces"), to: folder.appendingPathComponent("Renamed"))
@@ -114,7 +139,7 @@ import Testing
         try await sync.sync()
         #expect(local(n1)?.contains("first") == true)
         #expect(!fm.fileExists(atPath: folder.appendingPathComponent("Renamed").path))
-        #expect(!fm.fileExists(atPath: folder.appendingPathComponent("Spaces/bulletin.my/home/new.txt").path))
+        #expect(!fm.fileExists(atPath: folder.appendingPathComponent("Spaces/Bulletin/home/new.txt").path))
         #expect(try fm.contentsOfDirectory(atPath: folder.path).filter { !$0.hasPrefix(".") } == ["Spaces"])
         #expect(pds.count("com.atproto.space.putRecord") == 0 && pds.count("com.atproto.space.applyWrites") == 0)
         #expect(events.all.contains { $0.kind == .undone })
@@ -131,8 +156,8 @@ import Testing
         try await put("n2", "another")
         try await later()
         try await sync.sync()
-        #expect(local("Spaces/bulletin.my/home/note/n1.json")?.contains("second") == true)
-        #expect(local("Spaces/bulletin.my/home/note/n2.json")?.contains("another") == true)
+        #expect(local("Spaces/Bulletin/home/note/n1.json")?.contains("second") == true)
+        #expect(local("Spaces/Bulletin/home/note/n2.json")?.contains("another") == true)
 
         // Turned off: its copies go.
         drive.showSpaces(nil)
@@ -147,7 +172,7 @@ import Testing
         try await later()
         pds.failing["com.atproto.space.listSpaces"] = 10  // past the client's retries
         try await sync.sync()
-        #expect(local("Spaces/bulletin.my/home/note/n1.json")?.contains("first") == true)
+        #expect(local("Spaces/Bulletin/home/note/n1.json")?.contains("first") == true)
         #expect(events.all.contains { $0.description.contains("can't read your spaces") })
         let snapshot = try #require(drive.latestSnapshot)
         #expect(snapshot.spaces?.problem != nil)

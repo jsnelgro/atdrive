@@ -144,23 +144,39 @@ public struct SpacesFolder: Sendable {
     }
 
     /// Its nodes, the folder named `name`: `nil` before it's been read.
+    ///
+    /// A node's `cid` changes whenever anything shown about it does (contents, name, badge, date),
+    /// as that's what Finder's enumerators compare. A folder's date is the newest of what's in
+    /// it.
     func nodes(named name: String) -> [Node]? {
         guard let tree else { return nil }
-        let epoch = Date(timeIntervalSince1970: 0)
+        // Each folder's newest date, from the records and blobs inside it, at any depth.
+        var newest: [String: Date] = [:]
+        for item in tree.items.values where !item.isFolder {
+            guard let date = item.date else { continue }
+            var parent = item.parent
+            while let id = parent {
+                if newest[id].map({ $0 < date }) ?? true { newest[id] = date }
+                parent = tree.items[id]?.parent
+            }
+            if newest[Self.id].map({ $0 < date }) ?? true { newest[Self.id] = date }
+        }
+        let undated = Date(timeIntervalSince1970: 0)
+        func node(_ id: String, _ record: NodeRecord, version: String) -> Node {
+            Node(id: id, cid: "\(version)|\(record.name)|\(record.createdAt)", record: record)
+        }
+        let top = newest[Self.id] ?? undated
         var nodes = [
-            Node(
-                id: Self.id, cid: "spaces", record: NodeRecord(name: name, parent: nil, kind: .folder, createdAt: epoch)
-            )
+            node(Self.id, NodeRecord(name: name, parent: nil, kind: .folder, createdAt: top), version: "spaces")
         ]
         for item in tree.items.values {
+            let date = (item.isFolder ? newest[item.id] : item.date) ?? undated
             let record = NodeRecord(
                 name: item.name, parent: item.parent.map { NodeID.join(Self.id, $0) } ?? Self.id,
                 kind: item.isFolder ? .folder : .file, size: item.size, sha256: item.sha256,
-                createdAt: item.date ?? epoch, modifiedAt: item.isFolder ? nil : item.date ?? epoch)
+                createdAt: date, modifiedAt: date)
             nodes.append(
-                Node(
-                    id: NodeID.join(Self.id, item.id), cid: "\(item.contentVersion)|\(item.unreadable ?? "")",
-                    record: record))
+                node(NodeID.join(Self.id, item.id), record, version: "\(item.contentVersion)|\(item.unreadable ?? "")"))
         }
         return nodes
     }
@@ -203,7 +219,8 @@ public struct JoinedSnapshot: Sendable {
     public var anchor: String? {
         guard let revision else { return nil }
         let mounted = mounts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value.snapshot?.revision ?? "-")" }
-        let folder = spaces.map { ["\(SpacesFolder.id)=\($0.tree?.anchor ?? "-")"] } ?? []
+        // The folder's name is in it too: renaming it is a change.
+        let folder = spaces.map { ["\(SpacesFolder.id)=\($0.tree?.anchor ?? "-")/\($0.settings.folder)"] } ?? []
         return ([revision] + mounted + folder).joined(separator: " ")
     }
     public var settings: DriveSettings? { home.settings }

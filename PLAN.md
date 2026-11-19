@@ -754,8 +754,10 @@ the drive.
 - **Not shown:** ATDrive's own drive spaces (any `me.jsnelgro.atdrive.drive`): they're the drive.
 - **Layout:** `<app>/<space>/<record type>/<record>.json`, blobs in `<record>.blobs/`.
   - The app folder is per space type: its declaration's `title` (`resolveLexicon` on your PDS),
-    else the type's domain (`my.bulletin.board` → `bulletin.my`). Types that would share a name
-    get their last segment added.
+    else the last part of the type's domain, capitalized (`my.bulletin.board` → `Bulletin`).
+    Types that would share a name get their last segment added, or failing that their whole NSID
+    with spaces for dots. Never a dot of ours: Finder takes what follows one for an extension,
+    and hides it (`bulletin.my` showed as `bulletin`).
   - Spaces are named by key; someone else's start with `@<owner handle> `.
   - Record types drop the space type's authority (`my.bulletin.note` → `note`); ones from
     another domain keep their full NSID.
@@ -768,7 +770,10 @@ the drive.
   key), and its items are `#spaces/<item ID>`, so `NodeID.split` puts them in a "mount" no space
   is. `JoinedDrive` reads their contents from `SpaceData` and refuses every write in it
   (`ATDriveError.inSpaces`). Its name is `spaces.folder`, numbered if a folder of yours has it.
-  It's read again at most every `JoinedDrive.spacesReuse` (5 s), so Finder asking for an item
+  Its nodes' `cid`s change whenever anything shown about them does (contents, name, badge,
+  date), which is what Finder's enumerators compare, and the joined anchor includes the folder's
+  name; a folder's date is the newest of what's in it. It's read again at most every
+  `JoinedDrive.spacesReuse` (5 s), so Finder asking for an item
   and then its folder costs one read. If it can't be read, what was read before stays; never
   read, it's an unreadable node, so nothing in it is taken for deleted.
 - **Read-only, and always what's on the server:** a synced folder treats it as a read-only

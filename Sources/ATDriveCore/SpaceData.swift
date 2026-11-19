@@ -468,8 +468,8 @@ public actor SpaceData {
 ///     Bulletin/home/note/@bob.test 3l2mxyz.blobs/bafkrei….png
 ///     Bulletin/@carol.test kitchen/note/…             a space someone else owns
 ///
-/// - An app's folder is its space type's title (`"AtmoBoards Forum"`), else its domain
-///   (`bulletin.my` for `my.bulletin.board`).
+/// - An app's folder is its space type's title (`"AtmoBoards Forum"`), else the last part of its
+///   domain, capitalized (`Bulletin` for `my.bulletin.board`).
 /// - A record type is named without the space type's domain (`note` for `my.bulletin.note`), or
 ///   in full if it's from another domain.
 /// - Records are pretty-printed JSON as stored, `$type`, blob refs and `$link`/`$bytes` included;
@@ -666,19 +666,23 @@ public struct SpaceTree: Sendable, Equatable {
 
     // MARK: Names
 
-    /// Each space type's folder: its title, else its domain (`my.bulletin.board` →
-    /// `bulletin.my`). Types that would share a name get their last segment too.
+    /// Each space type's folder: its title, else the app's name from its NSID
+    /// (`my.bulletin.board` → `Bulletin`). Types that would share a name get their last segment
+    /// too (`Bulletin (board)`), or failing that their whole NSID, dots as spaces. No dots of
+    /// ours: Finder takes what follows one for an extension, and may hide it.
     static func appNames(_ types: Set<String>, titles: [String: String]) -> [String: String] {
-        var names: [String: String] = [:]
+        var base: [String: String] = [:]
         for type in types {
             let title = titles[type]?.trimmingCharacters(in: .whitespacesAndNewlines)
                 .replacingOccurrences(of: "/", with: "∕")
-            names[type] = title.flatMap { $0.isEmpty ? nil : $0 } ?? domain(of: type)
+            base[type] = title.flatMap { $0.isEmpty ? nil : $0 } ?? appName(of: type)
         }
-        let clashing = Dictionary(grouping: names.keys, by: { names[$0]! }).filter { $0.value.count > 1 }
-        for (name, types) in clashing {
-            for type in types { names[type] = "\(name) (\(type.split(separator: ".").last!))" }
+        var names = base
+        func clashing() -> [String] {
+            Dictionary(grouping: names.keys, by: { names[$0]! }).values.filter { $0.count > 1 }.flatMap { $0 }
         }
+        for type in clashing() { names[type] = "\(base[type]!) (\(type.split(separator: ".").last!))" }
+        for type in clashing() { names[type] = "\(base[type]!) (\(type.replacingOccurrences(of: ".", with: " ")))" }
         return names
     }
 
@@ -687,9 +691,11 @@ public struct SpaceTree: Sendable, Equatable {
         record.value["createdAt"]?.string.flatMap(Timestamp.parse) ?? TID.date(record.rkey)
     }
 
-    /// The domain an NSID's authority is: `my.bulletin.board` → `bulletin.my`.
-    static func domain(of nsid: String) -> String {
-        nsid.split(separator: ".").dropLast().reversed().joined(separator: ".")
+    /// An app's name from a space type's NSID: the last part of its domain, capitalized
+    /// (`my.bulletin.board` → `Bulletin`, `com.atmoboards.forum` → `Atmoboards`).
+    static func appName(of nsid: String) -> String {
+        guard let label = nsid.split(separator: ".").dropLast().last else { return nsid }
+        return label.prefix(1).uppercased() + label.dropFirst()
     }
 
     /// A record type's folder in a space of `type`: without the type's authority if it shares it

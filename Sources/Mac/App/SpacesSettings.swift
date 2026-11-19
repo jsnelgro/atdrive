@@ -102,7 +102,9 @@ struct SpacesSection: View {
                         .foregroundStyle(.secondary)
                 }
                 LabeledContent("Folder name") {
-                    TextField("Spaces", text: $folder)
+                    // A prompt, not a title: in a Form, a title is drawn as a label beside it.
+                    TextField("Folder name", text: $folder, prompt: Text("Spaces"))
+                        .labelsHidden()
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 180)
                         .onSubmit { saveFolder() }
@@ -188,7 +190,8 @@ struct SpacesSection: View {
                 "A space shared with you that you've never written to doesn't show up by itself. Paste its address to include it.",
                 color: .secondary)
             HStack {
-                TextField("at://alice.example.com/space/…", text: $address)
+                TextField("Space address", text: $address, prompt: Text("at://alice.example.com/space/…"))
+                    .labelsHidden()
                     .textFieldStyle(.roundedBorder)
                     .onSubmit(include)
                 Button("Include", action: include)

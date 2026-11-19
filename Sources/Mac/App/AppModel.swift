@@ -138,17 +138,6 @@ final class AppModel {
         Task { await syncNow() }
     }
 
-    /// Shows the Spaces folder in Finder.
-    func showSpacesInFinder() async {
-        guard let manager = DriveDomain.manager else { return }
-        do {
-            let url = try await manager.getUserVisibleURL(for: NSFileProviderItemIdentifier(SpacesFolder.id))
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-        } catch {
-            message = "Couldn't show Spaces: \(error.localizedDescription)"
-        }
-    }
-
     /// Saves it in config.toml, and checks for changes on the new schedule from now.
     func setSyncInterval(_ seconds: Int) {
         guard seconds != config.syncInterval else { return }

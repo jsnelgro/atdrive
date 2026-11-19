@@ -16,8 +16,8 @@ import Testing
     let board: String
 
     static let boardType = "my.bulletin.board"
-    /// The board type's folder, with no title declared: its domain.
-    static let app = "bulletin.my"
+    /// The board type's folder, with no title declared: from its NSID.
+    static let app = "Bulletin"
 
     init() async throws {
         bob = pds.addAccount("bob")
@@ -82,21 +82,24 @@ import Testing
     @Test func appsAreNamedByTheirSpaceTypesTitle() async throws {
         pds.lexicons[Self.boardType] = [
             "lexicon": 1, "id": Self.boardType,
-            "defs": ["main": ["type": "space", "key": "any", "title": "Bulletin", "collections": []]],
+            "defs": ["main": ["type": "space", "key": "any", "title": "Bulletin Boards", "collections": []]],
         ]
         try await put(["text": "a"], rkey: "n1", in: board)
         let tree = try await spaces.update().tree
-        #expect(try names(tree, in: "/") == ["Bulletin"])
-        #expect(try tree.locate(DrivePath("Bulletin/home/note/n1.json")) != nil)
+        #expect(try names(tree, in: "/") == ["Bulletin Boards"])
+        #expect(try tree.locate(DrivePath("Bulletin Boards/home/note/n1.json")) != nil)
     }
 
     @Test func typesThatWouldShareANameAreToldApart() {
         let names = SpaceTree.appNames(
-            ["my.bulletin.board", "my.bulletin.chat", "com.atmoboards.forum"], titles: ["com.atmoboards.forum": "Forum"]
-        )
-        #expect(names["my.bulletin.board"] == "bulletin.my (board)")
-        #expect(names["my.bulletin.chat"] == "bulletin.my (chat)")
+            ["my.bulletin.board", "my.bulletin.chat", "com.bulletin.board", "com.atmoboards.forum", "me.x.atdrive.y"],
+            titles: ["com.atmoboards.forum": "Forum"])
+        #expect(names["my.bulletin.chat"] == "Bulletin (chat)")
+        // Still the same with the last segment: the whole NSID, without dots.
+        #expect(names["my.bulletin.board"] == "Bulletin (my bulletin board)")
+        #expect(names["com.bulletin.board"] == "Bulletin (com bulletin board)")
         #expect(names["com.atmoboards.forum"] == "Forum")
+        #expect(names["me.x.atdrive.y"] == "Atdrive")
     }
 
     @Test func leavesOutTheDrivesOwnSpaces() async throws {
