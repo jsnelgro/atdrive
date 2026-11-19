@@ -171,7 +171,15 @@ public final class FolderSync {
         let view = RemoteView(snapshot.tree, base: base, held: snapshot.held)
         reportUnknown(view, base: base)
         reportMounts(snapshot)
-        let plan = SyncPlan(base: base.entries, local: local, remote: view.entries, unknown: view.unknown)
+        // Other people's shares: the drive's version wins, and what was edited or added here is
+        // kept at the top of the drive.
+        let readOnly = ReadOnlyFolders(
+            keepsCopies: Dictionary(
+                uniqueKeysWithValues: snapshot.mounts.filter { $0.value.readOnly && !$0.value.isHeld }.map {
+                    ($0.key, true)
+                }))
+        let plan = SyncPlan(
+            base: base.entries, local: local, remote: view.entries, unknown: view.unknown, readOnly: readOnly)
         let run = SyncRun(
             plan: plan, base: base, local: local, remote: view, root: root, folder: folder, drive: drive,
             snapshot: snapshot
@@ -392,8 +400,17 @@ final class SyncRun {
             }
         }
         for id in order { pending[id] = plan.held.contains(id) ? [] : steps(for: id) }
-        for (copy, original) in plan.splitFrom {
+        for (copy, original) in plan.splitFrom where plan.movedOut[copy] == nil {
             log(SyncEvent(.conflict, display(original), display(copy)))
+            changes += 1
+        }
+        for (id, path) in plan.movedOut.sorted(by: { $0.value < $1.value }) {
+            log(SyncEvent(.keptOutside, "/" + path, display(id)))
+            changes += 1
+        }
+        for id in plan.undone.sorted() {
+            if plan.splitFrom.values.contains(id) { continue }  // said above, with its copy
+            log(SyncEvent(.undone, display(id)))
             changes += 1
         }
         for (id, before) in plan.renamed where plan.splitFrom[id] == nil {

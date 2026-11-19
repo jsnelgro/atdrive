@@ -621,8 +621,12 @@ Checked against the proposal and the reference branch on 2026-11-17:
 - **A mount that can't be read is held:** it keeps its last contents, or, never read, shows as an
   unreadable record, so neither sync nor Finder takes what came from it for deleted. A share
   its owner deleted (or unshared) is the exception: it disappears, and its copies go.
-- **Other people's shares are read-only:** Finder gives their items no write capabilities, and
-  in `atdrive sync` local changes inside one are held and reported, never uploaded or deleted.
+- **Other people's shares are read-only:** Finder gives their items no write capabilities. In
+  `atdrive sync` the drive's version always wins (`ReadOnlyFolders` in `SyncPlan`): edits,
+  deletions, moves and renames made inside one are put back at the next sync, and something of
+  yours moved in goes back where it was. What was edited or added in one is kept first, at the
+  top of your drive: an edit as a conflicted copy, something new as it is. Nothing is uploaded
+  to, or deleted from, the share.
 - **No nesting:** nothing inside a mount can be shared, and a mount can't go in another.
 
 ### Sharing a folder

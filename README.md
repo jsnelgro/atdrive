@@ -425,6 +425,10 @@ The rest of this section is about encrypted drives.
 Share a file or folder with specific people, or with anyone who has its link. Read-only for
 them: they see it in their own drive (in Finder, or a synced folder), kept up to date.
 
+Something shared with you always shows exactly what its owner has. In a synced folder, a change
+you make inside it is put back at the next sync. If you edited a file or added one there, your
+version is kept first, at the top of your drive, so you don't lose it.
+
 In Finder, right-click: **Share…** (who has it, and the link), **Copy Link**, **Stop Sharing**.
 Shared things have a badge. Clicking an `atdrive://` link opens ATDrive, with **Add to My Drive**
 and **Download…**; so does **Add Shared Link…** in the menu bar.

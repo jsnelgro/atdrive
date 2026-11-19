@@ -152,27 +152,6 @@ import Testing
         }
     }
 
-    @Test func localEditsInAReadOnlyShareStayHere() async throws {
-        let mount = try await sharedPhotos()
-        _ = try await bob.add(try await owner.turnLinkOn(mount))
-        let folder = try temporaryDirectory().appendingPathComponent("bob")
-        let events = Events()
-        let sync = try FolderSync(folder: folder, drive: bob, settle: 0) { events.add($0) }
-        try await sync.sync()
-        let a = folder.appendingPathComponent("photos/a.txt")
-        try Data("bob was here".utf8).write(to: a)
-        try FileManager.default.removeItem(at: folder.appendingPathComponent("photos/trip/b.txt"))
-        try Data("new".utf8).write(to: folder.appendingPathComponent("photos/new.txt"))
-        try await sync.sync()
-        try await sync.sync()
-
-        #expect(try await contents(owner, "/photos/a.txt") == "aaa", "never uploaded")
-        #expect(try await contents(owner, "/photos/trip/b.txt") == "bbb", "never deleted")
-        #expect(try await contents(owner, "/photos/new.txt") == nil)
-        #expect(String(decoding: try Data(contentsOf: a), as: UTF8.self) == "bob was here", "kept here")
-        #expect(events.all.contains { $0.description.contains("read-only") })
-    }
-
     @Test func aDeletedShareGoesFromRecipients() async throws {
         let mount = try await sharedPhotos()
         _ = try await bob.add(try await owner.turnLinkOn(mount))
