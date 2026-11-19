@@ -9,6 +9,10 @@ enum FileProviderErrors {
         switch error {
         case is NSFileProviderError, is CocoaError:
             return error
+        case let error as AppDataError:
+            // The sign-in doesn't cover every space: the app asks to sign in again.
+            if error == .needsSignIn || error == .off { return NSFileProviderError(.notAuthenticated) }
+            return describe(error)
         case is DriveAccessError:
             // This Mac doesn't have the drive's keys (yet): the app sets that up.
             return NSFileProviderError(.notAuthenticated)

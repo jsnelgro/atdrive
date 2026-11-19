@@ -65,21 +65,49 @@ extension XRPCClient {
 
     /// The spaces the account is the authority of, or has a repo in: their URIs, of `type` if given.
     public func listSpaces(type: String? = nil, authority: String? = nil) async throws -> [String] {
+        try await listSpaceViews(type: type, authority: authority).map(\.space)
+    }
+
+    /// The spaces the account is the authority of, or has a repo in, with its repo's revision in
+    /// each. A space shared with the account that it never wrote to isn't among them.
+    public func listSpaceViews(type: String? = nil, authority: String? = nil) async throws -> [SpaceView] {
         struct Output: Decodable {
-            struct View: Decodable { var space: String }
-            var spaces: [View]
+            var spaces: [SpaceView]
             var cursor: String?
         }
-        var spaces: [String] = []
+        var spaces: [SpaceView] = []
         var cursor: String?
         repeat {
             let page = try await query(
                 "com.atproto.space.listSpaces",
                 ["spaceType": type, "spaceDid": authority, "cursor": cursor, "limit": "100"], as: Output.self)
-            spaces += page.spaces.map(\.space)
+            spaces += page.spaces
             cursor = page.spaces.isEmpty ? nil : page.cursor
         } while cursor != nil
         return spaces
+    }
+
+    /// Every repo written to a space, with its revision: asked of the space's host (with a
+    /// credential, or the authority's own session). Writers taken out of the space are left out.
+    public func listWriters(space: String) async throws -> [SpaceWriter] {
+        let method = "com.atproto.space.listWriters"
+        var writers: [String: SpaceWriter] = [:]
+        var cursor: String?
+        repeat {
+            let output = try await queryJSON(method, ["space": space, "cursor": cursor, "limit": "1000"])
+            guard let items = output["repos"]?.array else { throw Self.malformed(method) }
+            for item in items {
+                guard let did = item["repo"]?.string else { throw Self.malformed(method) }
+                // Oldest first: a later entry for the same repo replaces an earlier one.
+                if let rev = item["repoRev"]?.string {
+                    writers[did] = SpaceWriter(did: did, rev: rev)
+                } else {
+                    writers[did] = nil  // `repoRemoved`
+                }
+            }
+            cursor = items.isEmpty ? nil : output["cursor"]?.string
+        } while cursor != nil
+        return writers.values.sorted { $0.did < $1.did }
     }
 
     // MARK: Members (`com.atproto.memberspace.*`)
@@ -573,6 +601,24 @@ public enum SpacePolicy: Sendable, Equatable, Codable {
         case .other(let type): try container.encode(type, forKey: .type)
         }
     }
+}
+
+/// A space the account is in (`listSpaces`).
+public struct SpaceView: Sendable, Equatable, Decodable {
+    public var space: String
+    /// The account's repo's revision in the space; `nil` if it has none (it never wrote there).
+    public var repoRev: String?
+
+    public init(space: String, repoRev: String? = nil) {
+        self.space = space
+        self.repoRev = repoRev
+    }
+}
+
+/// A repo written to a space, and its revision (`listWriters`).
+public struct SpaceWriter: Sendable, Equatable {
+    public var did: String
+    public var rev: String
 }
 
 /// An entry in a `memberspace` space's member list.

@@ -57,6 +57,11 @@ struct MenuContent: View {
                 Divider()
                 VStack(spacing: 0) {
                     MenuRow("Open in Finder", systemImage: "folder") { Task { await model.showInFinder() } }
+                    if model.config.appsEnabled {
+                        MenuRow("Open Apps in Finder", systemImage: "square.grid.2x2") {
+                            Task { await model.showAppsInFinder() }
+                        }
+                    }
                     MenuRow("Add Shared Link…", systemImage: "link.badge.plus") {
                         SharingCoordinator.shared.askForLink()
                     }

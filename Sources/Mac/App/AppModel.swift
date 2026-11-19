@@ -111,20 +111,38 @@ final class AppModel {
             let problem = String(describing: error)
             if problem != configProblem { configProblem = problem }
         }
+        applyAppsSettings()
         return config
+    }
+
+    /// Saves `apps.enabled` in config.toml, and adds or removes the apps location in Finder.
+    func setAppsEnabled(_ enabled: Bool) {
+        guard enabled != config.appsEnabled else { return }
+        save { $0.appsEnabled = enabled }
+    }
+
+    /// Saves `apps.spotlight` in config.toml, and tells the extension.
+    func setAppsSpotlight(_ indexed: Bool) {
+        guard indexed != config.appsSpotlight else { return }
+        save { $0.appsSpotlight = indexed }
+    }
+
+    private func save(_ change: (inout LocalConfig) -> Void) {
+        do {
+            try UserConfig.file.update(change)
+            change(&config)
+            configProblem = nil
+            applyAppsSettings()
+        } catch {
+            configProblem = String(describing: error)
+        }
     }
 
     /// Saves it in config.toml, and checks for changes on the new schedule from now.
     func setSyncInterval(_ seconds: Int) {
         guard seconds != config.syncInterval else { return }
-        do {
-            try UserConfig.file.update { $0.syncInterval = seconds }
-            config.syncInterval = seconds
-            configProblem = nil
-            startPolling()
-        } catch {
-            configProblem = String(describing: error)
-        }
+        save { $0.syncInterval = seconds }
+        if configProblem == nil { startPolling() }
     }
 
     /// Opens the account's own sign-in page in the browser (OAuth), and finishes when the user
@@ -136,7 +154,7 @@ final class AppModel {
         let handle = handle
         signingIn = Task {
             do {
-                let session = try await OAuthLogin.signIn(identifier: handle) { url in
+                let session = try await OAuthLogin.signIn(identifier: handle, apps: config.appsEnabled) { url in
                     await MainActor.run { _ = NSWorkspace.shared.open(url) }
                 }
                 try store.save(session)
@@ -178,6 +196,7 @@ final class AppModel {
         } catch {
             logger.error("removing domain failed: \(String(describing: error), privacy: .public)")
         }
+        await removeApps()
         // This Mac's device identity stays, so signing in again doesn't need another approval.
         if let store = AppGroup.sessionStore(), let session = try? store.load() {
             await Auth.logout(session)
@@ -328,6 +347,7 @@ final class AppModel {
         driveMode = drive?.mode
         state = .signedIn(handle: handle)
         await addToFinder(handle: handle)
+        applyAppsSettings()
     }
 
     /// The drive with what's mounted in it, opened, for sharing and settings: `nil` until signed
@@ -418,6 +438,81 @@ final class AppModel {
         } catch {
             logger.error("signal failed: \(String(describing: error), privacy: .public)")
         }
+        if appsShown == true { await signalApps() }
+    }
+
+    // MARK: The apps location
+
+    /// Whether the apps location is in Finder, as far as this app knows (`nil`: not known yet).
+    @ObservationIgnored private var appsShown: Bool?
+    @ObservationIgnored private var appsChange: Task<Void, Never>?
+
+    /// Shows or hides the apps location to match config.toml, and passes `apps.spotlight` on to
+    /// the extension. Signed out, it's never shown.
+    private func applyAppsSettings() {
+        if AppsDomain.spotlight != config.appsSpotlight {
+            AppsDomain.spotlight = config.appsSpotlight
+            if appsShown == true { Task { await signalApps() } }
+        }
+        let wanted = signedInHandle != nil && config.appsEnabled
+        guard wanted != appsShown, appsChange == nil else { return }
+        appsChange = Task {
+            defer { appsChange = nil }
+            if wanted {
+                do {
+                    try await NSFileProviderManager.add(AppsDomain.make())
+                    appsShown = true
+                } catch {
+                    message = "Couldn't add your apps to Finder: \(error.localizedDescription)"
+                    logger.error("adding the apps domain failed: \(String(describing: error), privacy: .public)")
+                }
+            } else {
+                await removeApps()
+            }
+        }
+    }
+
+    /// Takes the apps location out of Finder: it only ever held read-only copies.
+    private func removeApps() async {
+        do {
+            _ = try await NSFileProviderManager.remove(AppsDomain.make(), mode: .removeAll)
+        } catch let error as NSFileProviderError where error.code == .providerNotFound {
+        } catch {
+            logger.error("removing the apps domain failed: \(String(describing: error), privacy: .public)")
+        }
+        appsShown = false
+    }
+
+    private func signalApps() async {
+        guard let manager = AppsDomain.manager else { return }
+        do {
+            try await manager.signalEnumerator(for: .workingSet)
+        } catch {
+            logger.error("signal (apps) failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Shows the apps location in Finder.
+    func showAppsInFinder() async {
+        guard let manager = AppsDomain.manager else { return }
+        do {
+            let url = try await manager.getUserVisibleURL(for: .rootContainer)
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } catch {
+            message = "Couldn't show your apps: \(error.localizedDescription)"
+        }
+    }
+
+    /// The apps view, for adding and removing spaces by address: `nil` until signed in.
+    func appData() async -> AppData? {
+        guard let joined = await joinedDrive() else { return nil }
+        return AppData(
+            home: joined.home, access: SpaceAccess(ownClient: joined.home.client, resolver: IdentityResolver()))
+    }
+
+    /// Something changed in the apps view (a space added or removed): show it now.
+    func appsChanged() async {
+        if appsShown == true { await signalApps() }
     }
 
     /// Deletes history older than the drive keeps, once a day, as `atdrive sync` does: nothing

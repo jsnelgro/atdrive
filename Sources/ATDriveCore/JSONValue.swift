@@ -252,6 +252,46 @@ public enum JSONValue: Sendable, Hashable {
         return Data(out)
     }
 
+    /// The value as JSON text for people to read: keys sorted, indented by two spaces, ending in a
+    /// newline.
+    public func prettySerialized() -> Data {
+        var out: [UInt8] = []
+        writePretty(to: &out, indent: 0)
+        out.append(0x0A)
+        return Data(out)
+    }
+
+    private func writePretty(to out: inout [UInt8], indent: Int) {
+        func newline(_ level: Int) {
+            out.append(0x0A)
+            out += [UInt8](repeating: UInt8(ascii: " "), count: level * 2)
+        }
+        switch self {
+        case .array(let values) where !values.isEmpty:
+            out.append(UInt8(ascii: "["))
+            for (index, value) in values.enumerated() {
+                if index > 0 { out.append(UInt8(ascii: ",")) }
+                newline(indent + 1)
+                value.writePretty(to: &out, indent: indent + 1)
+            }
+            newline(indent)
+            out.append(UInt8(ascii: "]"))
+        case .object(let object) where !object.isEmpty:
+            out.append(UInt8(ascii: "{"))
+            for (index, (key, value)) in object.sorted(by: { $0.key < $1.key }).enumerated() {
+                if index > 0 { out.append(UInt8(ascii: ",")) }
+                newline(indent + 1)
+                Self.write(key, to: &out)
+                out += ": ".utf8
+                value.writePretty(to: &out, indent: indent + 1)
+            }
+            newline(indent)
+            out.append(UInt8(ascii: "}"))
+        default:
+            write(to: &out)
+        }
+    }
+
     private func write(to out: inout [UInt8]) {
         switch self {
         case .null: out += "null".utf8

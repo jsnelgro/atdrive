@@ -27,6 +27,17 @@ actor DriveIndex {
     /// a drive: the app does.
     func drive() async throws -> JoinedDrive {
         if let cachedDrive { return cachedDrive }
+        let drive = try await Self.openHome()
+        let joined = JoinedDrive(
+            home: drive, access: SpaceAccess(ownClient: drive.client, resolver: IdentityResolver()))
+        Item.account = drive.owner
+        cachedDrive = joined
+        return joined
+    }
+
+    /// The signed-in account's home drive, opened with this Mac's identity: "not signed in"
+    /// until the app has opened it on this Mac.
+    static func openHome() async throws -> Drive {
         guard let store = AppGroup.sessionStore(), let session = try store.load(),
             let devices = AppGroup.deviceStore(), let identity = try devices.load()
         else {
@@ -42,11 +53,7 @@ actor DriveIndex {
         } catch is DriveAccessError {
             throw NSFileProviderError(.notAuthenticated)
         }
-        let joined = JoinedDrive(
-            home: drive, access: SpaceAccess(ownClient: drive.client, resolver: IdentityResolver()))
-        Item.account = session.did
-        cachedDrive = joined
-        return joined
+        return drive
     }
 
     /// The drive as last fetched (for sharing actions and badges).

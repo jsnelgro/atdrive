@@ -293,6 +293,10 @@ are.
 ```toml
 [sync]
 interval = 60  # seconds between checks for changes made elsewhere (default 30, at least 5)
+
+[apps]
+enabled = true     # show data from your other apps' spaces, read-only (default false)
+spotlight = false  # let Spotlight search ATDrive Apps in Finder (default false)
 ```
 
 - **Changes take effect without a restart:** `atdrive sync` and the Mac app read the file again
@@ -469,6 +473,45 @@ atdrive rm /from-alice                       # take something shared with you ou
 To start over while trying things out, `atdrive dev reset` deletes your whole drive (and
 everything you shared), as if ATDrive had never been used on your account. The next sign-in makes
 a new drive, and asks whether to encrypt it.
+
+## Other apps' data
+
+Other atproto apps keep data in spaces too: the sticky notes on a [Bulletin](https://bulletin.my)
+board, say, yours and your friends'. ATDrive can show all of it, **read-only**: in Finder under
+**Apps** (next to your drive), and with `atdrive apps`. It's off until you turn it on, because it
+downloads other people's data to your computer.
+
+```bash
+atdrive apps on                    # or apps.enabled = true in config.toml, or Settings… on a Mac
+atdrive apps ls
+atdrive apps tree
+atdrive apps cat 'alice.test/my.bulletin.board – home/bob.test/my.bulletin.note/3l2k.json'
+atdrive apps add at://alice.test/space/my.bulletin.board/home   # a space shared with you
+atdrive apps remove at://alice.test/space/my.bulletin.board/home
+atdrive apps export ~/apps-backup  # a one-way copy you can do anything with
+```
+
+It's laid out by who owns each space, then the space, then whose records they are:
+
+```
+<owner>/<space type> – <space key>/<writer>/<collection>/<record key>.json
+                                                         <record key>.blobs/<cid>.<ext>
+```
+
+- **Records are JSON as stored**, `$type`, blob references and `$link`/`$bytes` included. The
+  files a record references (images, say) are beside it.
+- **Read-only throughout.** ATDrive writes without validating records against their app's
+  schema, so letting edits through could quietly break another app's data.
+- **Your ATDrive files aren't here:** they're the drive.
+- **Spaces you own or have written to show up by themselves.** One shared with you that you've
+  never written to doesn't (atproto has no way to list those): add it by its address, in Settings…
+  on a Mac or with `atdrive apps add`. It's remembered in your drive, so all your devices see it.
+- **A space that won't let ATDrive in** (its owner allows only certain apps), or that you've lost
+  access to, holds `UNREADABLE.txt` saying why, rather than vanishing.
+- **Spotlight** leaves it out of search results unless you turn `apps.spotlight` on.
+- **Sign-in:** while ATDrive asks for broad access (its lexicons aren't published yet), this
+  needs nothing more. Once it asks for its own spaces only, turning this on means signing in
+  again, to grant read access to all your spaces.
 
 ## Conflicts
 

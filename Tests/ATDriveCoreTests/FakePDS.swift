@@ -112,6 +112,9 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
     var requestLimit: Int?
     /// How long a credential lasts.
     var credentialLifetime: TimeInterval = 600
+    /// Spaces whose policy lets only other apps in (`allowedApps`): `authorizeSpaceSync` says
+    /// `AppNotAuthorized`.
+    var refusingApps: Set<String> = []
     /// MAC commits with someone else's key, as a host that isn't the owner's would.
     var forgeMACs = false
     /// The biggest `applyWrites` request so far, in bytes.
@@ -299,7 +302,44 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
             let all = Set(owned + written).sorted().filter { uri in
                 query["spaceType"].map { XRPCClient.spaceParts(uri)?.type == $0 } ?? true
             }
-            return json(["spaces": all.map { ["space": $0] }])
+            return json([
+                "spaces": all.map { uri -> [String: Any] in
+                    var view: [String: Any] = ["space": uri]
+                    if let rev = repos[RepoKey(space: uri, did: caller)]?.rev { view["repoRev"] = rev }
+                    return view
+                }
+            ])
+
+        case "com.atproto.space.listWriters":
+            guard let state = spaces[space], !state.deleted else { return error(400, "SpaceNotFound") }
+            if let authorization = headers.first(where: { $0.key.lowercased() == "authorization" })?.value,
+                authorization.hasPrefix("Atproto-Space-Credential ")
+            {
+                let token = String(authorization.dropFirst("Atproto-Space-Credential ".count))
+                guard let credential = credentials[token], credential.space == space else {
+                    return error(401, "CredentialRevoked")
+                }
+                guard credential.expires > Date() else { return error(401, "ExpiredCredential") }
+                guard SpaceRequestSigner.verify(headers, key: credential.key) else {
+                    return error(401, "InvalidCredential")
+                }
+                guard canRead(credential.reader, state) else { return error(401, "CredentialRevoked") }
+            } else if caller != state.authority {
+                return error(400, "SpaceNotFound")
+            }
+            let writers = repos.filter { $0.key.space == space && $0.value.rev != nil }
+                .sorted { $0.value.rev! < $1.value.rev! }
+            return json([
+                "repos": writers.map { key, repo -> [String: Any] in
+                    [
+                        "$type": "com.atproto.space.defs#repoWrite", "repo": key.did, "repoRev": repo.rev!,
+                        "spaceRev": repo.rev!,
+                        "data": [
+                            "$bytes": commitData(key).base64EncodedString().replacingOccurrences(of: "=", with: "")
+                        ],
+                    ]
+                }
+            ])
 
         case "com.atproto.memberspace.putMembers", "com.atproto.memberspace.removeMembers",
             "com.atproto.memberspace.listMembers":
@@ -346,6 +386,7 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
                 reader = delegation.did
             }
             guard canRead(reader, state) else { return error(400, "SpaceNotFound") }
+            if refusingApps.contains(space) { return error(400, "AppNotAuthorized") }
             guard let keyText = body["credentialKey"] as? String, let key = P256DIDKey.publicKey(keyText) else {
                 return error(400, "InvalidRequest")
             }
