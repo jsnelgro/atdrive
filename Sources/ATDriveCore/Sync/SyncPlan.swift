@@ -227,19 +227,24 @@ struct RemoteView {
     }
 }
 
-/// Folders only the drive can change: other people's shares, by mount ID. In one, the drive's
-/// version always wins: what changed here is undone at the next sync, so the folder shows what's
-/// really there. `keepsCopies`: whether what was edited or added here is first kept as a copy at
-/// the top of the drive (a share, where it may be someone's work), or just undone.
+/// Folders only the drive can change: other people's shares, and Spaces, by mount ID. In one,
+/// the drive's version always wins: what changed here is undone at the next sync, so the folder
+/// shows what's really there. `keepsCopies`: whether what was edited or added here is first kept
+/// as a copy at the top of the drive (a share, where it may be someone's work), or just undone
+/// (Spaces). `locked`: mounts whose own folder can't be renamed or moved either (Spaces, which
+/// isn't a record of yours).
 struct ReadOnlyFolders {
     var keepsCopies: [String: Bool] = [:]
+    var locked: Set<String> = []
 
-    init(keepsCopies: [String: Bool] = [:]) {
+    init(keepsCopies: [String: Bool] = [:], locked: Set<String> = []) {
         self.keepsCopies = keepsCopies
+        self.locked = locked
     }
 
-    /// The read-only mount a node on the drive is inside, if any.
+    /// The read-only mount a node on the drive is inside (or is, if it's locked), if any.
     func mount(of id: String) -> String? {
+        if locked.contains(id) { return id }
         guard let mount = NodeID.split(id).mount, keepsCopies[mount] != nil else { return nil }
         return mount
     }

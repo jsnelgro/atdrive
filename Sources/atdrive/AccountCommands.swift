@@ -27,8 +27,10 @@ struct Login: AsyncParsableCommand {
     func run() async throws {
         let local = hasLocalBrowser
         let interactive = isatty(STDIN_FILENO) != 0
+        // The spaces view, when it's on, needs access to every space (`OAuthLogin.spacesScope`).
+        let spaces = (try? ConfigFile.standard().load().spacesEnabled) ?? false
         let session = try await OAuthLogin.signIn(
-            identifier: handle,
+            identifier: handle, spaces: spaces,
             open: { url in
                 if local {
                     write(

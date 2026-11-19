@@ -172,12 +172,16 @@ public final class FolderSync {
         reportUnknown(view, base: base)
         reportMounts(snapshot)
         // Other people's shares: the drive's version wins, and what was edited or added here is
-        // kept at the top of the drive.
-        let readOnly = ReadOnlyFolders(
+        // kept at the top of the drive. Spaces: the drive's version wins, and that's all.
+        var readOnly = ReadOnlyFolders(
             keepsCopies: Dictionary(
                 uniqueKeysWithValues: snapshot.mounts.filter { $0.value.readOnly && !$0.value.isHeld }.map {
                     ($0.key, true)
                 }))
+        if snapshot.spaces != nil {
+            readOnly.keepsCopies[SpacesFolder.id] = false
+            readOnly.locked.insert(SpacesFolder.id)
+        }
         let plan = SyncPlan(
             base: base.entries, local: local, remote: view.entries, unknown: view.unknown, readOnly: readOnly)
         let run = SyncRun(
@@ -260,6 +264,13 @@ public final class FolderSync {
                     SyncEvent(
                         .skipped, path, "can't read this shared folder (\(problem)); its files here stay as they are"))
             }
+        }
+        if let spaces = snapshot.spaces, let problem = spaces.problem {
+            let path = snapshot.tree.nodes[SpacesFolder.id].map { snapshot.tree.path(of: $0).description }
+            report(
+                SyncEvent(
+                    .skipped, path ?? "/\(spaces.settings.folder)",
+                    "can't read your spaces just now (\(problem)); what's here stays as it is"))
         }
     }
 

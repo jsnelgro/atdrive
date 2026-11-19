@@ -111,7 +111,31 @@ final class AppModel {
             let problem = String(describing: error)
             if problem != configProblem { configProblem = problem }
         }
+        shareSpacesSettings()
         return config
+    }
+
+    /// Changes config.toml (keeping the rest of it as it is), and what follows from it.
+    func updateConfig(_ change: (inout LocalConfig) -> Void) {
+        do {
+            try UserConfig.file.update(change)
+            change(&config)
+            configProblem = nil
+            shareSpacesSettings()
+        } catch {
+            configProblem = String(describing: error)
+        }
+    }
+
+    /// Passes Spaces' settings on to the extension (which can't read config.toml) and to this
+    /// app's drive, and has Finder show the change.
+    private func shareSpacesSettings() {
+        let settings = config.spaces
+        guard settings != SpacesShare.settings || config.spacesSpotlight != SpacesShare.spotlight else { return }
+        SpacesShare.settings = settings
+        SpacesShare.spotlight = config.spacesSpotlight
+        joined?.showSpaces(settings)
+        Task { await syncNow() }
     }
 
     /// Saves it in config.toml, and checks for changes on the new schedule from now.
@@ -136,7 +160,7 @@ final class AppModel {
         let handle = handle
         signingIn = Task {
             do {
-                let session = try await OAuthLogin.signIn(identifier: handle) { url in
+                let session = try await OAuthLogin.signIn(identifier: handle, spaces: config.spacesEnabled) { url in
                     await MainActor.run { _ = NSWorkspace.shared.open(url) }
                 }
                 try store.save(session)
@@ -337,7 +361,8 @@ final class AppModel {
         if let joined { return joined }
         guard let drive = self.drive, (try? await drive.open()) != nil else { return nil }
         let joined = JoinedDrive(
-            home: drive, access: SpaceAccess(ownClient: drive.client, resolver: IdentityResolver()))
+            home: drive, access: SpaceAccess(ownClient: drive.client, resolver: IdentityResolver()),
+            spaces: config.spaces)
         self.joined = joined
         return joined
     }

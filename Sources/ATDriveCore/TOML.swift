@@ -4,8 +4,9 @@ import Foundation
 /// changes only that value, so the comments and layout someone gave their file survive the Mac
 /// app saving a setting.
 ///
-/// Supported: comments, `[table]` and `[table.sub]` headers, bare and dotted keys, and strings
-/// (basic and literal, one line), integers, floats and booleans. Anything else (arrays, inline
+/// Supported: comments, `[table]` and `[table.sub]` headers, bare and dotted keys, strings
+/// (basic and literal, one line), integers, floats, booleans, and arrays of strings (over several
+/// lines if need be, with comments and a trailing comma). Anything else (other arrays, inline
 /// tables, dates, multi-line strings, quoted keys) is reported as unsupported rather than
 /// misread. None of our settings need them yet.
 struct TOMLDocument: Sendable {
@@ -14,17 +15,28 @@ struct TOMLDocument: Sendable {
         case integer(Int)
         case float(Double)
         case boolean(Bool)
+        case strings([String])
 
-        /// As TOML.
+        /// As TOML, on one line.
         var description: String {
             switch self {
             case .integer(let value): String(value)
             case .boolean(let value): String(value)
             case .float(let value):
                 value.isNaN ? "nan" : value.isInfinite ? (value < 0 ? "-inf" : "inf") : "\(value)"
-            case .string(let value):
-                "\"" + value.unicodeScalars.map(Self.escape).joined() + "\""
+            case .string(let value): Self.quoted(value)
+            case .strings(let values): "[" + values.map(Self.quoted).joined(separator: ", ") + "]"
             }
+        }
+
+        /// As TOML, as it's written in the file: a non-empty array one item per line.
+        var fileText: String {
+            guard case .strings(let values) = self, !values.isEmpty else { return description }
+            return "[\n" + values.map { "  \(Self.quoted($0)),\n" }.joined() + "]"
+        }
+
+        private static func quoted(_ value: String) -> String {
+            "\"" + value.unicodeScalars.map(escape).joined() + "\""
         }
 
         private static func escape(_ scalar: Unicode.Scalar) -> String {
@@ -42,15 +54,16 @@ struct TOMLDocument: Sendable {
     }
 
     struct Entry: Sendable {
-        /// 0-based.
+        /// 0-based: where the key is, and the line the value ends on.
         var line: Int
+        var endLine: Int
         var value: Value
-        /// Where the value is in its line, in characters.
+        /// Where the value is in the text (`body`), in characters.
         var range: Range<Int>
     }
 
-    /// Without their line endings.
-    private(set) var lines: [String]
+    /// The text, its lines joined by "\n" whatever the file uses.
+    private var body: [Character]
     private let lineEnding: String
     /// By full dotted key (`sync.interval`), whichever way the file spelled it.
     private(set) var entries: [String: Entry] = [:]
@@ -59,55 +72,60 @@ struct TOMLDocument: Sendable {
 
     init(parsing text: String) throws(TOMLError) {
         // By Unicode scalar: as Characters, "\r\n" is one, and isn't "\n".
-        var lines: [String] = []
-        var line = String.UnicodeScalarView()
+        var scalars = String.UnicodeScalarView()
         var crlf = false
+        var pendingReturn = false
         for scalar in text.unicodeScalars {
-            guard scalar == "\n" else {
-                line.append(scalar)
-                continue
+            if pendingReturn {
+                pendingReturn = false
+                if scalar == "\n" {
+                    crlf = true
+                    scalars.append("\n")
+                    continue
+                }
+                scalars.append("\r")
             }
-            if line.last == "\r" {
-                line.removeLast()
-                crlf = true
+            if scalar == "\r" {
+                pendingReturn = true
+            } else {
+                scalars.append(scalar)
             }
-            lines.append(String(line))
-            line = String.UnicodeScalarView()
         }
-        lines.append(String(line))
-        self.lines = lines
+        if pendingReturn { scalars.append("\r") }
+        body = Array(String(scalars))
         lineEnding = crlf ? "\r\n" : "\n"
+
+        var parser = Parser(body)
         var table = ""
-        for (number, line) in lines.enumerated() {
-            var parser = LineParser(Array(line), line: number + 1)
-            switch try parser.parse() {
-            case .nothing:
-                break
-            case .table(let name):
-                guard tables[name] == nil else { throw TOMLError(line: number + 1, "[\(name)] appears twice") }
-                tables[name] = number
+        while let statement = try parser.next() {
+            switch statement {
+            case .table(let name, let line):
+                guard tables[name] == nil else { throw TOMLError(line: line + 1, "[\(name)] appears twice") }
+                tables[name] = line
                 table = name
-            case .entry(let key, let value, let range):
+            case .entry(let key, let value, let range, let line, let endLine):
                 let full = table.isEmpty ? key : "\(table).\(key)"
-                guard entries[full] == nil else { throw TOMLError(line: number + 1, "\(full) is set twice") }
-                entries[full] = Entry(line: number, value: value, range: range)
+                guard entries[full] == nil else { throw TOMLError(line: line + 1, "\(full) is set twice") }
+                entries[full] = Entry(line: line, endLine: endLine, value: value, range: range)
             }
         }
     }
 
-    var text: String { lines.joined(separator: lineEnding) }
+    var text: String {
+        let joined = String(body)
+        return lineEnding == "\n" ? joined : joined.replacingOccurrences(of: "\n", with: lineEnding)
+    }
 
     func value(_ key: String) -> Value? { entries[key]?.value }
 
     /// Sets `key` (dotted, e.g. `sync.interval`): in place where it's already set, under its
     /// table where that exists, or in a new table at the end.
     mutating func set(_ key: String, to value: Value) {
-        let rendered = value.description
+        let rendered = value.fileText
         if let entry = entries[key] {
-            var characters = Array(lines[entry.line])
-            characters.replaceSubrange(entry.range, with: Array(rendered))
-            lines[entry.line] = String(characters)
+            body.replaceSubrange(entry.range, with: Array(rendered))
         } else {
+            var lines = String(body).split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
             let parts = key.split(separator: ".")
             let table = parts.dropLast().joined(separator: ".")
             let line = "\(parts.last!) = \(rendered)"
@@ -116,7 +134,7 @@ struct TOMLDocument: Sendable {
                 // for a key outside any table).
                 let start = table.isEmpty ? -1 : tables[table]!
                 let end = tables.values.filter { $0 > start }.min() ?? lines.count
-                let last = entries.values.map(\.line).filter { $0 > start && $0 < end }.max() ?? start
+                let last = entries.values.map(\.endLine).filter { $0 > start && $0 < end }.max() ?? start
                 lines.insert(line, at: last + 1)
             } else {
                 let endsWithNewline = lines.last == ""
@@ -126,6 +144,7 @@ struct TOMLDocument: Sendable {
                 }
                 lines += ["[\(table)]", line, ""]
             }
+            body = Array(lines.joined(separator: "\n"))
         }
         // Positions after the edit; the text is still valid, having just been.
         self = try! TOMLDocument(parsing: text)
@@ -145,59 +164,93 @@ struct TOMLError: Error, Equatable, CustomStringConvertible {
     var description: String { "line \(line): \(message)" }
 }
 
-/// One line of a TOML file.
-private struct LineParser {
-    enum Result {
-        case nothing
-        case table(String)
-        case entry(key: String, value: TOMLDocument.Value, range: Range<Int>)
+/// Reads a TOML text one statement (a table header or a key = value) at a time.
+private struct Parser {
+    enum Statement {
+        case table(String, line: Int)
+        case entry(key: String, value: TOMLDocument.Value, range: Range<Int>, line: Int, endLine: Int)
     }
 
     let characters: [Character]
-    let line: Int
     var index = 0
+    /// 0-based, where `index` is.
+    var line = 0
 
-    init(_ characters: [Character], line: Int) {
+    init(_ characters: [Character]) {
         self.characters = characters
-        self.line = line
     }
 
     var current: Character? { index < characters.count ? characters[index] : nil }
 
-    func error(_ message: String) -> TOMLError { TOMLError(line: line, message) }
+    func error(_ message: String) -> TOMLError { TOMLError(line: line + 1, message) }
 
     func unsupported(_ what: String) -> TOMLError { error("\(what) aren't supported in ATDrive's config.toml") }
 
-    mutating func parse() throws(TOMLError) -> Result {
-        skipSpace()
-        guard let first = current, first != "#" else { return .nothing }
-        let result: Result
-        if first == "[" {
-            index += 1
+    mutating func advance() {
+        if current == "\n" { line += 1 }
+        index += 1
+    }
+
+    /// The next statement; `nil` at the end.
+    mutating func next() throws(TOMLError) -> Statement? {
+        while true {
+            skipSpace()
+            switch current {
+            case nil: return nil
+            case "\n": advance()
+            case "#": skipComment()
+            default:
+                let statement = try statement()
+                skipSpace()
+                if current == "#" { skipComment() }
+                if let extra = current, extra != "\n" { throw error("unexpected \(extra)") }
+                return statement
+            }
+        }
+    }
+
+    mutating func statement() throws(TOMLError) -> Statement {
+        let start = line
+        if current == "[" {
+            advance()
             if current == "[" { throw unsupported("arrays of tables ([[…]])") }
             skipSpace()
             let name = try key()
             skipSpace()
             guard current == "]" else { throw error("expected ] after the table name") }
-            index += 1
-            result = .table(name)
-        } else {
-            let name = try key()
-            skipSpace()
-            guard current == "=" else { throw error("expected = after \(name)") }
-            index += 1
-            skipSpace()
-            let start = index
-            let value = try value()
-            result = .entry(key: name, value: value, range: start..<index)
+            advance()
+            return .table(name, line: start)
         }
+        let name = try key()
         skipSpace()
-        if let extra = current, extra != "#" { throw error("unexpected \(extra)") }
-        return result
+        guard current == "=" else { throw error("expected = after \(name)") }
+        advance()
+        skipSpace()
+        let from = index
+        let value = try value()
+        return .entry(key: name, value: value, range: from..<index, line: start, endLine: line)
     }
 
     mutating func skipSpace() {
-        while current == " " || current == "\t" { index += 1 }
+        while current == " " || current == "\t" { advance() }
+    }
+
+    mutating func skipComment() {
+        while let character = current, character != "\n" { advance() }
+    }
+
+    /// Spaces, line breaks and comments: what may come between an array's items.
+    mutating func skipBlank() {
+        while true {
+            skipSpace()
+            if current == "\n" {
+                advance()
+            } else if current == "#" {
+                skipComment()
+            } else {
+                return
+            }
+        }
     }
 
     static func isBare(_ character: Character) -> Bool {
@@ -210,12 +263,12 @@ private struct LineParser {
         while true {
             if current == "\"" || current == "'" { throw unsupported("quoted keys") }
             let start = index
-            while let character = current, Self.isBare(character) { index += 1 }
+            while let character = current, Self.isBare(character) { advance() }
             guard index > start else { throw error("expected a key") }
             parts.append(String(characters[start..<index]))
             skipSpace()
             guard current == "." else { return parts.joined(separator: ".") }
-            index += 1
+            advance()
             skipSpace()
         }
     }
@@ -224,13 +277,17 @@ private struct LineParser {
         switch current {
         case "\"": return .string(try basicString())
         case "'": return .string(try literalString())
-        case "[": throw unsupported("arrays")
+        case "[": return .strings(try strings())
         case "{": throw unsupported("inline tables")
-        case nil: throw error("expected a value")
+        case nil, "\n": throw error("expected a value")
         default: break
         }
         let start = index
-        while let character = current, character != " ", character != "\t", character != "#" { index += 1 }
+        while let character = current, character != " ", character != "\t", character != "#", character != "\n",
+            character != ",", character != "]"
+        {
+            advance()
+        }
         let token = String(characters[start..<index])
         switch token {
         case "true": return .boolean(true)
@@ -248,6 +305,32 @@ private struct LineParser {
             throw unsupported("hexadecimal, octal and binary numbers")
         }
         throw error("\(token) isn't a value (text goes in quotes: \"\(token)\")")
+    }
+
+    /// `[ "a", 'b', ]`, over as many lines as it takes.
+    mutating func strings() throws(TOMLError) -> [String] {
+        advance()
+        var items: [String] = []
+        while true {
+            skipBlank()
+            switch current {
+            case "]":
+                advance()
+                return items
+            case "\"": items.append(try basicString())
+            case "'": items.append(try literalString())
+            case nil: throw error("the array isn't closed (no ])")
+            default: throw unsupported("arrays of anything but text")
+            }
+            skipBlank()
+            switch current {
+            case ",": advance()
+            case "]":
+                advance()
+                return items
+            default: throw error("expected , or ] after an item in the array")
+            }
+        }
     }
 
     /// A decimal integer or float, as TOML spells them (`_` between digits, no leading zeros).
@@ -285,18 +368,18 @@ private struct LineParser {
     }
 
     mutating func basicString() throws(TOMLError) -> String {
-        index += 1
+        advance()
         if current == "\"", index + 1 < characters.count, characters[index + 1] == "\"" {
             throw unsupported("multi-line strings")
         }
         var text = ""
-        while let character = current {
-            index += 1
+        while let character = current, character != "\n" {
+            advance()
             switch character {
             case "\"": return text
             case "\\":
-                guard let escaped = current else { break }
-                index += 1
+                guard let escaped = current, escaped != "\n" else { break }
+                advance()
                 switch escaped {
                 case "\"": text.append("\"")
                 case "\\": text.append("\\")
@@ -311,7 +394,7 @@ private struct LineParser {
                         let code = UInt32(String(characters[index..<index + count]), radix: 16),
                         let scalar = Unicode.Scalar(code)
                     else { throw error("bad \\\(escaped) escape") }
-                    index += count
+                    for _ in 0..<count { advance() }
                     text.unicodeScalars.append(scalar)
                 default: throw error("unknown escape \\\(escaped)")
                 }
@@ -322,14 +405,14 @@ private struct LineParser {
     }
 
     mutating func literalString() throws(TOMLError) -> String {
-        index += 1
+        advance()
         if current == "'", index + 1 < characters.count, characters[index + 1] == "'" {
             throw unsupported("multi-line strings")
         }
         let start = index
-        while let character = current, character != "'" { index += 1 }
+        while let character = current, character != "'", character != "\n" { advance() }
         guard current == "'" else { throw error("the string isn't closed (no ' before the end of the line)") }
-        index += 1
+        advance()
         return String(characters[start..<index - 1])
     }
 }

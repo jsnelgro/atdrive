@@ -21,6 +21,14 @@ final class Item: NSObject, NSFileProviderItem, NSFileProviderItemDecorating {
     private static let accountLock = NSLock()
     private nonisolated(unsafe) static var storedAccount: String?
 
+    /// The Spaces folder as last read, and whether Spotlight may search it (set by `DriveIndex`):
+    /// for badges and Spotlight's attribute.
+    static var spaces: (folder: SpacesFolder?, spotlight: Bool) {
+        get { accountLock.withLock { storedSpaces } }
+        set { accountLock.withLock { storedSpaces = newValue } }
+    }
+    private nonisolated(unsafe) static var storedSpaces: (folder: SpacesFolder?, spotlight: Bool) = (nil, false)
+
     init(node: Node?, parentID: String?, tree: DriveTree? = nil) {
         self.node = node
         self.parentID = parentID
@@ -35,15 +43,35 @@ final class Item: NSObject, NSFileProviderItem, NSFileProviderItemDecorating {
     /// For Finder's actions: which ones show (`NSExtensionFileProviderActions` in Info.plist).
     var userInfo: [AnyHashable: Any]? { ["sharing": sharing.rawValue] }
 
-    /// The `Sharing` badges (`NSFileProviderDecorations` in Info.plist).
+    /// The `Sharing` badges, and Spaces' "can't be read" (`NSFileProviderDecorations` in
+    /// Info.plist). `atdrive spaces` says why a space can't be read.
     var decorations: [NSFileProviderItemDecorationIdentifier]? {
         let bundle = Bundle.main.bundleIdentifier ?? "me.jsnelgro.atdrive.fileprovider"
         switch sharing {
         case .own: return [NSFileProviderItemDecorationIdentifier("\(bundle).shared")]
         case .other: return [NSFileProviderItemDecorationIdentifier("\(bundle).sharedWithMe")]
+        case .spaces:
+            guard let node, Self.spaces.folder?.item(node.id)?.unreadable != nil else { return [] }
+            return [NSFileProviderItemDecorationIdentifier("\(bundle).unreadable")]
         default: return []
         }
     }
+
+    /// In Spaces, kept out of Spotlight's results unless `spaces.spotlight` is on: the
+    /// deprecated, but still honoured, `kMDItemSupportFileType = MDSystemFile`, as system files
+    /// have.
+    var extendedAttributes: [String: Data] {
+        guard sharing == .spaces, !Self.spaces.spotlight else { return [:] }
+        return Self.hiddenFromSpotlight
+    }
+
+    static let hiddenFromSpotlight: [String: Data] = {
+        guard
+            let value = try? PropertyListSerialization.data(
+                fromPropertyList: ["MDSystemFile"], format: .binary, options: 0)
+        else { return [:] }
+        return ["com.apple.metadata:kMDItemSupportFileType": value]
+    }()
 
     var itemIdentifier: NSFileProviderItemIdentifier {
         node.map { NSFileProviderItemIdentifier($0.id) } ?? .rootContainer
@@ -69,8 +97,8 @@ final class Item: NSObject, NSFileProviderItem, NSFileProviderItemDecorating {
             return [.allowsReading, .allowsWriting, .allowsAddingSubItems, .allowsContentEnumerating]
         }
         switch sharing {
-        case .insideOther:
-            // Shared with you: only its owner changes it.
+        case .insideOther, .spaces:
+            // Shared with you, or another app's: only its owner changes it.
             return node.isFolder ? [.allowsReading, .allowsContentEnumerating] : [.allowsReading]
         case .other:
             // The mount itself is yours, in your drive: it can be renamed, moved and removed.
@@ -118,8 +146,11 @@ final class Item: NSObject, NSFileProviderItem, NSFileProviderItemDecorating {
             var cid: String
             var parent: String?
             var name: String
+            /// In Spaces: whether Spotlight may search it (it changes the item's attributes).
+            var indexed: Bool?
         }
-        let metadata = Metadata(cid: node?.cid ?? "root", parent: parentID, name: filename)
+        let indexed = sharing == .spaces ? Self.spaces.spotlight : nil
+        let metadata = Metadata(cid: node?.cid ?? "root", parent: parentID, name: filename, indexed: indexed)
         return (try? Self.encoder.encode(metadata)) ?? Data()
     }
 

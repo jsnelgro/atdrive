@@ -293,6 +293,9 @@ are.
 ```toml
 [sync]
 interval = 60  # seconds between checks for changes made elsewhere (default 30, at least 5)
+
+[spaces]
+enabled = true     # a read-only folder of what's in every space you're in (default false; see Spaces)
 ```
 
 - **Changes take effect without a restart:** `atdrive sync` and the Mac app read the file again
@@ -469,6 +472,75 @@ atdrive rm /from-alice                       # take something shared with you ou
 To start over while trying things out, `atdrive dev reset` deletes your whole drive (and
 everything you shared), as if ATDrive had never been used on your account. The next sign-in makes
 a new drive, and asks whether to encrypt it.
+
+## Spaces
+
+Other atproto apps keep data in spaces too: the sticky notes on a [Bulletin](https://bulletin.my)
+board, say, yours and your friends'. ATDrive can show all of it in a **read-only** folder at the
+top of your drive, called **Spaces**. It's in Finder, in a synced folder and in `atdrive ls`, like
+the rest of the drive. It's off until you turn it on, because it downloads other people's data
+to your computer.
+
+```toml
+[spaces]
+enabled = true
+folder = "Spaces"     # its name in your drive
+include = [           # shared with you, never written to
+  "at://carol.test/space/my.bulletin.board/kitchen",
+]
+exclude = [           # not shown
+  "at://alice.test/space/com.example.noisy/x",
+]
+```
+
+Settings… on a Mac changes the same settings. `atdrive spaces` lists every space: where it is in
+the folder, its address (to copy into `include` or `exclude`), and whether it can be read.
+
+It's laid out by app, then space, then record type:
+
+```
+Spaces/
+├── Bulletin/                             ← the app (its own name for this kind of space)
+│   ├── home/                             ← your board
+│   │   ├── note/                         ← record type
+│   │   │   ├── 3l2kabc.json              ← your note
+│   │   │   ├── @bob.test 3l2mxyz.json    ← Bob's note on your board
+│   │   │   └── @bob.test 3l2mxyz.blobs/  ← the files his note references
+│   │   │       └── bafkreih….png
+│   │   └── pin/
+│   │       └── 3l2kabe.json
+│   └── @carol.test kitchen/              ← Carol's board
+│       └── note/
+│           ├── 3l3aqrs.json
+│           └── @carol.test 3l39tuv.json
+└── AtmoBoards Forum/
+    └── @dana.test default/               ← badged: can't be read
+```
+
+- **Records are JSON as stored**, `$type`, blob references and `$link`/`$bytes` included. The
+  files a record references (images, say) are beside it.
+- **Other people's** records and spaces start with their handle, so each person's sort together.
+- **App folders** are named as the app names its kind of space ("AtmoBoards Forum"), or after
+  its domain (`Bulletin` for `bulletin.my`) if it doesn't say.
+- **Read-only, and always what's on the server.** ATDrive writes without validating records
+  against their app's schema, so letting edits through could quietly break another app's data.
+  Finder won't change anything in it, and in a synced folder whatever you change there is put
+  back at the next sync.
+- **Your ATDrive files aren't in it:** they're the rest of the drive.
+- **Spaces you own or have written to show up by themselves.** One shared with you that you've
+  never written to doesn't (atproto has no way to list those yet: #56): add its address to
+  `include`.
+- **A space that won't let ATDrive in** (its owner allows only certain apps), or that you've lost
+  access to, is badged in Finder, and `atdrive spaces` says why. Your own records in it stay.
+- **If a folder of yours already has the name**, Spaces is numbered (`Spaces (2)`).
+- **Spotlight** leaves it out of search results unless you set `spotlight = true` under
+  `[spaces]`.
+- **Your config file lists your spaces.** If you keep `config.toml` in public dotfiles, anyone
+  can see which spaces are in `include` and `exclude`. The addresses aren't secrets, but they
+  are yours.
+- **Sign-in:** while ATDrive asks for broad access (its lexicons aren't published yet), this
+  needs nothing more. Once it asks for its own spaces only, turning this on means signing in
+  again, to grant read access to all your spaces.
 
 ## Conflicts
 

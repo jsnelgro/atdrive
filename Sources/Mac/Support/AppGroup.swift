@@ -61,6 +61,34 @@ public enum DriveDomain {
     }
 }
 
+/// What the Spaces folder shows (`spaces.*` in config.toml), for the extension, which can't read
+/// config.toml: the app writes it to the App Group's defaults whenever the file changes.
+public enum SpacesShare {
+    /// `nil` while Spaces is off.
+    public static var settings: SpacesSettings? {
+        get {
+            defaults?.data(forKey: settingsKey).flatMap { try? JSONDecoder().decode(SpacesSettings.self, from: $0) }
+        }
+        set {
+            if let newValue, let data = try? JSONEncoder().encode(newValue) {
+                defaults?.set(data, forKey: settingsKey)
+            } else {
+                defaults?.removeObject(forKey: settingsKey)
+            }
+        }
+    }
+
+    /// Whether Spotlight may search the Spaces folder (`spaces.spotlight`).
+    public static var spotlight: Bool {
+        get { defaults?.bool(forKey: spotlightKey) ?? false }
+        set { defaults?.set(newValue, forKey: spotlightKey) }
+    }
+
+    private static let settingsKey = "spacesSettings"
+    private static let spotlightKey = "spacesSpotlight"
+    private static var defaults: UserDefaults? { AppGroup.identifier.flatMap { UserDefaults(suiteName: $0) } }
+}
+
 public enum Log {
     public static let subsystem = "me.jsnelgro.atdrive"
 }

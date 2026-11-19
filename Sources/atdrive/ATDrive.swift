@@ -19,6 +19,7 @@ struct ATDrive: AsyncParsableCommand {
             Share.self, Unshare.self, Shares.self, OpenShare.self, Verify.self,
             ShowHistory.self, Restore.self, Trash.self,
             Encryption.self, Devices.self, ShowConfig.self,
+            Spaces.self,
             Dev.self,
         ]
     )
@@ -55,7 +56,11 @@ struct Context {
         // What it trusts changes as keys arrive and rotate; saved as it happens.
         let drive = await Drive(session: session, identity: identity) { try? devices.save($0) }
         let access = SpaceAccess(ownClient: drive.client, resolver: IdentityResolver())
-        return Context(store: store, session: session, drive: drive, joined: JoinedDrive(home: drive, access: access))
+        // The Spaces folder, if it's on (a config.toml that doesn't make sense leaves it off).
+        let spaces = (try? ConfigFile.standard().load())?.spaces
+        return Context(
+            store: store, session: session, drive: drive,
+            joined: JoinedDrive(home: drive, access: access, spaces: spaces))
     }
 
     /// The drive, opened, which must be encrypted, with this device holding its keys: for
