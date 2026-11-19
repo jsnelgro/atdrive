@@ -78,11 +78,11 @@ import Testing
         let start = try #require(pds.revision)
         try await put("3aaaaaaaaaaa3", "b.txt")
         try await put("3aaaaaaaaaaa2", "a, renamed.txt")
-        pds.insertRawRecord(rkey: "self", collection: "me.jsnelgro.atdrive.settings", ["retentionDays": 30])
+        pds.insertRawRecord(rkey: "self", collection: "app.atdrive.settings", ["retentionDays": 30])
         let changes = try await drive.changes(since: start)
 
         #expect(changes.ops.map(\.rkey) == ["3aaaaaaaaaaa3", "3aaaaaaaaaaa2", "self"])
-        #expect(changes.ops.map(\.collection) == [Lexicon.node, Lexicon.node, "me.jsnelgro.atdrive.settings"])
+        #expect(changes.ops.map(\.collection) == [Lexicon.node, Lexicon.node, "app.atdrive.settings"])
         #expect(changes.ops[0].prev == nil)  // a create
         #expect(changes.ops[1].prev != nil && changes.ops[1].prev != changes.ops[1].cid)
         #expect(changes.ops[2].value == .object(["retentionDays": .integer(30)]))
@@ -190,7 +190,7 @@ import Testing
         let start = Date()
         var snapshot = try await drive.update(nil, now: start)
         try await put("3aaaaaaaaaaa3", "missed")
-        pds.insertRawRecord(rkey: "self", collection: "me.jsnelgro.atdrive.settings", ["retentionDays": 30])
+        pds.insertRawRecord(rkey: "self", collection: "app.atdrive.settings", ["retentionDays": 30])
         let compacted = try #require(pds.revision)
         try await put("3aaaaaaaaaaa2", "a, edited")
         pds.compactOps(through: compacted)
@@ -202,7 +202,7 @@ import Testing
         #expect(fullListings(since: calls) == 1)
         #expect(snapshot.tree.nodes["3aaaaaaaaaaa3"]?.name == "missed")
         #expect(snapshot.tree.nodes["3aaaaaaaaaaa2"]?.name == "a, edited")
-        #expect(snapshot.repo.cid("me.jsnelgro.atdrive.settings", "self") != nil)
+        #expect(snapshot.repo.cid("app.atdrive.settings", "self") != nil)
         #expect(snapshot.verified)
     }
 
@@ -251,7 +251,7 @@ import Testing
 
     @Test func theHashStateIsSavedWithTheSnapshot() async throws {
         try await put("3aaaaaaaaaaa2", "a")
-        pds.insertRawRecord(rkey: "self", collection: "me.jsnelgro.atdrive.settings", ["retentionDays": 30])
+        pds.insertRawRecord(rkey: "self", collection: "app.atdrive.settings", ["retentionDays": 30])
         let snapshot = try await drive.update(nil)
         let saved = try #require(try snapshot.saved())
         let loaded = try #require(DriveSnapshot(saved: saved, drive: drive))
@@ -277,7 +277,7 @@ import Testing
         try await put("3aaaaaaaaaaa3", "a.txt", in: "3aaaaaaaaaaa2")
         pds.insertRawRecord(
             rkey: "3aaaaaaaaaaa4", ["$type": Lexicon.node, "name": "x", "kind": "package", "createdAt": "2026"])
-        pds.insertRawRecord(rkey: "self", collection: "me.jsnelgro.atdrive.settings", ["retentionDays": 30])
+        pds.insertRawRecord(rkey: "self", collection: "app.atdrive.settings", ["retentionDays": 30])
         var snapshot = try await drive.update(nil)
         let listed = try await latestCommit()
         #expect(snapshot.repo.check(listed))
@@ -285,8 +285,8 @@ import Testing
 
         try await put("3aaaaaaaaaaa3", "a, edited.txt", in: "3aaaaaaaaaaa2")
         pds.deleteRawRecord(rkey: "3aaaaaaaaaaa4")
-        pds.insertRawRecord(rkey: "self", collection: "me.jsnelgro.atdrive.settings", ["retentionDays": 7])
-        pds.insertRawRecord(rkey: "3aaaaaaaaaaa5", collection: "me.jsnelgro.atdrive.version", ["n": 1])
+        pds.insertRawRecord(rkey: "self", collection: "app.atdrive.settings", ["retentionDays": 7])
+        pds.insertRawRecord(rkey: "3aaaaaaaaaaa5", collection: "app.atdrive.version", ["n": 1])
         let calls = pds.calls.count
         snapshot = try await drive.update(snapshot)
         // No listing of the drive. The settings record changed, so the drive is opened again:
@@ -298,7 +298,7 @@ import Testing
 
         // Every record counts, in every collection: leave one out, or hold an old CID, and the
         // check fails.
-        for (collection, rkey) in [(Lexicon.node, "3aaaaaaaaaaa3"), ("me.jsnelgro.atdrive.version", "3aaaaaaaaaaa5")] {
+        for (collection, rkey) in [(Lexicon.node, "3aaaaaaaaaaa3"), ("app.atdrive.version", "3aaaaaaaaaaa5")] {
             var missing = snapshot.repo
             missing.set(collection, rkey, cid: nil)
             #expect(!missing.check(latest))
@@ -455,8 +455,8 @@ import Testing
                             ]
                             : ["node": node, "n": Int.random(in: 0..<100, using: &random)])
                 default:
-                    if pds.cid(of: id, collection: "me.jsnelgro.atdrive.version") != nil {
-                        pds.deleteRawRecord(rkey: id, collection: "me.jsnelgro.atdrive.version")
+                    if pds.cid(of: id, collection: "app.atdrive.version") != nil {
+                        pds.deleteRawRecord(rkey: id, collection: "app.atdrive.version")
                     }
                 }
             }

@@ -86,7 +86,7 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
   - **Not yet exercised:** against the live alpha PDS (two accounts: `ATDRIVE_LIVE_STATE` and
     `_B`), and the Finder actions, badges, windows and `atdrive://` links on a real Mac.
   - **Follow-ups:** publish the lexicons (`atdrive dev lexicons publish`, then a DNS TXT record at
-    `_lexicon.atdrive.jsnelgro.me`) and set `OAuthLogin.lexiconsPublished`, which narrows the
+    `_lexicon.atdrive.app`) and set `OAuthLogin.lexiconsPublished`, which narrows the
     scope to ATDrive's spaces.
 - [x] **Spaces** (#28, see *Spaces* below): everything in the spaces you're in, not just
   ATDrive's files, as a read-only folder at the top of the drive: in Finder, a synced folder and
@@ -149,9 +149,9 @@ keeps exactly what `keptWhenDeleting` keeps.
 
 ## Data model
 
-- **One drive = one space:** `at://<did>/space/me.jsnelgro.atdrive.drive/default`, under the
+- **One drive = one space:** `at://<did>/space/app.atdrive.drive/default`, under the
   `personalspace` policy. It's created on the first write.
-- **One record per file or folder:** `me.jsnelgro.atdrive.node`. The rkey is a TID and is
+- **One record per file or folder:** `app.atdrive.node`. The rkey is a TID and is
   permanent. Fields:
   - `parent`: rkey, absent for the top level
   - `name`, `kind`, `createdAt`
@@ -245,7 +245,7 @@ Checked against the reference branch at `704b9e2` (2026-11-05):
 Thirty days of every change: edits, renames, moves and deletes.
 
 - **One version record per change.**
-  - Every write to a file or folder also writes a `me.jsnelgro.atdrive.version` record, in the
+  - Every write to a file or folder also writes an `app.atdrive.version` record, in the
     same `applyWrites`. Its rkey is a new TID (when).
   - It holds the node's ID; the kind of change (created, edited, moved, deleted, restored); the
     device; and `prev`, the version the change was based on.
@@ -277,7 +277,7 @@ Thirty days of every change: edits, renames, moves and deletes.
 - **Finding a file's versions:** clients list the `version` collection once, then keep it current
   with the change feed, which includes record values.
 - **Pruning:**
-  - The retention (30 days) is in the drive's `me.jsnelgro.atdrive.settings` record (rkey `self`),
+  - The retention (30 days) is in the drive's `app.atdrive.settings` record (rkey `self`),
     so every device agrees.
   - Versions older than that are deleted, except what's needed to know each node's state at the
     start of the window: its newest older version, and the version that one takes its contents
@@ -351,7 +351,7 @@ operator.
   - **The drive key** is 32 random bytes, made when the drive is created. The keyring is every
     drive key so far, oldest first; the newest seals new records.
   - **Each device has its own key pair** (Curve25519), stored where its session is.
-  - **One record per device** (`me.jsnelgro.atdrive.device`) holds the keyring wrapped for that
+  - **One record per device** (`app.atdrive.device`) holds the keyring wrapped for that
     device's public key. One more (rkey `recovery`) wraps it for the recovery key. They're separate
     records because two devices editing one shared keyring record would overwrite each other.
   - **Wrapping uses HPKE in auth mode** (X25519, HKDF-SHA256, AES-256-GCM: all in WebCrypto, so
@@ -512,7 +512,7 @@ Checked against the sharing plan (#26, #27) and the web milestone while reworkin
     interrupted upload leaves the old version in place.
 - **Bigger files:** smaller chunks mean more of them per record (about 6 GB per record at a
   1 MiB average, with chunk IDs). Past that, the chunk list continues in
-  `me.jsnelgro.atdrive.chunks` records, written in the same `applyWrites`.
+  `app.atdrive.chunks` records, written in the same `applyWrites`.
 
 ### Lexicons
 
@@ -610,7 +610,7 @@ Checked against the proposal and the reference branch on 2026-11-17:
 
 ### Shared folders are drives
 
-- **A shared folder is a space of the drive's type,** `at://<owner>/space/me.jsnelgro.atdrive.drive/<key>`,
+- **A shared folder is a space of the drive's type,** `at://<owner>/space/app.atdrive.drive/<key>`,
   under `memberspace`, its key 128 random bits in base32 (a plain share's public link has only its
   address to protect it). It's a drive in every way: nodes, versions, chunks, and `settings`
   (with its mode, and its `name`, for those who open it).
@@ -680,18 +680,18 @@ Checked against the proposal and the reference branch on 2026-11-17:
 - **A share's keyring** reaches the owner's devices through the mount (sealed in the drive),
   members through their member record, and link holders through the link record.
 - **Each account has a sharing key** (X25519), kept in its home drive's settings (sealed on an
-  encrypted drive, readable on a plain one) and published as `me.jsnelgro.atdrive.shareKey`
+  encrypted drive, readable on a plain one) and published as `app.atdrive.shareKey`
   (`self`), with `protected`. Signing in publishes it; switching encryption replaces it; removing
   a device rotates it.
-- **Member records** (`me.jsnelgro.atdrive.member`, key = their DID): the keyring wrapped for their
+- **Member records** (`app.atdrive.member`, key = their DID): the keyring wrapped for their
   sharing key with HPKE auth mode from the owner's, accepted only if the sender is the owner's
   published key; and their membership sealed with the share's key, so the PDS can't make one.
-- **The link record** (`me.jsnelgro.atdrive.link`, `self`): the keyring sealed with a key derived
+- **The link record** (`app.atdrive.link`, `self`): the keyring sealed with a key derived
   from a random 256-bit link key, which travels in the link's `#fragment`.
 - **Removing a member, or turning the link off,** rotates the key and wraps it again for those who
   stay. What they already had stays theirs.
 - **Verification codes** (#30): 16 digits from both sharing keys, compared out of band. Verified
-  keys are kept in the home drive (`me.jsnelgro.atdrive.contact`). A key that changed since it was
+  keys are kept in the home drive (`app.atdrive.contact`). A key that changed since it was
   verified or last wrapped for is refused unless the owner confirms.
 
 ### Links
@@ -751,7 +751,7 @@ the drive.
      else does (#56), so they're named in `spaces.include` in config.toml. `spaces.exclude` hides
      any space (found by itself or included): it's listed, never read. Both are addresses
      (`at://<handle or DID>/space/<type>/<key>`), resolved to URIs once per process.
-- **Not shown:** ATDrive's own drive spaces (any `me.jsnelgro.atdrive.drive`): they're the drive.
+- **Not shown:** ATDrive's own drive spaces (any `app.atdrive.drive`): they're the drive.
 - **Layout:** `<app>/<space>/<record type>/<record>.json`, blobs in `<record>.blobs/`.
   - The app folder is per space type: its declaration's `title` (`resolveLexicon` on your PDS),
     else the last part of the type's domain, capitalized (`my.bulletin.board` → `Bulletin`).
@@ -807,12 +807,12 @@ the drive.
 - **Auth and privacy:**
   - **OAuth is how you sign in.** It's implemented here: PAR + PKCE + DPoP, a loopback client
     ID, and a redirect to 127.0.0.1. Spaces refuse app passwords.
-  - **Naming a space type in a scope** (`space:me.jsnelgro.atdrive.drive?…`) makes the PDS
+  - **Naming a space type in a scope** (`space:app.atdrive.drive?…`) makes the PDS
     resolve that type's lexicon for the consent screen. If the lexicon can't be resolved, the
     sign-in fails with `invalid_scope: Unable to retrieve space declarations`.
   - **So ATDrive asks for `space:*`** until its lexicons are published:
     1. `atdrive dev lexicons publish <handle>` writes the `com.atproto.lexicon.schema` records.
-    2. Add the DNS TXT record it prints: `_lexicon.atdrive.jsnelgro.me` → `did=<that account's DID>`.
+    2. Add the DNS TXT record it prints: `_lexicon.atdrive.app` → `did=<that account's DID>`.
     3. Set `OAuthLogin.lexiconsPublished`, which switches to `narrowScope`.
   - **Public OAuth clients get two-week sessions** on Bluesky's PDS, so you sign in again after
     that.

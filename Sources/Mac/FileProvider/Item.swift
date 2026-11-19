@@ -46,7 +46,7 @@ final class Item: NSObject, NSFileProviderItem, NSFileProviderItemDecorating {
     /// The `Sharing` badges, and Spaces' "can't be read" (`NSFileProviderDecorations` in
     /// Info.plist). `atdrive spaces` says why a space can't be read.
     var decorations: [NSFileProviderItemDecorationIdentifier]? {
-        let bundle = Bundle.main.bundleIdentifier ?? "me.jsnelgro.atdrive.fileprovider"
+        let bundle = Bundle.main.bundleIdentifier ?? "app.atdrive.fileprovider"
         switch sharing {
         case .own: return [NSFileProviderItemDecorationIdentifier("\(bundle).shared")]
         case .other: return [NSFileProviderItemDecorationIdentifier("\(bundle).sharedWithMe")]

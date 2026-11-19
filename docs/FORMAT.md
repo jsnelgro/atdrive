@@ -9,13 +9,13 @@ Alpha: nothing here is stable yet, and nothing is backward compatible.
 
 ## A drive
 
-- A drive is one atproto space: `at://<did>/space/me.jsnelgro.atdrive.drive/<key>`. The home
+- A drive is one atproto space: `at://<did>/space/app.atdrive.drive/<key>`. The home
   drive's key is `default`. Everything below is per space: a shared folder will be another space
   of the same type, with its own settings, mode, keys, history and change feed.
 - Collections: `node` (one record per file or folder), `version` (one per change),
   `chunks` (the rest of chunk lists too long for one record), `settings` (one record, key
   `self`), `device` (encrypted drives: one per device, plus `recovery`). All under
-  `me.jsnelgro.atdrive.`.
+  `app.atdrive.`.
 - File contents are blobs, referenced from `chunks` arrays in records. A blob lives while a
   record references it.
 
@@ -89,7 +89,9 @@ its top; the share is shown as that file rather than a folder).
 ## Chunking
 
 FastCDC with a gear table derived from a 32-byte seed (`Chunker.swift`; `ChunkerTests` has fixed
-vectors). Minimum 256 KiB, average 1 MiB, maximum 4 MiB.
+vectors, and `Tests/vectors/chunker_vectors.py` computes them). Minimum 256 KiB, average 1 MiB,
+maximum 4 MiB. The gear table is HKDF-SHA256 of the seed (no salt, info
+`app.atdrive chunker gear table`), 2048 bytes read as 256 little-endian `UInt64`s.
 
 - Plain drive: the seed is 32 zero bytes, so every client cuts the same way.
 - Encrypted drive: the seed is the first drive key's `atdrive chunker seed v1` subkey.
@@ -165,7 +167,7 @@ the first 3 bytes of `SHA-256("atdrive recovery key checksum v1" || key)`.
 
 ## Sharing
 
-A share is a drive of its own: a space of the same type (`me.jsnelgro.atdrive.drive`), its key
+A share is a drive of its own: a space of the same type (`app.atdrive.drive`), its key
 26 base32 characters (128 random bits), under the `memberspace` policy, with the records above.
 Its owner's drive mounts it where the folder was.
 
@@ -174,7 +176,7 @@ Its owner's drive mounts it where the folder was.
   `linkKey?` (32 bytes: an encrypted share opened from its link, or the owner's while its link is
   on). Its children are the mounted space's top-level nodes. Node IDs across spaces are
   `<mount key>/<rkey>`.
-- **`me.jsnelgro.atdrive.shareKey`** (public repo, key `self`): `publicKey` (raw X25519),
+- **`app.atdrive.shareKey`** (public repo, key `self`): `publicKey` (raw X25519),
   `protected` (whether the private key is kept sealed), `createdAt`.
 - **`member`** (in an encrypted share; key: the member's DID): `keyring` (the share's keyring
   wrapped as a device's is, HPKE auth mode, X25519 / HKDF-SHA256 / AES-256-GCM, `info` the

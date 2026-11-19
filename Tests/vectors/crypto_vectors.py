@@ -10,11 +10,11 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 def b(r): return bytes(r)
 def b64(x): return base64.b64encode(x).decode().rstrip('=')
 def hkdf(ikm, info, n=32): return HKDF(hashes.SHA256(), n, None, info).derive(ikm)
-space = "at://did:plc:test/space/me.jsnelgro.atdrive.drive/default"
+space = "at://did:plc:test/space/app.atdrive.drive/default"
 key = b(range(0,32)); second = b(range(100,132)); recovery = b(range(32,64))
 
 # sealing
-aad = b"".join(p.encode()+b"\0" for p in ["atdrive record v2", space, "me.jsnelgro.atdrive.node", "3jzfcijpj2z2a"])
+aad = b"".join(p.encode()+b"\0" for p in ["atdrive record v2", space, "app.atdrive.node", "3jzfcijpj2z2a"])
 nonce = b(range(0xa0,0xac))
 ct = AESGCM(hkdf(key, b"atdrive record sealing v1")).encrypt(nonce, b'{"name":"notes.txt","size":42}', aad)
 print("sealing", b64(nonce+ct))

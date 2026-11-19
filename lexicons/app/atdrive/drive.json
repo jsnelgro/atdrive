@@ -1,20 +1,20 @@
 {
   "lexicon": 1,
-  "id": "me.jsnelgro.atdrive.drive",
+  "id": "app.atdrive.drive",
   "defs": {
     "main": {
       "type": "space",
       "key": "any",
       "description": "A drive of files and folders: an account's own drive, or a shared folder (a drive of its own, mounted in its owner's). Encrypted or not, as its settings record says: encrypted, only the devices that hold its keys can read it. The default drive's key is \"default\"; a share's is 128 random bits in base32.",
       "collections": [
-        "me.jsnelgro.atdrive.node",
-        "me.jsnelgro.atdrive.version",
-        "me.jsnelgro.atdrive.chunks",
-        "me.jsnelgro.atdrive.settings",
-        "me.jsnelgro.atdrive.device",
-        "me.jsnelgro.atdrive.member",
-        "me.jsnelgro.atdrive.link",
-        "me.jsnelgro.atdrive.contact"
+        "app.atdrive.node",
+        "app.atdrive.version",
+        "app.atdrive.chunks",
+        "app.atdrive.settings",
+        "app.atdrive.device",
+        "app.atdrive.member",
+        "app.atdrive.link",
+        "app.atdrive.contact"
       ],
       "title": "ATDrive"
     }

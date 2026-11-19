@@ -112,14 +112,14 @@ import Testing
         // Without an Info.plist that names a group, it's not the app's.
         #expect(SecretStorage.enclosingAppGroup(executable: executable) == nil)
         let info = try PropertyListSerialization.data(
-            fromPropertyList: ["ATDriveAppGroup": "TEAM123456.me.jsnelgro.atdrive"], format: .xml, options: 0)
+            fromPropertyList: ["ATDriveAppGroup": "TEAM123456.app.atdrive"], format: .xml, options: 0)
         try info.write(to: contents.appendingPathComponent("Info.plist"))
-        #expect(SecretStorage.enclosingAppGroup(executable: executable) == "TEAM123456.me.jsnelgro.atdrive")
+        #expect(SecretStorage.enclosingAppGroup(executable: executable) == "TEAM123456.app.atdrive")
         // Run through a link on the PATH.
         let link = root.appendingPathComponent("bin/atdrive")
         try FileManager.default.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: executable)
-        #expect(SecretStorage.enclosingAppGroup(executable: link) == "TEAM123456.me.jsnelgro.atdrive")
+        #expect(SecretStorage.enclosingAppGroup(executable: link) == "TEAM123456.app.atdrive")
         // A command built on its own isn't the app's.
         #expect(SecretStorage.enclosingAppGroup(executable: root.appendingPathComponent("build/atdrive")) == nil)
 

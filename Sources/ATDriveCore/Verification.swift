@@ -7,7 +7,7 @@ import Foundation
 // person, a call); each marks the other as verified, and the key is remembered in their home
 // drive (sealed on an encrypted drive), for every one of their devices.
 
-/// A person's sharing key, as verified: `me.jsnelgro.atdrive.contact`, rkey = their DID, in the
+/// A person's sharing key, as verified: `app.atdrive.contact`, rkey = their DID, in the
 /// home drive.
 public struct VerifiedKey: Codable, Sendable, Equatable {
     public var publicKey: Bytes

@@ -1,6 +1,6 @@
 {
   "lexicon": 1,
-  "id": "me.jsnelgro.atdrive.version",
+  "id": "app.atdrive.version",
   "defs": {
     "main": {
       "type": "record",
@@ -90,7 +90,7 @@
           },
           "continuations": {
             "type": "integer",
-            "description": "How many of this version's me.jsnelgro.atdrive.chunks records hold the chunk list, when it's too long for this record."
+            "description": "How many of this version's app.atdrive.chunks records hold the chunk list, when it's too long for this record."
           },
           "continuationsFrom": {
             "type": "integer",
@@ -98,12 +98,12 @@
           },
           "sealed": {
             "type": "ref",
-            "ref": "me.jsnelgro.atdrive.defs#sealedValue",
+            "ref": "app.atdrive.defs#sealedValue",
             "description": "On an encrypted drive: every other field, as a JSON object, sealed for this space, collection and record key. The record then has only this and chunks."
           },
           "mount": {
             "type": "ref",
-            "ref": "me.jsnelgro.atdrive.defs#mount",
+            "ref": "app.atdrive.defs#mount",
             "description": "Mounts: the space that appears here."
           }
         }

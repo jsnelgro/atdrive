@@ -22,7 +22,7 @@ public struct SharingRequest: Codable, Sendable, Equatable {
     }
 
     /// The Darwin notification the app listens for.
-    public static let notification = "me.jsnelgro.atdrive.sharing-request"
+    public static let notification = "app.atdrive.sharing-request"
 
     static var file: URL? { AppGroup.containerURL?.appendingPathComponent("Library/Caches/sharing-request.json") }
 

@@ -200,7 +200,7 @@ import Testing
     func aRealSecretService() throws {
         let runner = try #require(SecretTool.find(environment: ProcessInfo.processInfo.environment))
         let backend = SecretToolBackend(
-            lockFile: directory.appendingPathComponent(".lock"), run: runner, service: "me.jsnelgro.atdrive.test")
+            lockFile: directory.appendingPathComponent(".lock"), run: runner, service: "app.atdrive.test")
         let secret = Data("{\n  \"line\": \"two\"\n}\u{00e9}".utf8)
         try backend.write(secret, as: "session")
         #expect(try backend.read("session") == secret)

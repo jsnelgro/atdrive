@@ -1,6 +1,6 @@
 {
   "lexicon": 1,
-  "id": "me.jsnelgro.atdrive.contact",
+  "id": "app.atdrive.contact",
   "defs": {
     "main": {
       "type": "record",
@@ -19,7 +19,7 @@
           },
           "sealed": {
             "type": "ref",
-            "ref": "me.jsnelgro.atdrive.defs#sealedValue",
+            "ref": "app.atdrive.defs#sealedValue",
             "description": "On an encrypted drive: the fields above, sealed."
           }
         }

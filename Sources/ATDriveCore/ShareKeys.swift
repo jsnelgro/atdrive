@@ -28,7 +28,7 @@ public struct SharingKeyPair: Sendable, Equatable {
     }
 }
 
-/// The public half, as published: `me.jsnelgro.atdrive.shareKey`, rkey `self`, in the account's
+/// The public half, as published: `app.atdrive.shareKey`, rkey `self`, in the account's
 /// public repo.
 public struct SharingKeyRecord: Codable, Sendable, Equatable {
     /// Raw X25519 public key.
@@ -93,7 +93,7 @@ public struct SharingKeyRecord: Codable, Sendable, Equatable {
     }
 }
 
-/// A member's record in an encrypted share: `me.jsnelgro.atdrive.member`, rkey = their DID. The
+/// A member's record in an encrypted share: `app.atdrive.member`, rkey = their DID. The
 /// share's keyring wrapped for their sharing key, from the owner's (HPKE auth mode, as device
 /// records), and their membership sealed with the share's current key: the PDS can't make one, or
 /// bring back a removed member's.
@@ -137,7 +137,7 @@ public struct MemberEntry: Codable, Sendable, Equatable {
     public var publicKey: Bytes
 }
 
-/// The link record of an encrypted share with a public link: `me.jsnelgro.atdrive.link`, rkey
+/// The link record of an encrypted share with a public link: `app.atdrive.link`, rkey
 /// `self`. The keyring, sealed (AES-256-GCM) with a key derived from the link key.
 public enum ShareLink {
     /// A new link key: 256 random bits.

@@ -1,6 +1,6 @@
 {
   "lexicon": 1,
-  "id": "me.jsnelgro.atdrive.defs",
+  "id": "app.atdrive.defs",
   "defs": {
     "sealedValue": {
       "type": "object",
@@ -66,7 +66,7 @@
       "properties": {
         "space": {
           "type": "string",
-          "description": "The space's address: at://<authority>/space/me.jsnelgro.atdrive.drive/<key>."
+          "description": "The space's address: at://<authority>/space/app.atdrive.drive/<key>."
         },
         "keyring": {
           "type": "array",

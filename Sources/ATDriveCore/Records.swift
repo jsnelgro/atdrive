@@ -71,7 +71,7 @@ public struct ChunkRef: Codable, Sendable, Hashable {
     static let overhead = 16
 }
 
-/// One file or folder in a drive: the `me.jsnelgro.atdrive.node` record, as it reads whether
+/// One file or folder in a drive: the `app.atdrive.node` record, as it reads whether
 /// it's stored plain or sealed (`StoredRecords.swift`).
 ///
 /// Files and folders reference their parent by ID rather than storing a path, so renaming or
@@ -107,7 +107,7 @@ public struct NodeRecord: Codable, Sendable, Equatable {
     /// Files only: the version that holds these `chunks` in history. A rename or move points
     /// its version there rather than copying the chunk list.
     public var contentsFrom: String?
-    /// Files only: how many `me.jsnelgro.atdrive.chunks` records hold `chunks`, when the list is
+    /// Files only: how many `app.atdrive.chunks` records hold `chunks`, when the list is
     /// too long for a record. They're the ones of the version `contentsFrom`, and then neither
     /// that version nor this record holds the chunks itself. `nil`: the list is in the record.
     public var continuations: Int?
@@ -135,7 +135,7 @@ public struct NodeRecord: Codable, Sendable, Equatable {
     public var createdDate: Date? { Timestamp.parse(createdAt) }
 }
 
-/// One change to a file or folder: the `me.jsnelgro.atdrive.version` record, as it reads whether
+/// One change to a file or folder: the `app.atdrive.version` record, as it reads whether
 /// it's stored plain or sealed. Its record key is a TID made when the change was, so it also says when
 /// (`TID.date`).
 ///
@@ -174,7 +174,7 @@ public struct VersionRecord: Codable, Sendable, Equatable {
     public var contentsFrom: String?
     /// Files: the contents, when this version holds them itself.
     public var chunks: [ChunkRef]?
-    /// Files: how many `me.jsnelgro.atdrive.chunks` records hold `chunks`, when the list is too
+    /// Files: how many `app.atdrive.chunks` records hold `chunks`, when the list is too
     /// long for this record (see `NodeRecord.continuations`). Their keys start with this
     /// version's (`Lexicon.continuationKey`), and they go when it does.
     public var continuations: Int?
@@ -277,7 +277,7 @@ public struct MountInfo: Codable, Sendable, Equatable {
     }
 }
 
-/// The drive's settings, which every device follows: the `me.jsnelgro.atdrive.settings` record,
+/// The drive's settings, which every device follows: the `app.atdrive.settings` record,
 /// key `self`. Written when the drive is created, and whenever encryption is turned on or off.
 ///
 /// How it's stored says whether the drive is encrypted: sealed on an encrypted drive, plain on
@@ -399,7 +399,7 @@ public struct RosterEntry: Codable, Sendable, Equatable {
     }
 }
 
-/// A device that holds the drive's key, or asks for it: the `me.jsnelgro.atdrive.device`
+/// A device that holds the drive's key, or asks for it: the `app.atdrive.device`
 /// record, keyed by the device's ID.
 ///
 /// It isn't sealed as a whole. A device asks for the key before it has one, and the others read

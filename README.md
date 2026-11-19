@@ -562,9 +562,9 @@ device settles it the same way. The Mac app and `atdrive sync` share these rules
 
 ## How it works
 
-- **Your drive is one space:** `at://<your-did>/space/me.jsnelgro.atdrive.drive/default`. It uses
+- **Your drive is one space:** `at://<your-did>/space/app.atdrive.drive/default`. It uses
   the `personalspace` policy, so only your account can read or write it.
-- **Each file or folder is one record** (`me.jsnelgro.atdrive.node`, see [`lexicons/`](lexicons)).
+- **Each file or folder is one record** (`app.atdrive.node`, see [`lexicons/`](lexicons)).
   A record names its parent folder by ID rather than storing a path, so a rename or move is one
   small update, however much a folder contains. Every change also writes a version record: the
   history.
@@ -590,9 +590,9 @@ device settles it the same way. The Mac app and `atdrive sync` share these rules
     each downloaded file against its SHA-256. A file changes on the drive only once all of its
     chunks are there, so an interrupted upload leaves the version before.
 - **Big files:** a record holds the chunk list of about 2 GB. A longer one continues in
-  `me.jsnelgro.atdrive.chunks` records that belong to the file's version, and go when it does.
+  `app.atdrive.chunks` records that belong to the file's version, and go when it does.
 - **Keys** (encrypted drives): the drive key is random, made when encryption is turned on. Each
-  device has its own key pair, and its own record in the drive (`me.jsnelgro.atdrive.device`)
+  device has its own key pair, and its own record in the drive (`app.atdrive.device`)
   with the drive's keys wrapped for it; one more wraps them for the recovery key. A device takes keys only from itself,
   from the device whose code you compared, or from another device you approved; so the PDS can't
   slip it a key of its own.
@@ -639,7 +639,7 @@ ATDRIVE_LIVE_STATE=~/.atdrive-live-a scripts/test.sh --filter Live
 Mac app logs (app and extension):
 
 ```bash
-/usr/bin/log stream --level debug --predicate 'subsystem == "me.jsnelgro.atdrive"'
+/usr/bin/log stream --level debug --predicate 'subsystem == "app.atdrive"'
 ```
 
 See [PLAN.md](PLAN.md) for the roadmap and design notes.
