@@ -60,9 +60,12 @@ public enum SharingRole: String, Sendable {
     case insideOwn
     /// Inside something shared with you: read-only.
     case insideOther
+    /// The Spaces folder, or in it (#28): other apps' data, read-only, and never shared.
+    case spaces
 
     /// An item's role, from its node, the tree it's in, and the signed-in account.
     public static func of(_ node: Node, in tree: DriveTree?, account: String?) -> SharingRole {
+        if SpacesFolder.contains(node.id) { return .spaces }
         if node.isMount { return node.record.mount?.owner == account ? .own : .other }
         guard let mount = NodeID.split(node.id).mount else { return .none }
         guard let owner = tree?.nodes[mount]?.record.mount?.owner ?? tree?.unreadable[mount].map({ _ in "" }) else {

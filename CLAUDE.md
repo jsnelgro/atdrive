@@ -61,10 +61,11 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
     `Links.swift` (links, opening them), `People.swift` (members, the account's sharing key),
     `ShareKeys.swift` (member and link records), `Verification.swift` (verification codes).
     `Reset.swift`: `atdrive dev reset`.
-  - `SpaceData.swift`: the spaces view (#28): every space the account is in, of any app,
-    read-only (`SpaceData` reads it, `SpaceTree` lays it out as files, by app, space and record
-    type). The CLI's `atdrive spaces` and the Mac extension's second domain
-    (`Mac/FileProvider/SpacesLocation.swift`) show it. Off unless `spaces.enabled`.
+  - `SpaceData.swift`: Spaces (#28): every space the account is in, of any app, read-only
+    (`SpaceData` reads it, `SpaceTree` lays it out as files, by app, space and record type).
+    `SpacesFolder` (in `Mounts.swift`) puts it in the joined drive as a read-only folder
+    (`#spaces/…` node IDs), so the CLI, sync and the Mac show it like any folder. Off unless
+    `spaces.enabled`; `spaces.include`/`exclude` in config.toml say which spaces.
   - `StoredRecords.swift`: the **only** place records become stored values and back. A record is
     plain or sealed and says which; `Drive.mode` (from the settings record) picks the form for
     writes. `DriveKeys.swift`: opening a drive, keys, devices. `Encryption.swift`: turning

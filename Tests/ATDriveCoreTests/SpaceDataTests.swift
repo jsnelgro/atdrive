@@ -1,13 +1,14 @@
+import Crypto
 import Foundation
 import Testing
 
 @testable import ATDriveCore
 
-/// The spaces view (#28): every space the account is in, read-only. The account (`did:plc:test`,
-/// with its home drive) owns a board Bob writes on too, and Carol owns one she shares with it.
+/// Spaces (#28): every space the account is in, read-only, laid out as files (`SpaceData`,
+/// `SpaceTree`). The account (`did:plc:test`) owns a board Bob writes on too, and Carol owns one
+/// she shares with it.
 @Suite struct SpaceDataTests {
     let pds = FakePDS()
-    let home: Drive
     let spaces: SpaceData
     let me = FakePDS.defaultDID
     let bob: String
@@ -21,9 +22,7 @@ import Testing
     init() async throws {
         bob = pds.addAccount("bob")
         carol = pds.addAccount("carol")
-        home = pds.device("here")
-        _ = try await home.create(encrypted: TestMode.encrypted)
-        spaces = SpaceData(home: home, access: pds.access())
+        spaces = SpaceData(client: pds.client(), account: me, access: pds.access())
         board = try await pds.client().createSpace(
             type: Self.boardType, key: "home", policy: .members(publicRead: false))
         try await pds.client().putMembers(board, [SpaceMember(did: bob, read: true, write: true)])
@@ -101,6 +100,8 @@ import Testing
     }
 
     @Test func leavesOutTheDrivesOwnSpaces() async throws {
+        let home = pds.device("here")
+        _ = try await home.create(encrypted: TestMode.encrypted)
         _ = try await home.createFolder(named: "docs", in: nil)
         let snapshot = try await spaces.update()
         #expect(snapshot.spaces.keys.allSatisfy { XRPCClient.spaceParts($0)?.type != Lexicon.driveSpace })
@@ -117,18 +118,21 @@ import Testing
         try await put(
             [
                 "$type": "com.example.unknown.thing", "photo": blobJSON,
-                "raw": ["$bytes": "AAEC"], "ref": ["$link": "bafyreiexample"],
+                "raw": ["$bytes": "AAEC"], "ref": ["$link": "bafyreiexample"], "createdAt": "2026-11-01T10:00:00.000Z",
             ], rkey: "n1", in: board, as: bob)
 
         let tree = try await spaces.update().tree
         let note = "\(Self.app)/home/note"
         #expect(try names(tree, in: note) == ["@bob.test n1.blobs", "@bob.test n1.json"])
+        let record = try #require(try tree.locate(DrivePath("\(note)/@bob.test n1.json")))
         let json = try #require(try text(tree, "\(note)/@bob.test n1.json"))
         #expect(json.contains("\"$type\": \"com.example.unknown.thing\""))
         #expect(json.contains("\"$bytes\": \"AAEC\""))
         #expect(json.contains("\"$link\": \"bafyreiexample\""))
+        #expect(record.date == Timestamp.parse("2026-11-01T10:00:00.000Z"))
         let file = try #require(try tree.locate(DrivePath("\(note)/@bob.test n1.blobs/\(blob.cid).png")))
         #expect(file.size == image.count)
+        #expect(file.sha256 == SHA256Hex.of(image))
         let downloaded = try await spaces.contents(of: file)
         #expect(downloaded == image)
     }
@@ -141,8 +145,7 @@ import Testing
         pds.resetCounts()
         let same = try await spaces.update(first)
         #expect(same == first)
-        // Just the spaces added by address, from the home drive.
-        #expect(pds.count("com.atproto.space.listRecords") == 1)
+        #expect(pds.count("com.atproto.space.listRecords") == 0)
         #expect(pds.count("com.atproto.space.listRepoOps") == 0)
 
         try await put(["text": "b2"], rkey: "n2", in: board, as: bob)
@@ -150,7 +153,7 @@ import Testing
         pds.resetCounts()
         let moved = try await spaces.update(first)
         // Bob's repo followed its change feed; nothing else was read again.
-        #expect(pds.count("com.atproto.space.listRecords") == 1)
+        #expect(pds.count("com.atproto.space.listRecords") == 0)
         #expect(pds.count("com.atproto.space.listRepoOps") >= 1)
         let bobs = try #require(moved.spaces[board]?.repos[bob])
         #expect(bobs.records["my.bulletin.note/n2"]?.value["text"]?.string == "b2")
@@ -159,7 +162,7 @@ import Testing
         #expect(moved.tree.anchor != first.tree.anchor)
 
         // The same as listing it afresh.
-        let fresh = try await SpaceData(home: home, access: pds.access()).update()
+        let fresh = try await SpaceData(client: pds.client(), account: me, access: pds.access()).update()
         #expect(fresh.spaces == moved.spaces)
     }
 
@@ -179,46 +182,43 @@ import Testing
         #expect(try names(tree, in: "\(Self.app)/home/note") == ["n1.json"])
     }
 
-    @Test func spacesSharedWithYouAreAddedByAddress() async throws {
+    @Test func spacesSharedWithYouAreIncludedByAddress() async throws {
         let kitchen = try await carolsKitchen()
 
         // Never written to, so the PDS doesn't list it.
         #expect(try await spaces.update().spaces[kitchen] == nil)
 
-        let added = try await spaces.add("at://carol.test/space/\(Self.boardType)/kitchen")
-        #expect(added == kitchen)
-        try await spaces.add(kitchen)  // twice is fine
-        #expect(try await spaces.addedSpaces() == [kitchen])
-
-        // Every device of the account sees it: it's in the home drive.
-        let elsewhere = SpaceData(home: home, access: pds.access())
-        let snapshot = try await elsewhere.update()
+        let settings = SpacesSettings(include: ["at://carol.test/space/\(Self.boardType)/kitchen"])
+        let snapshot = try await spaces.update(settings: settings)
         let space = try #require(snapshot.spaces[kitchen])
-        #expect(space.added)
+        #expect(space.included)
         #expect(space.repos[carol]?.records["my.bulletin.note/n1"]?.value["text"]?.string == "milk")
         // Someone else's space starts with its owner's handle.
         #expect(try names(snapshot.tree, in: "\(Self.app)/@carol.test kitchen/note") == ["@carol.test n1.json"])
-
-        try await spaces.remove(kitchen)
-        #expect(try await spaces.update().spaces[kitchen] == nil)
-        await #expect(throws: SpaceDataError.notAdded(kitchen)) { try await spaces.remove(kitchen) }
     }
 
-    @Test func addingRefusesWhatIsntAnotherAppsSpace() async throws {
-        await #expect(throws: SpaceDataError.notASpace("https://example.com")) {
-            try await spaces.add("https://example.com")
-        }
-        await #expect(throws: SpaceDataError.driveSpace) { try await spaces.add(home.space) }
-    }
-
-    @Test func aRemovedMembersViewEmptiesOut() async throws {
+    @Test func excludedSpacesAreListedButNotRead() async throws {
         let kitchen = try await carolsKitchen()
-        try await spaces.add(kitchen)
-        let before = try await spaces.update()
+        try await put(["text": "a"], rkey: "n1", in: board)
+        let settings = SpacesSettings(
+            include: ["at://carol.test/space/\(Self.boardType)/kitchen"],
+            exclude: [board, "at://carol.test/space/\(Self.boardType)/kitchen", "nonsense"])
+        pds.resetCounts()
+        let snapshot = try await spaces.update(settings: settings)
+        #expect(snapshot.spaces.isEmpty)
+        #expect(snapshot.excluded == [board, kitchen])
+        #expect(snapshot.unusable["nonsense"] != nil)
+        #expect(pds.count("com.atproto.space.listRecords") == 0, "nothing in them was read")
+    }
+
+    @Test func aRemovedMembersSpaceEmptiesOut() async throws {
+        let kitchen = try await carolsKitchen()
+        let settings = SpacesSettings(include: [kitchen])
+        let before = try await spaces.update(settings: settings)
         #expect(before.spaces[kitchen]?.repos[carol] != nil)
 
         try await pds.client(as: carol).removeMembers(kitchen, dids: [me])
-        let after = try await spaces.update(before)
+        let after = try await spaces.update(before, settings: settings)
         let space = try #require(after.spaces[kitchen])
         #expect(space.repos.isEmpty)
         #expect(space.problem == .access(.notShared))
@@ -245,6 +245,20 @@ import Testing
         #expect(updated.spaces[board]?.repos[bob]?.records["my.bulletin.note/n1"]?.value["text"]?.string == "b")
     }
 
+    @Test func addressesAreChecked() {
+        #expect(SpacesSettings.isAddress("at://alice.test/space/my.bulletin.board/home"))
+        #expect(SpacesSettings.isAddress("at://did:plc:abc/space/my.bulletin.board/home"))
+        for bad in ["https://x", "at://alice.test/my.bulletin.board/home", "at://alice.test/space//home", "at://"] {
+            #expect(!SpacesSettings.isAddress(bad), "\(bad)")
+        }
+    }
+
+    @Test func blobCIDsSayTheirSHA256() {
+        let data = Data("hello".utf8)
+        #expect(CID.sha256(ofBlob: CID.forBlob(data)) == SHA256Hex.of(data))
+        #expect(CID.sha256(ofBlob: "bafyreiexample") == nil)
+    }
+
     @Test func prettyJSON() throws {
         let value = try JSONValue(parsing: Data(#"{"b":[1,{"c":null}],"a":{},"d":[]}"#.utf8))
         let expected = """
@@ -262,11 +276,8 @@ import Testing
             """
         #expect(String(decoding: value.prettySerialized(), as: UTF8.self) == expected)
     }
+}
 
-    @Test func addedSpaceKeysAreValidRecordKeys() {
-        let key = AddedSpace.key(for: "at://did:plc:abc/space/my.bulletin.board/home")
-        #expect(key.count == 26)
-        #expect(key.allSatisfy { $0.isLowercase || $0.isNumber })
-        #expect(AddedSpace.key(for: "at://did:plc:abc/space/my.bulletin.board/home") == key)
-    }
+enum SHA256Hex {
+    static func of(_ data: Data) -> String { SHA256.hash(data: data).hexString }
 }

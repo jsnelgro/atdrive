@@ -111,38 +111,55 @@ final class AppModel {
             let problem = String(describing: error)
             if problem != configProblem { configProblem = problem }
         }
-        applySpacesSettings()
+        shareSpacesSettings()
         return config
     }
 
-    /// Saves `spaces.enabled` in config.toml, and adds or removes the Spaces location in Finder.
-    func setSpacesEnabled(_ enabled: Bool) {
-        guard enabled != config.spacesEnabled else { return }
-        save { $0.spacesEnabled = enabled }
-    }
-
-    /// Saves `spaces.spotlight` in config.toml, and tells the extension.
-    func setSpacesSpotlight(_ indexed: Bool) {
-        guard indexed != config.spacesSpotlight else { return }
-        save { $0.spacesSpotlight = indexed }
-    }
-
-    private func save(_ change: (inout LocalConfig) -> Void) {
+    /// Changes config.toml (keeping the rest of it as it is), and what follows from it.
+    func updateConfig(_ change: (inout LocalConfig) -> Void) {
         do {
             try UserConfig.file.update(change)
             change(&config)
             configProblem = nil
-            applySpacesSettings()
+            shareSpacesSettings()
         } catch {
             configProblem = String(describing: error)
+        }
+    }
+
+    /// Passes Spaces' settings on to the extension (which can't read config.toml) and to this
+    /// app's drive, and has Finder show the change.
+    private func shareSpacesSettings() {
+        let settings = config.spaces
+        guard settings != SpacesShare.settings || config.spacesSpotlight != SpacesShare.spotlight else { return }
+        SpacesShare.settings = settings
+        SpacesShare.spotlight = config.spacesSpotlight
+        joined?.showSpaces(settings)
+        Task { await syncNow() }
+    }
+
+    /// Shows the Spaces folder in Finder.
+    func showSpacesInFinder() async {
+        guard let manager = DriveDomain.manager else { return }
+        do {
+            let url = try await manager.getUserVisibleURL(for: NSFileProviderItemIdentifier(SpacesFolder.id))
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } catch {
+            message = "Couldn't show Spaces: \(error.localizedDescription)"
         }
     }
 
     /// Saves it in config.toml, and checks for changes on the new schedule from now.
     func setSyncInterval(_ seconds: Int) {
         guard seconds != config.syncInterval else { return }
-        save { $0.syncInterval = seconds }
-        if configProblem == nil { startPolling() }
+        do {
+            try UserConfig.file.update { $0.syncInterval = seconds }
+            config.syncInterval = seconds
+            configProblem = nil
+            startPolling()
+        } catch {
+            configProblem = String(describing: error)
+        }
     }
 
     /// Opens the account's own sign-in page in the browser (OAuth), and finishes when the user
@@ -196,7 +213,6 @@ final class AppModel {
         } catch {
             logger.error("removing domain failed: \(String(describing: error), privacy: .public)")
         }
-        await removeSpaces()
         // This Mac's device identity stays, so signing in again doesn't need another approval.
         if let store = AppGroup.sessionStore(), let session = try? store.load() {
             await Auth.logout(session)
@@ -347,7 +363,6 @@ final class AppModel {
         driveMode = drive?.mode
         state = .signedIn(handle: handle)
         await addToFinder(handle: handle)
-        applySpacesSettings()
     }
 
     /// The drive with what's mounted in it, opened, for sharing and settings: `nil` until signed
@@ -357,7 +372,8 @@ final class AppModel {
         if let joined { return joined }
         guard let drive = self.drive, (try? await drive.open()) != nil else { return nil }
         let joined = JoinedDrive(
-            home: drive, access: SpaceAccess(ownClient: drive.client, resolver: IdentityResolver()))
+            home: drive, access: SpaceAccess(ownClient: drive.client, resolver: IdentityResolver()),
+            spaces: config.spaces)
         self.joined = joined
         return joined
     }
@@ -438,81 +454,6 @@ final class AppModel {
         } catch {
             logger.error("signal failed: \(String(describing: error), privacy: .public)")
         }
-        if spacesShown == true { await signalSpaces() }
-    }
-
-    // MARK: The Spaces location
-
-    /// Whether the Spaces location is in Finder, as far as this app knows (`nil`: not known yet).
-    @ObservationIgnored private var spacesShown: Bool?
-    @ObservationIgnored private var spacesChange: Task<Void, Never>?
-
-    /// Shows or hides the Spaces location to match config.toml, and passes `spaces.spotlight` on to
-    /// the extension. Signed out, it's never shown.
-    private func applySpacesSettings() {
-        if SpacesDomain.spotlight != config.spacesSpotlight {
-            SpacesDomain.spotlight = config.spacesSpotlight
-            if spacesShown == true { Task { await signalSpaces() } }
-        }
-        let wanted = signedInHandle != nil && config.spacesEnabled
-        guard wanted != spacesShown, spacesChange == nil else { return }
-        spacesChange = Task {
-            defer { spacesChange = nil }
-            if wanted {
-                do {
-                    try await NSFileProviderManager.add(SpacesDomain.make())
-                    spacesShown = true
-                } catch {
-                    message = "Couldn't add Spaces to Finder: \(error.localizedDescription)"
-                    logger.error("adding the Spaces domain failed: \(String(describing: error), privacy: .public)")
-                }
-            } else {
-                await removeSpaces()
-            }
-        }
-    }
-
-    /// Takes the Spaces location out of Finder: it only ever held read-only copies.
-    private func removeSpaces() async {
-        do {
-            _ = try await NSFileProviderManager.remove(SpacesDomain.make(), mode: .removeAll)
-        } catch let error as NSFileProviderError where error.code == .providerNotFound {
-        } catch {
-            logger.error("removing the Spaces domain failed: \(String(describing: error), privacy: .public)")
-        }
-        spacesShown = false
-    }
-
-    private func signalSpaces() async {
-        guard let manager = SpacesDomain.manager else { return }
-        do {
-            try await manager.signalEnumerator(for: .workingSet)
-        } catch {
-            logger.error("signal (spaces) failed: \(String(describing: error), privacy: .public)")
-        }
-    }
-
-    /// Shows the Spaces location in Finder.
-    func showSpacesInFinder() async {
-        guard let manager = SpacesDomain.manager else { return }
-        do {
-            let url = try await manager.getUserVisibleURL(for: .rootContainer)
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-        } catch {
-            message = "Couldn't show Spaces: \(error.localizedDescription)"
-        }
-    }
-
-    /// The spaces view, for adding and removing spaces by address: `nil` until signed in.
-    func spaceData() async -> SpaceData? {
-        guard let joined = await joinedDrive() else { return nil }
-        return SpaceData(
-            home: joined.home, access: SpaceAccess(ownClient: joined.home.client, resolver: IdentityResolver()))
-    }
-
-    /// Something changed in the spaces view (a space added or removed): show it now.
-    func spacesChanged() async {
-        if spacesShown == true { await signalSpaces() }
     }
 
     /// Deletes history older than the drive keeps, once a day, as `atdrive sync` does: nothing

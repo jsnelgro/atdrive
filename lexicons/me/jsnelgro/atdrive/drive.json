@@ -14,8 +14,7 @@
         "me.jsnelgro.atdrive.device",
         "me.jsnelgro.atdrive.member",
         "me.jsnelgro.atdrive.link",
-        "me.jsnelgro.atdrive.contact",
-        "me.jsnelgro.atdrive.addedSpace"
+        "me.jsnelgro.atdrive.contact"
       ],
       "title": "ATDrive"
     }

@@ -1,10 +1,11 @@
 import Crypto
 import Foundation
 
-// Spaces (#28): everything in the spaces the account is in, not just ATDrive's files. Other
-// atproto apps keep data in spaces (a Bulletin board's notes, say), and people share spaces with
-// you. This reads them all, read-only: ATDrive writes with `validate = false`, so letting edits
-// through could quietly corrupt another app's data.
+// Spaces (#28): everything in the spaces the account is in, not just ATDrive's files, as a
+// read-only folder at the top of the drive (`SpacesFolder` in `Mounts.swift`). Other atproto apps
+// keep data in spaces (a Bulletin board's notes, say), and people share spaces with you. This
+// reads them all, read-only: ATDrive writes with `validate = false`, so letting edits through
+// could quietly corrupt another app's data.
 //
 // Where it comes from:
 // 1. `listSpaces` on the account's own PDS: the spaces it owns or has written to, with its repo's
@@ -12,26 +13,33 @@ import Foundation
 // 2. Everyone else's repos in those spaces: a credential from the space's host (as for shares,
 //    `SpaceCredentials`), `listWriters` there, then each writer's repo at their own PDS.
 // 3. Spaces shared with the account that it never wrote to, which `listSpaces` doesn't list (#56):
-//    added by address, and remembered in the home drive (`AddedSpace`) for every device.
+//    by address, from `spaces.include` in config.toml (`SpacesSettings`). `spaces.exclude` hides
+//    any space.
 //
 // ATDrive's own drive spaces aren't shown: they're the drive. A space that won't let ATDrive in
 // (`allowedApps`, say) is shown with why, not hidden.
 
-/// A space added to the spaces view by address: `me.jsnelgro.atdrive.addedSpace` in the home
-/// drive, sealed on an encrypted drive.
-public struct AddedSpace: Codable, Sendable, Equatable {
-    public var space: String
-    public var addedAt: String
+/// What the Spaces folder shows (`spaces.*` in config.toml, while `spaces.enabled` is on).
+public struct SpacesSettings: Sendable, Equatable, Codable {
+    /// The folder's name, at the top of the drive.
+    public var folder: String
+    /// Addresses of spaces to show that aren't found by themselves.
+    public var include: [String]
+    /// Addresses of spaces not to show.
+    public var exclude: [String]
 
-    public init(space: String, addedAt: Date = Date()) {
-        self.space = space
-        self.addedAt = Timestamp.format(addedAt)
+    public init(folder: String = "Spaces", include: [String] = [], exclude: [String] = []) {
+        self.folder = folder
+        self.include = include
+        self.exclude = exclude
     }
 
-    /// Its record key: the first 16 bytes of the SHA-256 of the space's URI, in base32. The same
-    /// space always has the same key, so adding it twice (on two devices, say) is one record.
-    public static func key(for space: String) -> String {
-        Base32.encode(Array(SHA256.hash(data: Data(space.utf8))).prefix(16))
+    /// Whether `text` looks like a space's address: `at://<handle or DID>/space/<type>/<key>`.
+    public static func isAddress(_ text: String) -> Bool {
+        guard text.hasPrefix("at://") else { return false }
+        let parts = text.dropFirst(5).split(separator: "/", omittingEmptySubsequences: false)
+        return parts.count == 4 && parts[1] == "space" && !parts[0].isEmpty && !parts[2].isEmpty
+            && !parts[3].isEmpty
     }
 }
 
@@ -39,8 +47,7 @@ public enum SpaceDataError: Error, Equatable, CustomStringConvertible {
     case notASpace(String)
     /// ATDrive's own spaces are the drive (`atdrive open-share` for one shared with you).
     case driveSpace
-    case notAdded(String)
-    /// The spaces view is off (`spaces.enabled` in config.toml).
+    /// Spaces are off (`spaces.enabled` in config.toml).
     case off
     /// The session wasn't granted what this needs: sign in again.
     case needsSignIn
@@ -51,11 +58,10 @@ public enum SpaceDataError: Error, Equatable, CustomStringConvertible {
             "\(text) isn't a space's address (at://<handle or DID>/space/<type>/<key>)"
         case .driveSpace:
             "that's an ATDrive space: open it with `atdrive open-share <link>` to put it in your drive"
-        case .notAdded(let space): "\(space) wasn't added"
         case .off:
-            "the spaces view is off. Turn it on with `atdrive spaces on` (spaces.enabled in config.toml)"
+            "Spaces is off: set spaces.enabled = true in config.toml (`atdrive config` shows where it is)"
         case .needsSignIn:
-            "this sign-in doesn't allow that. Sign in again (`atdrive login <handle>`) to grant it"
+            "this sign-in can't read your other spaces. Sign in again (`atdrive login <handle>`) to grant it"
         }
     }
 }
@@ -116,19 +122,19 @@ public actor SpaceData {
         public var authority: String
         public var type: String
         public var key: String
-        /// Added by address (`AddedSpace`), rather than (only) listed by the account's PDS.
-        public var added: Bool
+        /// From `spaces.include`, rather than (only) listed by the account's PDS.
+        public var included: Bool
         /// By DID.
         public var repos: [String: Repo]
         public var problem: Problem?
 
-        public init(uri: String, added: Bool, repos: [String: Repo] = [:], problem: Problem? = nil) {
+        public init(uri: String, included: Bool, repos: [String: Repo] = [:], problem: Problem? = nil) {
             let parts = XRPCClient.spaceParts(uri)
             self.uri = uri
             authority = parts?.authority ?? ""
             type = parts?.type ?? ""
             key = parts?.key ?? ""
-            self.added = added
+            self.included = included
             self.repos = repos
             self.problem = problem
         }
@@ -145,14 +151,21 @@ public actor SpaceData {
         /// Space types' titles, from their declarations (`"AtmoBoards Forum"`), where they
         /// resolved.
         public var titles: [String: String]
+        /// Spaces found but not shown (`spaces.exclude`), by URI.
+        public var excluded: Set<String>
+        /// Addresses in `spaces.include` or `spaces.exclude` that couldn't be used, and why.
+        public var unusable: [String: String]
 
         public init(
-            account: String, spaces: [String: Space], handles: [String: String] = [:], titles: [String: String] = [:]
+            account: String, spaces: [String: Space], handles: [String: String] = [:], titles: [String: String] = [:],
+            excluded: Set<String> = [], unusable: [String: String] = [:]
         ) {
             self.account = account
             self.spaces = spaces
             self.handles = handles
             self.titles = titles
+            self.excluded = excluded
+            self.unusable = unusable
         }
 
         /// As files and folders.
@@ -162,26 +175,18 @@ public actor SpaceData {
     public let client: XRPCClient
     public let account: String
     let access: SpaceAccess
-    /// The home drive, which remembers spaces added by address; `nil` to leave those out.
-    let home: Drive?
     private var credentials: [String: SpaceCredentials] = [:]
     private var identities: [String: ResolvedIdentity] = [:]
     private var unresolvable: Set<String> = []
     /// Space types' titles, `nil` where a type's declaration has none or didn't resolve.
     private var titles: [String: String?] = [:]
-
-    public init(home: Drive, access: SpaceAccess) {
-        client = home.client
-        account = home.owner
-        self.access = access
-        self.home = home
-    }
+    /// Addresses as URIs (with the authority's DID), or why one can't be.
+    private var addresses: [String: Result<String, SpaceDataError>] = [:]
 
     public init(client: XRPCClient, account: String, access: SpaceAccess) {
         self.client = client
         self.account = account
         self.access = access
-        home = nil
     }
 
     /// Whether a space belongs in the spaces view: not ATDrive's own (that's the drive).
@@ -192,27 +197,42 @@ public actor SpaceData {
 
     // MARK: Reading
 
-    /// The spaces view now. Repos whose revision hasn't moved since `previous` are taken from it,
-    /// and the rest follow their change feed from there (or are listed again in full). A space
-    /// that can't be read is in it with its problem; one that can't be reached keeps what
-    /// `previous` had. Throws only if the account's own PDS can't be read.
-    public func update(_ previous: Snapshot? = nil) async throws -> Snapshot {
+    /// The spaces now: those the account's PDS lists and those `settings.include`s, minus those
+    /// it `exclude`s. Repos whose revision hasn't moved since `previous` are taken from it, and
+    /// the rest follow their change feed from there (or are listed again in full). A space that
+    /// can't be read is in it with its problem; one that can't be reached keeps what `previous`
+    /// had. Throws only if the account's own PDS can't be read.
+    public func update(_ previous: Snapshot? = nil, settings: SpacesSettings = SpacesSettings()) async throws
+        -> Snapshot
+    {
         let views: [SpaceView]
         do {
             views = try await client.listSpaceViews()
         } catch let error as XRPCError where Self.isScopeRefusal(error) {
             throw SpaceDataError.needsSignIn
         }
-        var known: [String: (rev: String?, added: Bool)] = [:]
-        for view in views where Self.isShown(view.space) { known[view.space] = (view.repoRev, false) }
-        for space in try await addedSpaces() where Self.isShown(space) {
-            known[space] = (known[space]?.rev, true)
+        var unusable: [String: String] = [:]
+        var include: Set<String> = []
+        var exclude: Set<String> = []
+        for (addresses, excluding) in [(settings.include, false), (settings.exclude, true)] {
+            for address in addresses {
+                switch await uri(of: address) {
+                case .success(let uri):
+                    if excluding { exclude.insert(uri) } else { include.insert(uri) }
+                case .failure(let why): unusable[address] = why.description
+                }
+            }
         }
+        var known: [String: (rev: String?, included: Bool)] = [:]
+        var excluded: Set<String> = []
+        for view in views where Self.isShown(view.space) { known[view.space] = (view.repoRev, false) }
+        for space in include { known[space] = (known[space]?.rev, true) }
+        for space in exclude where known.removeValue(forKey: space) != nil { excluded.insert(space) }
         var spaces: [String: Space] = [:]
         await withTaskGroup(of: Space.self) { group in
             for (uri, info) in known {
                 let before = previous?.spaces[uri]
-                group.addTask { await self.read(uri, ownRev: info.rev, added: info.added, previous: before) }
+                group.addTask { await self.read(uri, ownRev: info.rev, included: info.included, previous: before) }
             }
             for await space in group { spaces[space.uri] = space }
         }
@@ -229,11 +249,28 @@ public actor SpaceData {
         for type in Set(spaces.values.map(\.type)) {
             if let title = await title(of: type) { titles[type] = title }
         }
-        return Snapshot(account: account, spaces: spaces, handles: handles, titles: titles)
+        return Snapshot(
+            account: account, spaces: spaces, handles: handles, titles: titles, excluded: excluded, unusable: unusable)
     }
 
-    private func read(_ uri: String, ownRev: String?, added: Bool, previous: Space?) async -> Space {
-        var space = Space(uri: uri, added: added)
+    /// An address as a URI: cached, as resolving a handle is a request.
+    private func uri(of address: String) async -> Result<String, SpaceDataError> {
+        if let known = addresses[address] { return known }
+        let result: Result<String, SpaceDataError>
+        do {
+            result = .success(try await parse(address))
+        } catch let error as SpaceDataError {
+            result = .failure(error)
+        } catch {
+            // Couldn't resolve the handle just now: try again next time.
+            return .failure(.notASpace(address))
+        }
+        addresses[address] = result
+        return result
+    }
+
+    private func read(_ uri: String, ownRev: String?, included: Bool, previous: Space?) async -> Space {
+        var space = Space(uri: uri, included: included)
         if let ownRev {
             do {
                 space.repos[account] = try await Self.readRepo(
@@ -326,8 +363,17 @@ public actor SpaceData {
         return Repo(did: did, rev: head, records: records)
     }
 
-    /// What a file in the tree holds: a record as JSON, or a blob (downloaded).
+    /// What a file in the tree holds: a record as JSON, or a blob (downloaded). Checked against
+    /// its SHA-256.
     public func contents(of item: SpaceTree.Item) async throws -> Data {
+        let data = try await unchecked(item)
+        if let expected = item.sha256, SHA256.hash(data: data).hexString != expected {
+            throw ATDriveError.integrity("\(item.name) isn't what its record says it is")
+        }
+        return data
+    }
+
+    private func unchecked(_ item: SpaceTree.Item) async throws -> Data {
         switch item.content {
         case .folder: throw ATDriveError.isAFolder(item.name)
         case .record(let data): return data
@@ -375,56 +421,6 @@ public actor SpaceData {
         let title = try? await client.spaceTypeTitle(type)
         titles[type] = .some(title)
         return title
-    }
-
-    // MARK: Spaces added by address
-
-    /// The spaces added by address, from the home drive (for every device).
-    public func addedSpaces() async throws -> [String] {
-        guard let home else { return [] }
-        var spaces: [String] = []
-        var cursor: String?
-        repeat {
-            let page = try await client.listRawSpaceRecords(
-                space: home.space, repo: account, collection: Lexicon.addedSpace, cursor: cursor)
-            for record in page.records {
-                if let added = home.read(
-                    record.value, as: AddedSpace.self, collection: Lexicon.addedSpace, rkey: record.rkey)
-                {
-                    spaces.append(added.space)
-                }
-            }
-            cursor = page.records.isEmpty ? nil : page.cursor
-        } while cursor != nil
-        return spaces.sorted()
-    }
-
-    /// Adds a space by its address (`at://<handle or DID>/space/<type>/<key>`), for every device.
-    /// Adding one that's there already is fine. Returns its URI (with the authority's DID).
-    @discardableResult
-    public func add(_ address: String) async throws -> String {
-        guard let home else { throw SpaceDataError.notAdded(address) }
-        let space = try await parse(address)
-        let rkey = AddedSpace.key(for: space)
-        let value = try home.stored(AddedSpace(space: space), collection: Lexicon.addedSpace, rkey: rkey)
-        do {
-            try await home.apply([.create(collection: Lexicon.addedSpace, rkey: rkey, value: value)])
-        } catch let error as XRPCError where error.error == "RecordAlreadyExists" {
-        } catch let error as XRPCError where Self.isScopeRefusal(error) {
-            throw SpaceDataError.needsSignIn
-        }
-        return space
-    }
-
-    /// Takes a space added by address out of the spaces view (on every device).
-    public func remove(_ address: String) async throws {
-        guard let home else { throw SpaceDataError.notAdded(address) }
-        let space = try await parse(address)
-        do {
-            try await home.apply([.delete(collection: Lexicon.addedSpace, rkey: AddedSpace.key(for: space))])
-        } catch let error as XRPCError where error.error == "RecordNotFound" {
-            throw SpaceDataError.notAdded(space)
-        }
     }
 
     /// A space's URI from its address, the authority given by handle or DID.
@@ -499,6 +495,20 @@ public struct SpaceTree: Sendable, Equatable {
         public var content: Content
         /// For a space some of which can't be read: why.
         public var unreadable: String?
+        /// For a record and its blobs: when it was made (its `createdAt`, else its key's time if
+        /// that's a TID).
+        public var date: Date?
+
+        public init(
+            id: String, parent: String?, name: String, content: Content, unreadable: String? = nil, date: Date? = nil
+        ) {
+            self.id = id
+            self.parent = parent
+            self.name = name
+            self.content = content
+            self.unreadable = unreadable
+            self.date = date
+        }
 
         public var isFolder: Bool { content == .folder }
 
@@ -507,6 +517,15 @@ public struct SpaceTree: Sendable, Equatable {
             case .folder: nil
             case .record(let data): data.count
             case .blob(_, _, _, let size): size
+            }
+        }
+
+        /// A file's hex SHA-256: of the JSON, or a blob's from its CID.
+        public var sha256: String? {
+            switch content {
+            case .folder: nil
+            case .record(let data): SHA256.hash(data: data).hexString
+            case .blob(_, _, let cid, _): CID.sha256(ofBlob: cid)
             }
         }
 
@@ -550,20 +569,27 @@ public struct SpaceTree: Sendable, Equatable {
                             id: collection, parent: spaceID,
                             name: Self.shortName(of: record.collection, in: space.type), content: .folder))
                     let base = "\(space.uri)|\(repo.did)|\(record.collection)|\(record.rkey)"
+                    let date = Self.date(of: record)
                     add(
                         Item(
                             id: "r|\(base)", parent: collection, name: "\(prefix)\(record.rkey).json",
-                            content: .record(record.value.prettySerialized())))
-                    let blobs = Self.blobs(in: record.value)
+                            content: .record(record.value.prettySerialized()), date: date))
+                    // Only blobs whose CID says their SHA-256 (all of atproto's): a file is
+                    // checked against it, and a synced folder compares by it.
+                    let blobs = Self.blobs(in: record.value).filter { CID.sha256(ofBlob: $0.cid) != nil }
                     guard !blobs.isEmpty else { continue }
                     let folder = "b|\(base)"
-                    add(Item(id: folder, parent: collection, name: "\(prefix)\(record.rkey).blobs", content: .folder))
+                    add(
+                        Item(
+                            id: folder, parent: collection, name: "\(prefix)\(record.rkey).blobs", content: .folder,
+                            date: date))
                     for blob in blobs {
                         add(
                             Item(
                                 id: "f|\(base)|\(blob.cid)", parent: folder,
                                 name: "\(blob.cid).\(Self.fileExtension(for: blob.mimeType))",
-                                content: .blob(space: space.uri, repo: repo.did, cid: blob.cid, size: blob.size)))
+                                content: .blob(space: space.uri, repo: repo.did, cid: blob.cid, size: blob.size),
+                                date: date))
                     }
                 }
             }
@@ -654,6 +680,11 @@ public struct SpaceTree: Sendable, Equatable {
             for type in types { names[type] = "\(name) (\(type.split(separator: ".").last!))" }
         }
         return names
+    }
+
+    /// When a record was made: its `createdAt`, else its key's time if that's a TID.
+    static func date(of record: SpaceData.Record) -> Date? {
+        record.value["createdAt"]?.string.flatMap(Timestamp.parse) ?? TID.date(record.rkey)
     }
 
     /// The domain an NSID's authority is: `my.bulletin.board` → `bulletin.my`.

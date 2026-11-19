@@ -69,7 +69,7 @@ public enum OAuthLogin {
 
     private static let collections = [
         Lexicon.node, Lexicon.version, Lexicon.chunks, Lexicon.settings, Lexicon.device, Lexicon.member, Lexicon.link,
-        Lexicon.contact, Lexicon.addedSpace,
+        Lexicon.contact,
     ].map { "collection=\($0)" }.joined(separator: "&")
 
     public static func clientID(

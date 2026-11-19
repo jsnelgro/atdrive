@@ -278,7 +278,7 @@ extension JoinedDrive {
 }
 
 public enum LinkError: Error, Equatable, CustomStringConvertible {
-    /// A link to another app's space: the spaces view (#28) shows those (`atdrive spaces add`).
+    /// A link to another app's space: the Spaces folder (#28) shows those (`spaces.include`).
     case notADrive(String)
     /// A link to one of this account's own shares.
     case yourOwn

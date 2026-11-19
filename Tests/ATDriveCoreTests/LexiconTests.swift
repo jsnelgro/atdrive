@@ -18,7 +18,7 @@ import Testing
         let records = [
             Lexicon.node, Lexicon.version, Lexicon.chunks, Lexicon.settings, Lexicon.device, Lexicon.member,
             Lexicon.link,
-            Lexicon.contact, Lexicon.addedSpace,
+            Lexicon.contact,
         ]
         #expect(ids.isSuperset(of: records + [Lexicon.driveSpace, Lexicon.shareKey]))
         let drive = try JSONValue(parsing: Data(contentsOf: Self.directory.appendingPathComponent("drive.json")))
@@ -34,7 +34,7 @@ import Testing
             #expect(parts.contains { $0.contains("manage=update") && $0.contains("manage=delete") })
             #expect(parts.contains { $0.hasSuffix("?authority=*&action=read") })
             #expect(parts.contains("repo:\(Lexicon.shareKey)"))
-            for collection in [Lexicon.member, Lexicon.link, Lexicon.contact, Lexicon.addedSpace] {
+            for collection in [Lexicon.member, Lexicon.link, Lexicon.contact] {
                 #expect(scope.contains("collection=\(collection)"))
             }
         }

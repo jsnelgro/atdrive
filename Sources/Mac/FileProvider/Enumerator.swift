@@ -72,6 +72,13 @@ final class Enumerator: NSObject, NSFileProviderEnumerator {
             let changes = tree.changes(since: old)
             updated = changes.updated.filter { isInScope($0.id, in: tree) || isInScope($0.id, in: old) }
             deleted = changes.deleted.filter { isInScope($0, in: old) }
+            if revision.hasSuffix(" indexed") != anchor.revision.hasSuffix(" indexed") {
+                // Spotlight turned on or off for Spaces: every item in it has new attributes.
+                let changed = Set(updated.map(\.id))
+                updated += tree.nodes.values.filter {
+                    SpacesFolder.contains($0.id) && !changed.contains($0.id) && isInScope($0.id, in: tree)
+                }
+            }
         }
         let alreadyUpdated = Set(updated.map(\.id))
         updated += resend.subtracting(alreadyUpdated).compactMap { tree.nodes[$0] }

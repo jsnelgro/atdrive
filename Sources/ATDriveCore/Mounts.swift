@@ -111,18 +111,88 @@ public struct MountState: Sendable {
     public var isHeld: Bool { problem.map { !$0.isDeletion } ?? false }
 }
 
+/// The Spaces folder (#28): what's in every space the account is in (other apps' data, and
+/// spaces shared with it), read-only, at the top of the drive (`spaces.folder`). Not one of
+/// ATDrive's spaces: its nodes are made from `SpaceTree`, with IDs under `SpacesFolder.id`
+/// (`#spaces/<item ID>`), and their contents come from `SpaceData`. Only the drive changes it: a
+/// synced folder puts back what's changed in it (`ReadOnlyFolders`), and Finder can't change it.
+public struct SpacesFolder: Sendable {
+    /// Its node's ID. `#` is never in a record key, so it's no record's.
+    public static let id = "#spaces"
+
+    public var settings: SpacesSettings
+    /// As last read; `nil` before it's been read.
+    public var snapshot: SpaceData.Snapshot?
+    /// `snapshot` as files.
+    public var tree: SpaceTree?
+    /// Why it couldn't be read the last time, if it couldn't. What was read before stays.
+    public var problem: String?
+    /// When it was last read (or tried).
+    public var readAt: Date?
+
+    public init(settings: SpacesSettings) {
+        self.settings = settings
+    }
+
+    /// Whether a node is the Spaces folder, or in it.
+    public static func contains(_ id: String) -> Bool { id == Self.id || NodeID.split(id).mount == Self.id }
+
+    /// The tree item a node in the folder is.
+    public func item(_ id: String) -> SpaceTree.Item? {
+        guard NodeID.split(id).mount == Self.id else { return nil }
+        return tree?.items[NodeID.split(id).rkey]
+    }
+
+    /// Its nodes, the folder named `name`: `nil` before it's been read.
+    func nodes(named name: String) -> [Node]? {
+        guard let tree else { return nil }
+        let epoch = Date(timeIntervalSince1970: 0)
+        var nodes = [
+            Node(
+                id: Self.id, cid: "spaces", record: NodeRecord(name: name, parent: nil, kind: .folder, createdAt: epoch)
+            )
+        ]
+        for item in tree.items.values {
+            let record = NodeRecord(
+                name: item.name, parent: item.parent.map { NodeID.join(Self.id, $0) } ?? Self.id,
+                kind: item.isFolder ? .folder : .file, size: item.size, sha256: item.sha256,
+                createdAt: item.date ?? epoch, modifiedAt: item.isFolder ? nil : item.date ?? epoch)
+            nodes.append(
+                Node(
+                    id: NodeID.join(Self.id, item.id), cid: "\(item.contentVersion)|\(item.unreadable ?? "")",
+                    record: record))
+        }
+        return nodes
+    }
+
+    /// The folder's name in the drive: as set, or numbered if a folder of yours has it.
+    static func name(_ wanted: String, besides home: DriveTree) -> String {
+        let taken = Set(home.children(of: nil).map(\.name))
+        var name = wanted
+        var counter = 2
+        while taken.contains(name) {
+            name = "\(wanted) (\(counter))"
+            counter += 1
+        }
+        return name
+    }
+}
+
 /// The drive as last fetched, every space in it: the home drive, and each mount.
 public struct JoinedSnapshot: Sendable {
     public private(set) var home: DriveSnapshot
     /// By mount ID.
     public private(set) var mounts: [String: MountState]
+    /// The Spaces folder, while it's on (`spaces.enabled`).
+    public private(set) var spaces: SpacesFolder?
     /// Every space's files and folders, joined at their mounts, by node ID (`NodeID`).
     public private(set) var tree: DriveTree
 
-    public init(home: DriveSnapshot, mounts: [String: MountState] = [:]) {
+    public init(home: DriveSnapshot, mounts: [String: MountState] = [:], spaces: SpacesFolder? = nil) {
         self.home = home
         self.mounts = mounts
-        tree = Self.join(home.tree, mounts)
+        self.spaces = spaces
+        tree = Self.join(home.tree, mounts, spaces: spaces)
     }
 
     /// The home drive's revision: `nil` if it's gone.
@@ -133,7 +203,8 @@ public struct JoinedSnapshot: Sendable {
     public var anchor: String? {
         guard let revision else { return nil }
         let mounted = mounts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value.snapshot?.revision ?? "-")" }
-        return ([revision] + mounted).joined(separator: " ")
+        let folder = spaces.map { ["\(SpacesFolder.id)=\($0.tree?.anchor ?? "-")"] } ?? []
+        return ([revision] + mounted + folder).joined(separator: " ")
     }
     public var settings: DriveSettings? { home.settings }
     public var listedAt: Date { home.listedAt }
@@ -168,7 +239,7 @@ public struct JoinedSnapshot: Sendable {
         for (id, state) in mounts {
             if let snapshot = state.snapshot { past[id]?.snapshot = snapshot.replacingTree(snapshot.tree(at: date)) }
         }
-        return Self.join(homePast, past)
+        return Self.join(homePast, past, spaces: spaces)
     }
 
     /// The file a share of one file holds, as its space has it: `nil` for a folder's share.
@@ -196,9 +267,17 @@ public struct JoinedSnapshot: Sendable {
     /// file (`fileView`), and a share whose space was deleted is gone. A held mount keeps what it
     /// had (read-only, it can't be changed anyway); one that was never read is an unreadable
     /// record, so nothing that came from it is taken for deleted, here or by the Mac.
-    static func join(_ home: DriveTree, _ mounts: [String: MountState]) -> DriveTree {
+    static func join(_ home: DriveTree, _ mounts: [String: MountState], spaces: SpacesFolder? = nil) -> DriveTree {
         var nodes = Array(home.nodes.values)
         var unreadable = Array(home.unreadable.values)
+        if let spaces {
+            if let folder = spaces.nodes(named: SpacesFolder.name(spaces.settings.folder, besides: home)) {
+                nodes += folder
+            } else {
+                // Never read: like a share that can't be read, nothing in it is taken for gone.
+                unreadable.append(UnreadableNode(id: SpacesFolder.id, cid: "spaces", reason: .unavailable, value: nil))
+            }
+        }
         for (id, state) in mounts.sorted(by: { $0.key < $1.key }) where home.nodes[id] != nil {
             if state.problem?.isDeletion == true {
                 nodes.removeAll { $0.id == id }
@@ -250,6 +329,13 @@ public final class JoinedDrive: Sendable {
     /// The last snapshot `update` made: where writes find the nodes they move or delete.
     private let latest = Locked<JoinedSnapshot?>(nil)
     var latestSnapshot: JoinedSnapshot? { latest.value }
+    /// What the Spaces folder shows; `nil` while it's off.
+    private let spacesSettings: Locked<SpacesSettings?>
+    /// Reads it, once it's on.
+    private let spaceData = Locked<SpaceData?>(nil)
+    /// Reading every space costs a request or two each: `update`s that come within this long of
+    /// one that read them use what it read.
+    public static let spacesReuse: TimeInterval = 5
 
     struct Opened: Sendable {
         var info: MountInfo
@@ -257,9 +343,16 @@ public final class JoinedDrive: Sendable {
         var readOnly: Bool
     }
 
-    public init(home: Drive, access: SpaceAccess?) {
+    /// `spaces`: what the Spaces folder shows (`LocalConfig.spaces`); `nil` while it's off.
+    public init(home: Drive, access: SpaceAccess?, spaces: SpacesSettings? = nil) {
         self.home = home
         self.access = access
+        spacesSettings = Locked(spaces)
+    }
+
+    /// Turns the Spaces folder on (with what it shows) or off (`nil`), from the next `update`.
+    public func showSpaces(_ settings: SpacesSettings?) {
+        spacesSettings.update { $0 = settings }
     }
 
     public var owner: String { home.owner }
@@ -286,9 +379,46 @@ public final class JoinedDrive: Sendable {
                 node.id, info: info, previous: previous, sharingKeys: sharingKeys, now: now)
         }
         opened.update { $0 = $0.filter { mounts[$0.key] != nil } }
-        let joined = JoinedSnapshot(home: home, mounts: mounts)
+        let spaces = await updateSpaces(snapshot?.spaces)
+        let joined = JoinedSnapshot(home: home, mounts: mounts, spaces: spaces)
         latest.update { $0 = joined }
         return joined
+    }
+
+    /// The Spaces folder now: read again, unless it just was. If it can't be, what was read
+    /// before stays, with why.
+    private func updateSpaces(_ previous: SpacesFolder?) async -> SpacesFolder? {
+        guard let settings = spacesSettings.value, let access else { return nil }
+        var folder = previous ?? SpacesFolder(settings: settings)
+        if folder.settings == settings, let readAt = folder.readAt, Date().timeIntervalSince(readAt) < Self.spacesReuse
+        {
+            return folder
+        }
+        folder.settings = settings
+        let data = spaceData.update { existing in
+            if let existing { return existing }
+            let made = SpaceData(client: home.client, account: owner, access: access)
+            existing = made
+            return made
+        }
+        do {
+            let read = try await data.update(folder.snapshot, settings: settings)
+            folder.snapshot = read
+            folder.tree = read.tree
+            folder.problem = nil
+        } catch {
+            folder.problem = String(describing: error)
+        }
+        folder.readAt = Date()
+        return folder
+    }
+
+    /// What a file in the Spaces folder holds.
+    private func spacesContents(_ node: Node) async throws -> Data {
+        guard let item = latest.value?.spaces?.item(node.id), let data = spaceData.value else {
+            throw ATDriveError.notFound(node.name)
+        }
+        return try await data.contents(of: item)
     }
 
     /// The whole drive, every space, fetched from scratch.
@@ -404,6 +534,7 @@ public final class JoinedDrive: Sendable {
     /// Where a new child of `parent` goes: its space's drive and its parent there.
     private func place(_ parent: String?, path: @autoclosure () -> String) throws -> (Drive, String?, mount: String?) {
         guard let parent else { return (home, nil, nil) }
+        if SpacesFolder.contains(parent) { throw ATDriveError.inSpaces(path: path()) }
         let (mount, rkey) = NodeID.split(parent)
         if let mount { return (try writable(mount, path: path()), rkey, mount) }
         if let opened = opened.value[parent] {
@@ -430,6 +561,7 @@ public final class JoinedDrive: Sendable {
     /// The drive a node is in, and the node as that drive knows it. A share of one file is its
     /// mount, in the home drive (`content` has the file).
     private func local(_ node: Node, writing: Bool) throws -> (Drive, Node, mount: String?) {
+        if SpacesFolder.contains(node.id) { throw ATDriveError.inSpaces(path: node.name) }
         let (mount, rkey) = NodeID.split(node.id)
         guard let mount else { return (home, try homeNode(node), nil) }
         let drive = try self.drive(of: mount, path: node.name, writing: writing)
@@ -605,6 +737,7 @@ public final class JoinedDrive: Sendable {
     )
         async throws
     {
+        if SpacesFolder.contains(node.id) { return try write(try await spacesContents(node)) }
         let (drive, local, _) = try content(node, writing: false)
         try await drive.read(local, previous: previous, progress: progress, into: write)
     }
@@ -612,6 +745,10 @@ public final class JoinedDrive: Sendable {
     public func download(_ node: Node, to destination: URL, previous: URL? = nil, progress: Drive.Progress? = nil)
         async throws
     {
+        if SpacesFolder.contains(node.id) {
+            try await spacesContents(node).write(to: destination, options: .atomic)
+            return
+        }
         let (drive, local, _) = try content(node, writing: false)
         try await drive.download(local, to: destination, previous: previous, progress: progress)
     }
@@ -653,6 +790,7 @@ public final class JoinedDrive: Sendable {
     /// don't nest). Returns the mount node.
     @discardableResult
     public func mount(_ info: MountInfo, named name: String, in parent: String?) async throws -> Node {
+        if let parent, SpacesFolder.contains(parent) { throw ATDriveError.inSpaces(path: name) }
         if let parent,
             NodeID.split(parent).mount != nil || opened.value[parent] != nil
                 || latest.value?.mounts[parent] != nil

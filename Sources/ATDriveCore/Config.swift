@@ -13,15 +13,32 @@ public struct LocalConfig: Sendable, Equatable {
 
     public static let minimumSyncInterval = 5
 
-    /// Show what's in every space you're in (other apps' data, and spaces shared with you),
-    /// read-only: in `atdrive spaces`, and on a Mac as a second Finder location (Spaces). Off by
-    /// default: it downloads other people's data, and (once ATDrive's scope is narrow) needs a
-    /// wider sign-in (`OAuthLogin.spacesScope`).
+    /// Show what's in every space you're in (other apps' data, and spaces shared with you) as a
+    /// read-only folder at the top of the drive (`spacesFolder`): in Finder, a synced folder and
+    /// the CLI. Off by default: it downloads other people's data, and (once ATDrive's scope is
+    /// narrow) needs a wider sign-in (`OAuthLogin.spacesScope`).
     public var spacesEnabled = false
 
-    /// Let Spotlight search the Spaces location in Finder. Off by default, so other people's data
+    /// The Spaces folder's name, at the top of the drive. If a folder of yours already has it,
+    /// the Spaces folder is numbered (`Spaces (2)`).
+    public var spacesFolder = "Spaces"
+
+    /// Let Spotlight search the Spaces folder on a Mac. Off by default, so other people's data
     /// shared with you doesn't turn up in searches.
     public var spacesSpotlight = false
+
+    /// Spaces to show that aren't found by themselves: ones shared with you that you've never
+    /// written to (atproto can't list those). Addresses: `at://<handle or DID>/space/<type>/<key>`.
+    public var spacesInclude: [String] = []
+
+    /// Spaces not to show, found by themselves or included.
+    public var spacesExclude: [String] = []
+
+    /// The settings the drive needs to show Spaces; `nil` while it's off.
+    public var spaces: SpacesSettings? {
+        guard spacesEnabled else { return nil }
+        return SpacesSettings(folder: spacesFolder, include: spacesInclude, exclude: spacesExclude)
+    }
 
     public init() {}
 
@@ -43,7 +60,7 @@ public struct LocalConfig: Sendable, Equatable {
         Setting(
             key: "spaces.enabled",
             help:
-                "Show what's in every space you're in (other apps' data, spaces shared with you), read-only (atdrive spaces; Spaces in Finder).",
+                "Show what's in every space you're in (other apps' data, spaces shared with you) in a read-only folder in your drive.",
             read: { config, value in
                 guard case .boolean(let enabled) = value else { return "must be true or false" }
                 config.spacesEnabled = enabled
@@ -51,8 +68,44 @@ public struct LocalConfig: Sendable, Equatable {
             },
             value: { .boolean($0.spacesEnabled) }),
         Setting(
+            key: "spaces.folder",
+            help: "The Spaces folder's name, at the top of your drive.",
+            read: { config, value in
+                guard case .string(let name) = value else { return "must be text, in quotes" }
+                guard !name.isEmpty, !name.contains("/"), name != ".", name != ".." else {
+                    return "must be a folder name: not empty, and no /"
+                }
+                config.spacesFolder = name
+                return nil
+            },
+            value: { .string($0.spacesFolder) }),
+        Setting(
+            key: "spaces.include",
+            help: "Spaces shared with you to show though you've never written to them (at://… addresses).",
+            read: { config, value in
+                guard case .strings(let addresses) = value else { return "must be a list of space addresses" }
+                if let bad = addresses.first(where: { !SpacesSettings.isAddress($0) }) {
+                    return "has \(bad), which isn't a space's address (at://<handle or DID>/space/<type>/<key>)"
+                }
+                config.spacesInclude = addresses
+                return nil
+            },
+            value: { .strings($0.spacesInclude) }),
+        Setting(
+            key: "spaces.exclude",
+            help: "Spaces not to show (at://… addresses; `atdrive spaces` lists them).",
+            read: { config, value in
+                guard case .strings(let addresses) = value else { return "must be a list of space addresses" }
+                if let bad = addresses.first(where: { !SpacesSettings.isAddress($0) }) {
+                    return "has \(bad), which isn't a space's address (at://<handle or DID>/space/<type>/<key>)"
+                }
+                config.spacesExclude = addresses
+                return nil
+            },
+            value: { .strings($0.spacesExclude) }),
+        Setting(
             key: "spaces.spotlight",
-            help: "Let Spotlight search Spaces in Finder (other people's data included).",
+            help: "Let Spotlight search the Spaces folder on a Mac (other people's data included).",
             read: { config, value in
                 guard case .boolean(let indexed) = value else { return "must be true or false" }
                 config.spacesSpotlight = indexed

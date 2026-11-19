@@ -29,7 +29,7 @@ import Testing
         let loaded = try configFile().loadInDetail()
         #expect(loaded.config == LocalConfig())
         #expect(!loaded.exists)
-        #expect(loaded.entries.map(\.key) == ["sync.interval", "spaces.enabled", "spaces.spotlight"])
+        #expect(loaded.entries.map(\.key) == ["sync.interval", "spaces.enabled", "spaces.folder", "spaces.include", "spaces.exclude", "spaces.spotlight"])
         #expect(loaded.entries.allSatisfy { !$0.isSet })
     }
 
@@ -131,10 +131,50 @@ import Testing
         #expect(throws: TOMLError.self) { try TOMLDocument(parsing: "a = 1__0") }
     }
 
+    @Test func arraysOfTextParse() throws {
+        let document = try TOMLDocument(
+            parsing: """
+                one = ["a", 'b']
+                none = []
+                many = [
+                  "at://x/space/a.b.c/1",  # a comment
+                  # a line of comment
+                  'at://y/space/a.b.c/2',
+                ]
+                after = 1
+                """)
+        #expect(document.value("one") == .strings(["a", "b"]))
+        #expect(document.value("none") == .strings([]))
+        #expect(document.value("many") == .strings(["at://x/space/a.b.c/1", "at://y/space/a.b.c/2"]))
+        #expect(document.value("after") == .integer(1))
+        for bad in ["a = [1]", "a = [\"x\" \"y\"]", "a = [\"x\"", "a = [\"x\",\n"] {
+            #expect(throws: TOMLError.self, "\(bad)") { try TOMLDocument(parsing: bad) }
+        }
+        let error = try #require(throws: TOMLError.self) { try TOMLDocument(parsing: "a = [\n\"x\",\n2]") }
+        #expect(error.line == 3)
+    }
+
+    @Test func arraysAreEditedInPlace() throws {
+        var document = try TOMLDocument(
+            parsing: "# mine\r\n[spaces]\r\ninclude = [\r\n  \"a\", # keep?\r\n]\r\nenabled = true # on\r\n")
+        document.set("spaces.include", to: .strings(["a", "b"]))
+        document.set("spaces.exclude", to: .strings(["c"]))
+        #expect(
+            document.text
+                == "# mine\r\n[spaces]\r\ninclude = [\r\n  \"a\",\r\n  \"b\",\r\n]\r\nenabled = true # on\r\nexclude = [\r\n  \"c\",\r\n]\r\n"
+        )
+        let reread = try TOMLDocument(parsing: document.text)
+        #expect(reread.value("spaces.include") == .strings(["a", "b"]))
+        #expect(reread.value("spaces.exclude") == .strings(["c"]))
+        #expect(reread.value("spaces.enabled") == .boolean(true))
+        document.set("spaces.include", to: .strings([]))
+        #expect(try TOMLDocument(parsing: document.text).value("spaces.include") == .strings([]))
+    }
+
     @Test func valuesWriteBackAsTheyRead() throws {
         for value: TOMLDocument.Value in [
             .string("plain"), .string("q\"uo\\te\n\t\u{1}"), .integer(-3), .float(0.25), .float(-.infinity),
-            .boolean(true),
+            .boolean(true), .strings([]), .strings(["x", "y\"z"]),
         ] {
             var document = try TOMLDocument(parsing: "")
             document.set("t.k", to: value)

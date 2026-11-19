@@ -61,28 +61,30 @@ public enum DriveDomain {
     }
 }
 
-/// The second Finder location: what's in every space the account is in (other apps' data, and
-/// spaces shared with it), read-only (`SpaceData`). There only while `spaces.enabled` is on in
-/// config.toml: the app adds and removes it.
-public enum SpacesDomain {
-    public static let identifier = NSFileProviderDomainIdentifier(rawValue: "spaces")
-
-    /// Finder shows it as "Spaces" under ATDrive in the sidebar.
-    public static func make() -> NSFileProviderDomain {
-        let domain = NSFileProviderDomain(identifier: identifier, displayName: "Spaces")
-        domain.supportsSyncingTrash = false
-        return domain
+/// What the Spaces folder shows (`spaces.*` in config.toml), for the extension, which can't read
+/// config.toml: the app writes it to the App Group's defaults whenever the file changes.
+public enum SpacesShare {
+    /// `nil` while Spaces is off.
+    public static var settings: SpacesSettings? {
+        get {
+            defaults?.data(forKey: settingsKey).flatMap { try? JSONDecoder().decode(SpacesSettings.self, from: $0) }
+        }
+        set {
+            if let newValue, let data = try? JSONEncoder().encode(newValue) {
+                defaults?.set(data, forKey: settingsKey)
+            } else {
+                defaults?.removeObject(forKey: settingsKey)
+            }
+        }
     }
 
-    public static var manager: NSFileProviderManager? { NSFileProviderManager(for: make()) }
-
-    /// Whether Spotlight may index it (`spaces.spotlight` in config.toml). The extension can't read
-    /// config.toml, so the app passes it on through the App Group's defaults.
+    /// Whether Spotlight may search the Spaces folder (`spaces.spotlight`).
     public static var spotlight: Bool {
         get { defaults?.bool(forKey: spotlightKey) ?? false }
         set { defaults?.set(newValue, forKey: spotlightKey) }
     }
 
+    private static let settingsKey = "spacesSettings"
     private static let spotlightKey = "spacesSpotlight"
     private static var defaults: UserDefaults? { AppGroup.identifier.flatMap { UserDefaults(suiteName: $0) } }
 }

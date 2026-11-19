@@ -55,7 +55,6 @@ struct Sync: AsyncParsableCommand {
         var checkEvery: Int { interval ?? settings.syncInterval }
         var configProblem: String?
         func reloadConfig() {
-            guard interval == nil else { return }
             do {
                 settings = try config.load()
                 configProblem = nil
@@ -100,8 +99,15 @@ struct Sync: AsyncParsableCommand {
                 let result = try await sync.sync(checkRemote: clock.now >= nextDriveCheck)
                 if result.checkedRemote {
                     let previous = checkEvery
+                    let spaces = settings.spaces
                     reloadConfig()
                     if checkEvery != previous { SyncLog.write("Checking the drive every \(checkEvery)s now.") }
+                    if settings.spaces != spaces {
+                        context.joined.showSpaces(settings.spaces)
+                        SyncLog.write(settings.spaces == nil ? "Spaces is off now." : "Spaces changed; updating it.")
+                        nextDriveCheck = clock.now  // now, rather than in checkEvery seconds
+                        continue
+                    }
                     nextDriveCheck = clock.now + .seconds(checkEvery)
                 }
                 watcher.watch(result.folders)

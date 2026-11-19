@@ -4,14 +4,32 @@ import AppKit
 import Observation
 import SwiftUI
 
-/// The spaces added to the spaces view by address, as the Settings window shows and changes
-/// them: the same as `atdrive spaces add` and `remove`, for all the account's devices.
+/// The spaces in the Spaces folder, as the Settings window lists them: what `atdrive spaces`
+/// prints.
 @MainActor @Observable
-final class AddedSpacesModel {
-    private(set) var spaces: [String] = []
-    private(set) var message: String?
-    private(set) var working = false
-    var address = ""
+final class SpacesListModel {
+    struct Row: Identifiable, Equatable {
+        var id: String { uri }
+        var uri: String
+        /// As it would be written in config.toml: the owner by handle where known.
+        var address: String
+        /// Where it is in the drive.
+        var path: String
+        var included: Bool
+        var problem: String?
+    }
+
+    /// An address in config.toml that can't be used, and why.
+    struct Unusable: Identifiable, Equatable {
+        var id: String { address }
+        var address: String
+        var why: String
+    }
+
+    private(set) var rows: [Row] = []
+    private(set) var unusable: [Unusable] = []
+    private(set) var problem: String?
+    private(set) var loading = false
 
     @ObservationIgnored private weak var app: AppModel?
 
@@ -20,64 +38,61 @@ final class AddedSpacesModel {
     }
 
     func refresh() async {
-        guard let data = await app?.spaceData() else {
-            spaces = []
+        guard let joined = await app?.joinedDrive() else {
+            rows = []
             return
         }
+        loading = true
+        defer { loading = false }
         do {
-            spaces = try await data.addedSpaces()
-            message = nil
-        } catch {
-            message = String(describing: error)
-        }
-    }
-
-    func add() {
-        let address = address
-        change { data in
-            try await data.add(address)
-            self.address = ""
-        }
-    }
-
-    func remove(_ space: String) {
-        change { data in try await data.remove(space) }
-    }
-
-    private func change(_ step: @escaping @MainActor (SpaceData) async throws -> Void) {
-        guard !working else { return }
-        working = true
-        message = nil
-        Task {
-            defer { working = false }
-            guard let data = await app?.spaceData() else { return }
-            do {
-                try await step(data)
-                await app?.spacesChanged()
-            } catch {
-                message = String(describing: error)
+            let snapshot = try await joined.update(nil)
+            problem = snapshot.spaces?.problem
+            guard let read = snapshot.spaces?.snapshot else {
+                rows = []
+                return
             }
-            await refresh()
+            let tree = snapshot.tree
+            func address(_ uri: String) -> String {
+                guard let parts = XRPCClient.spaceParts(uri) else { return uri }
+                return "at://\(read.handles[parts.authority] ?? parts.authority)/space/\(parts.type)/\(parts.key)"
+            }
+            rows = read.spaces.values.map { space in
+                let node = tree.nodes[NodeID.join(SpacesFolder.id, "s|\(space.uri)")]
+                return Row(
+                    uri: space.uri, address: address(space.uri),
+                    path: node.map { tree.path(of: $0).description } ?? space.uri, included: space.included,
+                    problem: space.problem?.description)
+            }
+            .sorted { $0.path < $1.path }
+            unusable = read.unusable.map { Unusable(address: $0.key, why: $0.value) }.sorted { $0.address < $1.address }
+        } catch {
+            problem = String(describing: error)
         }
     }
 }
 
-/// Settings ▸ Spaces: the Spaces location (on or off), Spotlight, and spaces added by address.
+/// Settings ▸ Spaces: whether the Spaces folder is there, its name, Spotlight, and which spaces
+/// it shows. Everything here is config.toml's `[spaces]`, which can be edited by hand instead.
 struct SpacesSection: View {
     @Bindable var app: AppModel
-    @State private var added: AddedSpacesModel
+    @State private var list: SpacesListModel
+    @State private var folder = ""
+    @State private var address = ""
 
     init(app: AppModel) {
         self.app = app
-        _added = State(initialValue: AddedSpacesModel(app: app))
+        _list = State(initialValue: SpacesListModel(app: app))
     }
 
     var body: some View {
         Section("Spaces") {
-            Toggle(isOn: Binding(get: { app.config.spacesEnabled }, set: { app.setSpacesEnabled($0) })) {
-                Text("Show what's in my spaces")
+            Toggle(
+                isOn: Binding(
+                    get: { app.config.spacesEnabled }, set: { on in app.updateConfig { $0.spacesEnabled = on } })
+            ) {
+                Text("Show my spaces")
                 Text(
-                    "What other atproto apps keep in your spaces, and spaces people share with you, read-only, in Finder under Spaces. It downloads other people's data to this Mac."
+                    "What other atproto apps keep in your spaces, and spaces people share with you, in a read-only folder in your drive. It downloads other people's data to this Mac."
                 )
             }
             if app.config.spacesEnabled {
@@ -86,51 +101,113 @@ struct SpacesSection: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Toggle(isOn: Binding(get: { app.config.spacesSpotlight }, set: { app.setSpacesSpotlight($0) })) {
-                    Text("Show in Spotlight searches")
-                    Text("Off, what's in Spaces (other people's data included) stays out of search results.")
+                LabeledContent("Folder name") {
+                    TextField("Spaces", text: $folder)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 180)
+                        .onSubmit { saveFolder() }
                 }
-                if app.signedInHandle != nil { addedSpaces }
+                Toggle(
+                    isOn: Binding(
+                        get: { app.config.spacesSpotlight }, set: { on in app.updateConfig { $0.spacesSpotlight = on } }
+                    )
+                ) {
+                    Text("Show in Spotlight searches")
+                    Text("Off, what's in it (other people's data included) stays out of search results.")
+                }
+                if app.signedInHandle != nil { spaces }
             }
         }
-        .task(id: "\(app.signedInHandle ?? "")\(app.config.spacesEnabled)") {
-            if app.config.spacesEnabled { await added.refresh() }
+        .onAppear { folder = app.config.spacesFolder }
+        .onChange(of: app.config.spacesFolder) { _, name in folder = name }
+        .task(id: "\(app.signedInHandle ?? "")\(app.config.spaces.map { "\($0)" } ?? "off")") {
+            if app.config.spacesEnabled { await list.refresh() }
         }
     }
 
-    @ViewBuilder private var addedSpaces: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(
-                "Spaces shared with you that you've never written to don't show up by themselves. Paste one's address to add it, on all your devices."
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-            HStack {
-                TextField("at://alice.example.com/space/…", text: $added.address)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { added.add() }
-                Button("Add") { added.add() }
-                    .disabled(added.address.trimmingCharacters(in: .whitespaces).isEmpty || added.working)
+    private func saveFolder() {
+        let name = folder.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, !name.contains("/") else {
+            folder = app.config.spacesFolder
+            return
+        }
+        app.updateConfig { $0.spacesFolder = name }
+    }
+
+    @ViewBuilder private var spaces: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let problem = list.problem {
+                note("Couldn't read your spaces: \(problem)", color: .red)
             }
-            ForEach(added.spaces, id: \.self) { space in
-                HStack {
-                    Text(space)
-                        .font(.caption.monospaced())
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .textSelection(.enabled)
+            ForEach(list.rows) { row in
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(row.path)
+                        Text(row.address)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                        if let problem = row.problem {
+                            Text("Can't be read: \(problem)").font(.caption).foregroundStyle(.orange)
+                        }
+                    }
                     Spacer()
-                    Button("Remove") { added.remove(space) }
-                        .disabled(added.working)
+                    Button(row.included ? "Remove" : "Hide") {
+                        app.updateConfig { config in
+                            if row.included {
+                                config.spacesInclude.removeAll { $0 == row.address || $0 == row.uri }
+                            } else {
+                                config.spacesExclude.append(row.address)
+                            }
+                        }
+                    }
                 }
             }
-            if let message = added.message {
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
+            if list.rows.isEmpty, !list.loading, list.problem == nil {
+                note("No spaces yet but ATDrive's own.", color: .secondary)
+            }
+            if !app.config.spacesExclude.isEmpty {
+                // As config.toml has them (spaces.exclude).
+                Text("Hidden").font(.caption.bold()).padding(.top, 4)
+                ForEach(app.config.spacesExclude, id: \.self) { excluded in
+                    HStack {
+                        Text(excluded).font(.caption.monospaced()).lineLimit(1).truncationMode(.middle)
+                        Spacer()
+                        Button("Show") {
+                            app.updateConfig { config in config.spacesExclude.removeAll { $0 == excluded } }
+                        }
+                    }
+                }
+            }
+            ForEach(list.unusable) { unusable in
+                note("\(unusable.address) isn't used: \(unusable.why)", color: .red)
+            }
+            note(
+                "A space shared with you that you've never written to doesn't show up by itself. Paste its address to include it.",
+                color: .secondary)
+            HStack {
+                TextField("at://alice.example.com/space/…", text: $address)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(include)
+                Button("Include", action: include)
+                    .disabled(!SpacesSettings.isAddress(address.trimmingCharacters(in: .whitespaces)))
             }
         }
+    }
+
+    private func include() {
+        let text = address.trimmingCharacters(in: .whitespaces)
+        guard SpacesSettings.isAddress(text) else { return }
+        app.updateConfig { config in
+            if !config.spacesInclude.contains(text) { config.spacesInclude.append(text) }
+            config.spacesExclude.removeAll { $0 == text }
+        }
+        address = ""
+    }
+
+    private func note(_ text: String, color: Color) -> some View {
+        Text(text).font(.caption).foregroundStyle(color).fixedSize(horizontal: false, vertical: true)
     }
 }

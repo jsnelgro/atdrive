@@ -27,17 +27,6 @@ actor DriveIndex {
     /// a drive: the app does.
     func drive() async throws -> JoinedDrive {
         if let cachedDrive { return cachedDrive }
-        let drive = try await Self.openHome()
-        let joined = JoinedDrive(
-            home: drive, access: SpaceAccess(ownClient: drive.client, resolver: IdentityResolver()))
-        Item.account = drive.owner
-        cachedDrive = joined
-        return joined
-    }
-
-    /// The signed-in account's home drive, opened with this Mac's identity: "not signed in"
-    /// until the app has opened it on this Mac.
-    static func openHome() async throws -> Drive {
         guard let store = AppGroup.sessionStore(), let session = try store.load(),
             let devices = AppGroup.deviceStore(), let identity = try devices.load()
         else {
@@ -53,7 +42,12 @@ actor DriveIndex {
         } catch is DriveAccessError {
             throw NSFileProviderError(.notAuthenticated)
         }
-        return drive
+        let joined = JoinedDrive(
+            home: drive, access: SpaceAccess(ownClient: drive.client, resolver: IdentityResolver()),
+            spaces: SpacesShare.settings)
+        Item.account = session.did
+        cachedDrive = joined
+        return joined
     }
 
     /// The drive as last fetched (for sharing actions and badges).
@@ -62,6 +56,10 @@ actor DriveIndex {
     /// The drive as it is now, with the changes since last time applied.
     func refresh() async throws -> (revision: String, tree: DriveTree) {
         let drive = try await drive()
+        // Spaces as config.toml now says (the app passes it on), and Spotlight's setting, which
+        // changes every item in it: part of the anchor, so a change is enumerated.
+        drive.showSpaces(SpacesShare.settings)
+        let spotlight = SpacesShare.spotlight
         var updated = try await drive.update(snapshot)
         if let problem = drive.accessProblem,
             problem == .encryptionRemoved || problem == .settingsRolledBack
@@ -87,7 +85,9 @@ actor DriveIndex {
             updated = try await drive.update(updated)
         }
         snapshot = updated
-        let revision = updated.anchor ?? Self.emptyRevision
+        Item.spaces = (updated.spaces, spotlight)
+        var revision = updated.anchor ?? Self.emptyRevision
+        if updated.spaces != nil, spotlight { revision += " indexed" }
         if let current, current.revision == revision { return current }
         let latest = (revision: revision, tree: updated.tree)
         current = latest
