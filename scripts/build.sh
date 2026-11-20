@@ -6,6 +6,7 @@
 #        scripts/build.sh && cp build/atdrive ~/.local/bin/   # install
 set -euo pipefail
 cd "$(dirname "$0")/.."
+. scripts/lib/build-path.sh
 
 FLAGS=(-c release --product atdrive)
 [[ "$(uname)" == "Linux" ]] && FLAGS+=(--static-swift-stdlib)

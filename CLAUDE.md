@@ -35,6 +35,9 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
   hash Nix prints). nixpkgs' Swift can't do the static musl build (its compiler adds Nix's glibc
   headers), and needs `SWT_SWIFT_ERROR_BACKTRACING_ENABLED=0` (set in the dev shell) or tests that
   throw crash. Scripts start with `#!/usr/bin/env bash`: NixOS (Tangled's CI) has no `/bin/bash`.
+- The scripts that build (`build.sh`, `test.sh`, `build-app.sh`) clean the build first if the
+  project has moved or been copied since its last build (`scripts/lib/build-path.sh`): SwiftPM's
+  caches record the folder, and a moved one fails with "missing required module 'SwiftShims'".
 - `scripts/format.sh`: formatting (config in `.swift-format`).
 - `scripts/build-app.sh` / `scripts/run-app.sh` (macOS): build `build/ATDrive.app` (and install
   and launch it). Signing needs an Apple Development certificate; `ALLOW_ADHOC=1` builds
