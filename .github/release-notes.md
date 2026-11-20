@@ -8,7 +8,7 @@
 xattr -dr com.apple.quarantine /Applications/ATDrive.app
 ```
 
-Or open it once, then go to System Settings › Privacy & Security and click **Open Anyway**. The app's menu has **Install Command-Line Tool…** for the `atdrive` command too. (If the app isn't attached yet, it's on its way: it's added by hand after the build.)
+Or open it once, then go to System Settings › Privacy & Security and click **Open Anyway**. The app's menu has **Install Command-Line Tool…** for the `atdrive` command too. (If the Mac files aren't attached yet, they're on their way: they're added by hand after the Linux build.)
 
 **Linux:** download the file for your machine (`uname -m` says which: `x86_64` or `aarch64`). It runs on any distribution.
 
@@ -20,4 +20,4 @@ atdrive login alice.example.com
 
 **Mac (the command line only):** `atdrive-__VERSION__-macos-arm64.tar.gz`. Unpack it as above. If macOS says it can't check it for malware: `xattr -d com.apple.quarantine ~/.local/bin/atdrive`.
 
-**Checking a download:** `shasum -a 256 <file>` (`sha256sum` on Linux) should print the same as that file's line in `SHA256SUMS`. Files built here also have a build attestation: `gh attestation verify <file> -R __REPO__`.
+**Checking a download:** every file has its checksum next to it (`<file>.sha256`). `shasum -a 256 -c <file>.sha256` (`sha256sum -c` on Linux) says OK if they match. The Linux files also have a build attestation: `gh attestation verify <file> -R __REPO__`.

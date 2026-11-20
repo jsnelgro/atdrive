@@ -22,10 +22,12 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
   `ATDRIVE_STATE_DIR=<folder> atdrive login <handle>` saved a session to.
 - `scripts/build.sh`: release binary at `build/atdrive`. The Swift runtime is static on Linux.
 - `scripts/build-static.sh`: fully static Linux binaries (musl, Swift's Static Linux SDK, x86_64
-  and aarch64) packed into `dist/`, as released. Needs Swift 6.4.2 exactly; installs the SDK.
+  and aarch64) packed into `dist/`, as released. Needs a Swift 6.4.x toolchain listed in the script
+  (the SDK must match it exactly); installs the SDK.
   Linux-only code must build against musl as well as glibc (`#if canImport(Musl)`).
-- Releases: a `v<version>` tag runs `.github/workflows/release.yml`; `scripts/release-app.sh`
-  (on the maintainer's Mac) adds the signed app. See "Releasing" in the README.
+- Releases: a `v<version>` tag runs `.github/workflows/release.yml` (the Linux files);
+  `scripts/release-mac.sh` (on the maintainer's Mac) builds the Mac files to upload by hand. Keep the release logic in
+  `scripts/` and the workflow thin: the project may move to Tangled. See "Releasing" in the README.
 - `scripts/format.sh`: formatting (config in `.swift-format`).
 - `scripts/build-app.sh` / `scripts/run-app.sh` (macOS): build `build/ATDrive.app` (and install
   and launch it). Signing needs an Apple Development certificate; `ALLOW_ADHOC=1` builds

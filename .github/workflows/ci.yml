@@ -18,7 +18,7 @@ jobs:
   # The released Linux binaries are static (musl): catch what breaks that before a release does.
   static-linux:
     runs-on: ubuntu-latest
-    container: swift:6.4.2-noble # SWIFT_VERSION in scripts/build-static.sh
+    container: swift:6.4.2-noble # a version with an SDK listed in scripts/build-static.sh
     steps:
       - uses: actions/checkout@v4
       - name: Static build (x86_64)

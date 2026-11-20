@@ -143,8 +143,8 @@ how to install it; in short:
 - **Mac command line only:** `atdrive-<version>-macos-arm64.tar.gz`, unsigned. The Mac app has
   the command too (**Install Command-Line Tool…**).
 
-`SHA256SUMS` in each release has every file's checksum, and files built by GitHub Actions have a
-build attestation (`gh attestation verify <file> -R jsnelgro/atdrive`).
+Each file's checksum is next to it: `shasum -a 256 -c <file>.sha256` (`sha256sum -c` on Linux)
+says OK if the download matches.
 
 To build it yourself instead, read on.
 
@@ -659,29 +659,36 @@ ATDRIVE_LIVE_STATE=~/.atdrive-live-a scripts/test.sh --filter Live
 
 ### Releasing
 
-The version is written down once, in `Sources/ATDriveCore/Version.swift` (`atdrive --version`
-and the app's Info.plists use it).
+Releases are built by scripts, so nothing depends on GitHub: the files can go on a GitHub
+release or a Tangled tag alike. The version is written down once, in
+`Sources/ATDriveCore/Version.swift` (`atdrive --version` and the app's Info.plists use it).
 
 1. Change the version there and merge.
-2. Tag the merged commit and push the tag:
+2. Tag the merged commit with an annotated tag (Tangled shows its message as the release notes)
+   and push it:
 
    ```bash
-   git tag v0.3.0 && git push origin v0.3.0
+   git tag -a v0.3.0 -m "ATDrive 0.3.0" && git push origin v0.3.0
    ```
 
-   The Release workflow (`.github/workflows/release.yml`) checks the tag matches the version,
-   builds the command-line tool for Linux (static, x86_64 and aarch64, with
-   `scripts/build-static.sh`) and macOS, and publishes a pre-release with checksums and build
-   attestations. `gh run watch` follows it.
-3. Add the Mac app, on your Mac, once the release exists:
+3. **The Linux files** (static, x86_64 and aarch64), with `scripts/build-static.sh`:
+   - On GitHub, the Release workflow (`.github/workflows/release.yml`) does it when the tag is
+     pushed: it checks the tag matches the version, builds them and publishes a pre-release with
+     them, their checksums and build attestations.
+   - Anywhere else (say, after a move to Tangled), run it on any machine with a Swift 6.4.x
+     toolchain from swift.org, or in the `swift:6.4.2` container, and upload what it puts in
+     `dist/`.
+4. **The Mac files,** on your Mac:
 
    ```bash
-   git checkout v0.3.0 && scripts/release-app.sh
+   git checkout v0.3.0 && scripts/release-mac.sh
    ```
 
-   It builds the app signed with your Apple Development certificate and uploads it. It isn't
-   notarized (that needs a paid Apple Developer Program membership and a Developer ID
-   certificate), which is why testers remove the quarantine flag.
+   It builds the app signed with your Apple Development certificate, and the command-line tool
+   on its own, into `dist/` with their checksums, shows them in Finder and opens the release
+   page (GitHub or Tangled, from the remote): drag them onto it. The app isn't notarized (that
+   needs a paid Apple Developer Program membership and a Developer ID certificate), which is
+   why testers remove the quarantine flag.
 
 Mac app logs (app and extension):
 
