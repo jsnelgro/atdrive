@@ -460,9 +460,11 @@ The rest of this section is about encrypted drives.
 Share a file or folder with specific people, or with anyone who has its link. Read-only for
 them: they see it in their own drive (in Finder, or a synced folder), kept up to date.
 
-Something shared with you always shows exactly what its owner has. In a synced folder, a change
-you make inside it is put back at the next sync. If you edited a file or added one there, your
-version is kept first, at the top of your drive, so you don't lose it.
+Something shared with you always shows exactly what its owner has, under the name its owner
+gives it: when they rename it, it's renamed for you too. You can move it anywhere in your drive,
+or take it out of your drive, but not rename or change it. In a synced folder, a change you make
+inside it (or to its name) is put back at the next sync. If you edited a file or added one there,
+your version is kept first, at the top of your drive, so you don't lose it.
 
 In Finder, right-click: **Share…** (who has it, and the link), **Copy Link**, **Stop Sharing**.
 Shared things have a badge. Clicking an `atdrive://` link opens ATDrive, with **Add to My Drive**

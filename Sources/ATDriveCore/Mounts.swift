@@ -24,6 +24,8 @@ public enum SharingError: Error, Equatable, CustomStringConvertible {
     case encryptedShareFromPlainDrive
     /// Not one of yours: only its owner can change who has it.
     case notYours(String)
+    /// Shared with you: its name is its owner's.
+    case notYoursToRename(String)
     /// Not shared: no folder of yours there is in a space of its own.
     case notShared(String)
     /// An encrypted share's link has to carry its key (`#…`).
@@ -47,6 +49,7 @@ public enum SharingError: Error, Equatable, CustomStringConvertible {
         case .encryptedShareFromPlainDrive:
             "your drive isn't encrypted, so it makes unencrypted shares only (`atdrive encryption on` first)"
         case .notYours(let path): "\(path) was shared with you: only its owner can change who has it"
+        case .notYoursToRename(let name): "“\(name)” was shared with you: only its owner can rename it"
         case .notShared(let path): "\(path) isn't shared"
         case .linkKeyMissing: "this link is to an encrypted share, but it's missing its key (the part after #)"
         case .linkKeyWrong: "this link's key doesn't open the share: it's mistyped, or the link was turned off"
@@ -280,11 +283,59 @@ public struct JoinedSnapshot: Sendable {
         return Node(id: mount.id, cid: "\(mount.cid)+\(file.cid)", record: record)
     }
 
+    /// The name its owner gives a share: the shared file's, or a shared folder's (its settings).
+    /// `nil` if it hasn't been read, or the name isn't one a file can have.
+    static func ownersName(_ state: MountState) -> String? {
+        let name = sharedFile(state)?.name ?? state.snapshot?.settings?.name
+        guard let name, (try? DrivePath.validate(name: name)) != nil else { return nil }
+        return name
+    }
+
+    /// What other people's shares are called in this drive, by mount ID: only their owners name
+    /// them, so each is shown under its owner's name for it, numbered if something beside it
+    /// has that name (`name (2)`). The name the mount record keeps is used only until the share
+    /// has been read. Your own shares are as you named them.
+    static func sharedNames(_ home: DriveTree, _ mounts: [String: MountState]) -> [String: String] {
+        let named = mounts.compactMap { id, state -> (id: String, name: String)? in
+            guard state.readOnly, home.nodes[id] != nil, let name = ownersName(state) else { return nil }
+            return (id, name)
+        }.sorted { $0.id < $1.id }
+        var names: [String: String] = [:]
+        var taken: [String?: Set<String>] = [:]
+        // Named here, or not shown at all (deleted by their owners): their names aren't taken.
+        let free = Set(named.map(\.id)).union(mounts.filter { $0.value.problem?.isDeletion == true }.keys)
+        for (id, wanted) in named {
+            let parent = home.parent(of: id)
+            if taken[parent] == nil {
+                taken[parent] = Set(home.children(of: parent).filter { !free.contains($0.id) }.map(\.name))
+            }
+            var name = wanted
+            var counter = 2
+            while taken[parent]!.contains(name) {
+                name = "\(wanted) (\(counter))"
+                counter += 1
+            }
+            taken[parent]!.insert(name)
+            names[id] = name
+        }
+        return names
+    }
+
+    /// A mount under another name: its `cid` changes with the name, so Finder sees the change.
+    static func renamed(_ mount: Node, _ name: String?) -> Node {
+        guard let name, name != mount.name else { return mount }
+        var record = mount.record
+        record.name = name
+        return Node(id: mount.id, cid: "\(mount.cid)|\(name)", record: record)
+    }
+
     /// The home tree with each mount's tree inside its mount node; a share of one file is that
     /// file (`fileView`), and a share whose space was deleted is gone. A held mount keeps what it
     /// had (read-only, it can't be changed anyway); one that was never read is an unreadable
-    /// record, so nothing that came from it is taken for deleted, here or by the Mac.
+    /// record, so nothing that came from it is taken for deleted, here or by the Mac. Other
+    /// people's shares have their owners' names (`sharedNames`).
     static func join(_ home: DriveTree, _ mounts: [String: MountState], spaces: SpacesFolder? = nil) -> DriveTree {
+        let names = sharedNames(home, mounts)
         var nodes = Array(home.nodes.values)
         var unreadable = Array(home.unreadable.values)
         if let spaces {
@@ -310,8 +361,12 @@ public struct JoinedSnapshot: Sendable {
             }
             if let file = sharedFile(state), let mount = home.nodes[id] {
                 nodes.removeAll { $0.id == id }
-                nodes.append(fileView(mount: mount, file: file))
+                nodes.append(fileView(mount: renamed(mount, names[id]), file: file))
                 continue
+            }
+            if let name = names[id], let mount = home.nodes[id] {
+                nodes.removeAll { $0.id == id }
+                nodes.append(renamed(mount, name))
             }
             for node in tree.nodes.values {
                 var record = node.record
@@ -673,12 +728,21 @@ public final class JoinedDrive: Sendable {
 
     /// Renames and/or moves a node. Within a space it's a move; between two (into or out of a
     /// shared folder of yours) it's a copy, then a delete, and it gets a new ID.
+    ///
+    /// Someone else's share can go anywhere in this drive, but keeps its name: its owner's
+    /// (`JoinedSnapshot.sharedNames`). Renaming a share of yours renames it for everyone who has
+    /// it.
     @discardableResult
     public func move(_ node: Node, to parent: String?, as name: String) async throws -> Node {
+        if node.isMount, let info = node.record.mount, info.owner != owner {
+            let shown = latest.value?.tree.nodes[node.id]?.name ?? node.name
+            guard name == shown else { throw SharingError.notYoursToRename(shown) }
+        }
         let (source, local, sourceMount) = try self.local(node, writing: true)
         let (target, localParent, targetMount) = try place(parent, path: name)
         if source === target {
             let moved = global(try await source.move(local, to: localParent, as: name), in: targetMount)
+            if node.isMount, node.record.mount?.owner == owner { await nameShare(node.id, name) }
             return node.isMount ? view(of: moved) : moved
         }
         guard !node.isMount else { throw SharingError.nested(name) }
@@ -690,6 +754,21 @@ public final class JoinedDrive: Sendable {
         try await source.delete(doomed)
         _ = sourceMount
         return global(copied, in: targetMount)
+    }
+
+    /// A share of this account's gets `name` in its space too, so everyone who has it sees it
+    /// under that name: the shared file's name, or a shared folder's (in its settings). If the
+    /// share can't be written now, they see the old name until it's renamed again.
+    private func nameShare(_ mount: String, _ name: String) async {
+        guard let share = opened.value[mount]?.drive, let state = latest.value?.mounts[mount],
+            let snapshot = state.snapshot, !state.readOnly
+        else { return }
+        if let file = JoinedSnapshot.sharedFile(state) {
+            guard file.name != name else { return }
+            _ = try? await share.move(file, to: nil, as: name)
+        } else if snapshot.settings?.name != name {
+            try? await share.rename(to: name)
+        }
     }
 
     /// Copies a node (with everything in it) into another of the account's spaces, as new nodes.
