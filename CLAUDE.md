@@ -21,6 +21,13 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
   `ATDRIVE_LIVE_STATE` (and `ATDRIVE_LIVE_STATE_B`, a second account, for sharing): a folder
   `ATDRIVE_STATE_DIR=<folder> atdrive login <handle>` saved a session to.
 - `scripts/build.sh`: release binary at `build/atdrive`. The Swift runtime is static on Linux.
+- `scripts/build-static.sh`: fully static Linux binaries (musl, Swift's Static Linux SDK, x86_64
+  and aarch64) packed into `dist/`, as released. Needs a Swift 6.4.x toolchain listed in the script
+  (the SDK must match it exactly); installs the SDK.
+  Linux-only code must build against musl as well as glibc (`#if canImport(Musl)`).
+- Releases: a `v<version>` tag runs `.github/workflows/release.yml` (the Linux files);
+  `scripts/release-mac.sh` (on the maintainer's Mac) builds the Mac files to upload by hand. Keep the release logic in
+  `scripts/` and the workflow thin: the project may move to Tangled. See "Releasing" in the README.
 - The scripts that build (`build.sh`, `test.sh`, `build-app.sh`) clean the build first if the
   project has moved or been copied since its last build (`scripts/lib/build-path.sh`): SwiftPM's
   caches record the folder, and a moved one fails with "missing required module 'SwiftShims'".
@@ -97,7 +104,8 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
     App Group container plus a Darwin notification. The app's sharing windows and `atdrive://`
     handling are in `App/Sharing.swift`.
 - `Resources/{App,FileProvider,CLI}`: Info.plists and entitlements templates (`__BUNDLE_ID__`,
-  `__APP_GROUP__`). `build-app.sh` puts the CLI in the app at `Contents/Helpers/atdrive`, signed
+  `__APP_GROUP__`, `__VERSION__`). The version lives only in `Sources/ATDriveCore/Version.swift`
+  (`scripts/version.sh` prints it). `build-app.sh` puts the CLI in the app at `Contents/Helpers/atdrive`, signed
   with the App Group, so it shares the app's session and device (`SecretStorage.standard`);
   `App/CommandLineTool.swift` shows how to put it on the PATH.
 - `Tests/ATDriveCoreTests`: Swift Testing. `FakePDS` is an in-memory transport for drive-logic

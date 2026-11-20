@@ -1,0 +1,64 @@
+# Publishes a GitHub Release when a version tag is pushed. To release (see "Releasing" in the
+# README): change the version in Sources/ATDriveCore/Version.swift, merge, then
+#   git tag -a v<version> -m "ATDrive <version>" && git push origin v<version>
+#
+# This builds the Linux files with scripts/build-static.sh and publishes a pre-release with them:
+#   atdrive-<version>-linux-x86_64.tar.gz    fully static (musl): runs on any Linux distribution
+#   atdrive-<version>-linux-aarch64.tar.gz
+# each with its checksum (<file>.sha256) and a build-provenance attestation
+# (`gh attestation verify <file> -R <repo>`). The Mac files are built on the maintainer's Mac with
+# scripts/release-mac.sh and uploaded by hand.
+#
+# Keep this thin: everything it builds comes from scripts/, so releasing from another forge
+# (the project may move to Tangled) needs only those scripts.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    # A Swift version with a Static Linux SDK listed in scripts/build-static.sh.
+    container: swift:6.4.2-noble
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches Sources/ATDriveCore/Version.swift
+        run: scripts/version.sh --check "$GITHUB_REF_NAME"
+      - name: Build static binaries
+        run: scripts/build-static.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+
+  release:
+    needs: linux
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release
+      id-token: write # sign the attestations
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux
+          path: dist
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*.tar.gz
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          notes=$(sed -e "s/__VERSION__/$version/g" -e "s|__REPO__|$GITHUB_REPOSITORY|g" .github/release-notes.md)
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            # A pre-release while ATDrive is alpha.
+            gh release create "$GITHUB_REF_NAME" dist/* --title "ATDrive $version" \
+              --notes "$notes" --generate-notes --prerelease --verify-tag
+          fi

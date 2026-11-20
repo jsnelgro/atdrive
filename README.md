@@ -127,9 +127,30 @@ On both there's also a command-line tool.
 >   them, and you have keys to look after. You can switch either way at any time. See
 >   [Encryption](#encryption).
 
+## Installing
+
+Download from [Releases](https://github.com/jsnelgro/atdrive/releases). Each release's notes say
+how to install it; in short:
+
+- **Mac app** (Apple silicon, macOS 14+): `ATDrive-<version>-macos-arm64.zip`. Unzip it and move
+  ATDrive to Applications. It's signed but not notarized by Apple, so macOS blocks it the first
+  time: run `xattr -dr com.apple.quarantine /Applications/ATDrive.app`, or open it once and click
+  **Open Anyway** in System Settings › Privacy & Security. Then see [The Mac app](#the-mac-app-finder)
+  from step 1.
+- **Linux:** `atdrive-<version>-linux-x86_64.tar.gz` or `-aarch64` (`uname -m` says which). The
+  binary is fully static, so it runs on any distribution. Unpack it and put `atdrive` on your
+  PATH (say `~/.local/bin`), then see [A synced folder](#a-synced-folder-linux).
+- **Mac command line only:** `atdrive-<version>-macos-arm64.tar.gz`, unsigned. The Mac app has
+  the command too (**Install Command-Line Tool…**).
+
+Each file's checksum is next to it: `shasum -a 256 -c <file>.sha256` (`sha256sum -c` on Linux)
+says OK if the download matches.
+
+To build it yourself instead, read on.
+
 ## The Mac app (Finder)
 
-Requires macOS 14+, Xcode or the Command Line Tools, and an **Apple Development certificate**.
+To build it yourself: requires macOS 14+, Xcode or the Command Line Tools, and an **Apple Development certificate**.
 A free Apple Developer account is enough: Xcode > Settings > Accounts > Manage Certificates >
 \+ > Apple Development. macOS only lets signed apps add a drive to Finder.
 
@@ -635,6 +656,39 @@ ATDRIVE_LIVE_STATE=~/.atdrive-live-a scripts/test.sh --filter Live
   after themselves. It creates the account's drive if there's none (plain); for an account whose drive
   is encrypted, set `ATDRIVE_LIVE_RECOVERY_KEY` to its recovery key (each run then adds a device
   to the drive).
+
+### Releasing
+
+Releases are built by scripts, so nothing depends on GitHub: the files can go on a GitHub
+release or a Tangled tag alike. The version is written down once, in
+`Sources/ATDriveCore/Version.swift` (`atdrive --version` and the app's Info.plists use it).
+
+1. Change the version there and merge.
+2. Tag the merged commit with an annotated tag (Tangled shows its message as the release notes)
+   and push it:
+
+   ```bash
+   git tag -a v0.3.0 -m "ATDrive 0.3.0" && git push origin v0.3.0
+   ```
+
+3. **The Linux files** (static, x86_64 and aarch64), with `scripts/build-static.sh`:
+   - On GitHub, the Release workflow (`.github/workflows/release.yml`) does it when the tag is
+     pushed: it checks the tag matches the version, builds them and publishes a pre-release with
+     them, their checksums and build attestations.
+   - Anywhere else (say, after a move to Tangled), run it on any machine with a Swift 6.4.x
+     toolchain from swift.org, or in the `swift:6.4.2` container, and upload what it puts in
+     `dist/`.
+4. **The Mac files,** on your Mac:
+
+   ```bash
+   git checkout v0.3.0 && scripts/release-mac.sh
+   ```
+
+   It builds the app signed with your Apple Development certificate, and the command-line tool
+   on its own, into `dist/` with their checksums, shows them in Finder and opens the release
+   page (GitHub or Tangled, from the remote): drag them onto it. The app isn't notarized (that
+   needs a paid Apple Developer Program membership and a Developer ID certificate), which is
+   why testers remove the quarantine flag.
 
 Mac app logs (app and extension):
 

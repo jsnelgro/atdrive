@@ -11,7 +11,7 @@ struct ATDrive: AsyncParsableCommand {
             Paths in the drive always start from the top: /photos/cat.jpg. Start with
             `atdrive login <handle>`.
             """,
-        version: "0.1.0",
+        version: ATDriveVersion.current,
         subcommands: [
             Login.self, Logout.self, WhoAmI.self,
             List.self, Tree.self, Put.self, Get.self, Cat.self,
