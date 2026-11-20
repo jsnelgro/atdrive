@@ -3,6 +3,8 @@ import Foundation
 
 #if canImport(Glibc)
     import Glibc
+#elseif canImport(Musl)  // the static Linux build
+    import Musl
 #elseif canImport(Darwin)
     import Darwin
 #endif
@@ -114,12 +116,12 @@ final class LoopbackServer: @unchecked Sendable {
             \(body)
             """.utf8)
         // Don't let a browser that hangs up early kill the process with SIGPIPE.
-        #if canImport(Glibc)
-            _ = response.withUnsafeBytes { send(client, $0.baseAddress, $0.count, Int32(MSG_NOSIGNAL)) }
-        #else
+        #if canImport(Darwin)
             var on: Int32 = 1
             setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
             _ = response.withUnsafeBytes { write(client, $0.baseAddress, $0.count) }
+        #else
+            _ = response.withUnsafeBytes { send(client, $0.baseAddress, $0.count, Int32(MSG_NOSIGNAL)) }
         #endif
     }
 

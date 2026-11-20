@@ -70,7 +70,10 @@ xcrun clang -arch "$(uname -m)" -mmacosx-version-min=14.0 build/extension-stub.c
   -Wl,-needed_library,"$EXT/Contents/Frameworks/libATDriveFileProvider.dylib" \
   -Wl,-rpath,@executable_path/../Frameworks
 
-render() { sed -e "s/__BUNDLE_ID__/$BUNDLE_ID/g" -e "s/__APP_GROUP__/$APP_GROUP/g" "$1" > "$2"; }
+VERSION=$(scripts/version.sh)
+render() {
+  sed -e "s/__BUNDLE_ID__/$BUNDLE_ID/g" -e "s/__APP_GROUP__/$APP_GROUP/g" -e "s/__VERSION__/$VERSION/g" "$1" > "$2"
+}
 render Resources/App/Info.plist "$APP/Contents/Info.plist"
 render Resources/FileProvider/Info.plist "$EXT/Contents/Info.plist"
 render Resources/App/ATDrive.entitlements build/ATDrive.entitlements

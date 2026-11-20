@@ -1,0 +1,87 @@
+# Publishes a GitHub Release when a version tag is pushed. To release (see "Releasing" in the
+# README): change the version in Sources/ATDriveCore/Version.swift, merge, then
+#   git tag v<version> && git push origin v<version>
+#
+# The release gets:
+#   atdrive-<version>-linux-x86_64.tar.gz    fully static (musl): runs on any Linux distribution
+#   atdrive-<version>-linux-aarch64.tar.gz
+#   atdrive-<version>-macos-arm64.tar.gz     the command line tool on its own, unsigned
+#   SHA256SUMS
+# and a build-provenance attestation for each file (`gh attestation verify <file> -R <repo>`).
+# The Mac app isn't built here: it's signed with the maintainer's certificate, on their Mac, and
+# added to the release with scripts/release-app.sh.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches Sources/ATDriveCore/Version.swift
+        run: scripts/version.sh --check "$GITHUB_REF_NAME"
+
+  linux:
+    needs: check
+    runs-on: ubuntu-latest
+    # Must match SWIFT_VERSION in scripts/build-static.sh: the Static Linux SDK only works with
+    # the toolchain of the same version.
+    container: swift:6.4.2-noble
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build static binaries
+        run: scripts/build-static.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+
+  macos:
+    needs: check
+    runs-on: macos-latest # Apple silicon
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          scripts/build.sh
+          mkdir -p dist
+          tar -C build -czf "dist/atdrive-$(scripts/version.sh)-macos-arm64.tar.gz" atdrive
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*
+
+  release:
+    needs: [linux, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release
+      id-token: write # sign the attestations
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/atdrive-*
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          notes=$(sed -e "s/__VERSION__/$version/g" -e "s|__REPO__|$GITHUB_REPOSITORY|g" .github/release-notes.md)
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            # A pre-release while ATDrive is alpha.
+            gh release create "$GITHUB_REF_NAME" dist/* --title "ATDrive $version" \
+              --notes "$notes" --generate-notes --prerelease --verify-tag
+          fi
