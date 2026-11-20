@@ -21,6 +21,9 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
   `ATDRIVE_LIVE_STATE` (and `ATDRIVE_LIVE_STATE_B`, a second account, for sharing): a folder
   `ATDRIVE_STATE_DIR=<folder> atdrive login <handle>` saved a session to.
 - `scripts/build.sh`: release binary at `build/atdrive`. The Swift runtime is static on Linux.
+- The scripts that build (`build.sh`, `test.sh`, `build-app.sh`) clean the build first if the
+  project has moved or been copied since its last build (`scripts/lib/build-path.sh`): SwiftPM's
+  caches record the folder, and a moved one fails with "missing required module 'SwiftShims'".
 - `scripts/format.sh`: formatting (config in `.swift-format`).
 - `scripts/build-app.sh` / `scripts/run-app.sh` (macOS): build `build/ATDrive.app` (and install
   and launch it). Signing needs an Apple Development certificate; `ALLOW_ADHOC=1` builds

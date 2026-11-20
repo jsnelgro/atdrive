@@ -19,6 +19,7 @@
 #   CONFIG=debug                 faster builds while developing
 set -euo pipefail
 cd "$(dirname "$0")/.."
+. scripts/lib/build-path.sh
 
 CONFIG="${CONFIG:-release}"
 BUNDLE_ID="${BUNDLE_ID:-app.atdrive}"
