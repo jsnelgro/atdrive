@@ -49,7 +49,8 @@ STRIP=$(command -v llvm-objcopy || true)
 VERSION=$(scripts/version.sh)
 mkdir -p dist build/static
 for arch in "${ARCHS[@]}"; do
-  flags=(-c release --product atdrive --swift-sdk "$arch-swift-linux-musl")
+  # Name the SDK as well as the triple: with several SDKs installed, the triple alone is ambiguous.
+  flags=(-c release --product atdrive --swift-sdk "$SDK_NAME" --triple "$arch-swift-linux-musl")
   swift build "${flags[@]}"
   "$STRIP" --strip-all "$(swift build "${flags[@]}" --show-bin-path)/atdrive" build/static/atdrive
   file="atdrive-$VERSION-linux-$arch.tar.gz"
