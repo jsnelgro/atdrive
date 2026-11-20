@@ -232,14 +232,17 @@ struct RemoteView {
 /// shows what's really there. `keepsCopies`: whether what was edited or added here is first kept
 /// as a copy at the top of the drive (a share, where it may be someone's work), or just undone
 /// (Spaces). `locked`: mounts whose own folder can't be renamed or moved either (Spaces, which
-/// isn't a record of yours).
+/// isn't a record of yours). `named`: mounts that can be moved (or removed), but whose name (and,
+/// for a shared file, contents) is the drive's: other people's shares.
 struct ReadOnlyFolders {
     var keepsCopies: [String: Bool] = [:]
     var locked: Set<String> = []
+    var named: Set<String> = []
 
-    init(keepsCopies: [String: Bool] = [:], locked: Set<String> = []) {
+    init(keepsCopies: [String: Bool] = [:], locked: Set<String> = [], named: Set<String> = []) {
         self.keepsCopies = keepsCopies
         self.locked = locked
+        self.named = named
     }
 
     /// The read-only mount a node on the drive is inside (or is, if it's locked), if any.
@@ -395,6 +398,25 @@ struct SyncPlan {
                     location = there.location
                     undone.insert(id)
                 }
+                if readOnly.named.contains(id), location.name != there.name {
+                    // Renamed here, but its name is its owner's: it gets that name back.
+                    location.name = there.name
+                    undone.insert(id)
+                }
+                if readOnly.named.contains(id), !there.isFolder {
+                    // A file shared with this account: its contents are its owner's too. An edit
+                    // here is kept as a copy at the top of the drive, and the owner's comes back.
+                    if here.sha256 != before.sha256, here.sha256 != there.sha256 {
+                        add(id, there.at(location))
+                        let copy = renewed(id)
+                        keepAtTop(copy, from: id, conflicted: true)
+                        splitFrom[copy] = id
+                    } else {
+                        add(id, here.at(location).with(sha256: there.sha256), from: id)
+                    }
+                    if here.sha256 != there.sha256 { undone.insert(id) }
+                    continue
+                }
                 switch ConflictRules.contents(base: before.sha256, local: here.sha256, remote: there.sha256) {
                 case .local:
                     add(id, here.at(location), from: id)
@@ -446,7 +468,7 @@ struct SyncPlan {
             }
         }
 
-        resolveNameClashes(local: local, remote: remote)
+        resolveNameClashes(local: local, remote: remote, fixedNames: readOnly.named)
     }
 
     private mutating func add(_ id: String, _ entry: SyncEntry, from localID: String? = nil) {
@@ -455,7 +477,8 @@ struct SyncPlan {
     }
 
     /// One name per folder: top-down, so folders matched up are merged before their contents.
-    private mutating func resolveNameClashes(local: LocalView, remote: [String: SyncEntry]) {
+    /// `fixedNames`: things whose name only the drive changes (other people's shares).
+    private mutating func resolveNameClashes(local: LocalView, remote: [String: SyncEntry], fixedNames: Set<String>) {
         var children: [String?: [String]] = [:]
         for (id, entry) in merged { children[entry.parent, default: []].append(id) }
 
@@ -479,9 +502,9 @@ struct SyncPlan {
             let folder = queue.removeFirst()
             let groups = Dictionary(grouping: children[folder] ?? [], by: { merged[$0]!.name })
             for (name, group) in groups.sorted(by: { $0.key < $1.key }) where group.count > 1 {
-                // Something held can't be renamed: the others make way.
+                // Something held, or someone else's share, can't be renamed: the others make way.
                 func score(_ id: String) -> Int {
-                    held.contains(id) ? 4 : (isOnDrive(id) ? 2 : 0) + (isHere(id) ? 1 : 0)
+                    held.contains(id) || fixedNames.contains(id) ? 4 : (isOnDrive(id) ? 2 : 0) + (isHere(id) ? 1 : 0)
                 }
                 let ordered = group.sorted { score($0) != score($1) ? score($0) > score($1) : $0 < $1 }
                 for other in ordered.dropFirst() {

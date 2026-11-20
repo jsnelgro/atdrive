@@ -523,6 +523,22 @@ extension JSONValue {
         try Data("bob's".utf8).write(to: theirs.appendingPathComponent("notes.txt"))
         try await bobSync.sync()
         #expect(try await contents(owner, "/notes.txt") == "edited", "read-only for bob")
+        #expect(try String(contentsOf: theirs.appendingPathComponent("notes.txt"), encoding: .utf8) == "edited")
+        let copy = try #require(
+            try FileManager.default.contentsOfDirectory(atPath: theirs.path).first { $0.hasPrefix("notes (conflicted") }
+        )
+        #expect(try await contents(bob, "/\(copy)") == "bob's", "kept in Bob's own drive")
+
+        // It can move around Bob's drive, but keeps its name.
+        let fm = FileManager.default
+        try fm.createDirectory(at: theirs.appendingPathComponent("docs"), withIntermediateDirectories: true)
+        try fm.moveItem(
+            at: theirs.appendingPathComponent("notes.txt"), to: theirs.appendingPathComponent("docs/renamed.txt"))
+        try await bobSync.sync()
+        try await bobSync.sync()
+        #expect(try await contents(bob, "/docs/notes.txt") == "edited")
+        #expect(fm.fileExists(atPath: theirs.appendingPathComponent("docs/notes.txt").path))
+        #expect(!fm.fileExists(atPath: theirs.appendingPathComponent("docs/renamed.txt").path))
     }
 
     @Test func aShareWhoseMountCantBeReadKeepsItsFilesInSync() async throws {
@@ -550,11 +566,73 @@ extension JSONValue {
         try await pds.client().putPublicRecord(
             repo: FakePDS.defaultDID, collection: Lexicon.shareKey, rkey: Lexicon.shareKeyKey,
             record: try JSONValue(encoding: SharingKeyRecord(publicKey: impostor.publicKey, protected: true)))
-        let bobsKey = try #require(try await SharingKeyRecord.fetch(bobDID, resolver: pds.resolver, transport: pds)?.key)
+        let bobsKey = try #require(
+            try await SharingKeyRecord.fetch(bobDID, resolver: pds.resolver, transport: pds)?.key)
         let space = mount.record.mount!.space
         let forged = try MemberKeys.record(
             keyring: Keyring(DriveKey()), for: bobDID, key: bobsKey, from: impostor, space: space)
         pds.insertRawRecord(rkey: bobDID, collection: Lexicon.member, space: space, forged.anyValue)
         await #expect(throws: (any Error).self) { _ = try await bob.add(ShareLinkAddress(space: space)) }
+    }
+
+    // MARK: Names
+
+    /// A share you received has its owner's name: you can't rename it (the CLI, sync and Finder
+    /// all go through `move`), but it can go anywhere in your drive. When its owner renames it,
+    /// it's renamed for you.
+    @Test func aReceivedShareKeepsItsOwnersName() async throws {
+        let mount = try await sharedPhotos()
+        try await owner.addMembers([bobDID], to: mount)
+        let added = try await bob.add(ShareLinkAddress(space: mount.record.mount!.space))
+        #expect(added.name == "photos")
+
+        await #expect(throws: SharingError.notYoursToRename("photos")) {
+            _ = try await bob.move(added, to: nil, as: "mine now")
+        }
+        let folder = try await bob.createFolder(named: "from others", in: nil)
+        let moved = try await bob.move(added, to: folder.id, as: "photos")
+        #expect(moved.name == "photos")
+        #expect(try await contents(bob, "/from others/photos/a.txt") == "aaa")
+
+        // The owner renames it: so does everyone who has it.
+        let owners = try #require(try await owner.tree().locate(DrivePath("/photos")))
+        _ = try await owner.move(owners, to: nil, as: "pictures")
+        #expect(try await contents(bob, "/from others/pictures/a.txt") == "aaa")
+        #expect((try? await bob.tree().locate(DrivePath("/from others/photos"))) == nil)
+    }
+
+    @Test func aReceivedFileKeepsItsOwnersNameToo() async throws {
+        let notes = try await owner.upload(try file("notes"), as: "notes.txt", in: nil)
+        let mount = try await owner.share(notes)
+        try await owner.addMembers([bobDID], to: mount)
+        _ = try await bob.add(ShareLinkAddress(space: mount.record.mount!.space))
+        let received = try #require(try await bob.tree().locate(DrivePath("/notes.txt")))
+        await #expect(throws: SharingError.notYoursToRename("notes.txt")) {
+            _ = try await bob.move(received, to: nil, as: "mine.txt")
+        }
+
+        let owners = try #require(try await owner.tree().locate(DrivePath("/notes.txt")))
+        _ = try await owner.move(owners, to: nil, as: "minutes.txt")
+        #expect(try await contents(owner, "/minutes.txt") == "notes")
+        #expect(try await contents(bob, "/minutes.txt") == "notes")
+        #expect((try? await bob.tree().locate(DrivePath("/notes.txt"))) == nil)
+    }
+
+    /// Named by its owner, a share can clash with something of yours: it's numbered.
+    @Test func aReceivedShareWhoseNameIsTakenIsNumbered() async throws {
+        let mount = try await sharedPhotos()
+        try await owner.addMembers([bobDID], to: mount)
+        _ = try await bob.add(ShareLinkAddress(space: mount.record.mount!.space))
+        let mine = try await bob.createFolder(named: "pictures", in: nil)
+        _ = mine
+        let owners = try #require(try await owner.tree().locate(DrivePath("/photos")))
+        _ = try await owner.move(owners, to: nil, as: "pictures")
+
+        let tree = try await bob.tree()
+        #expect(Set(tree.children(of: nil).map(\.name)) == ["pictures", "pictures (2)"])
+        let shared = try #require(try tree.locate(DrivePath("/pictures (2)")))
+        #expect(shared.isMount)
+        let moved = try await bob.move(shared, to: nil, as: "pictures (2)")
+        #expect(moved.isMount, "its name as shown is fine")
     }
 }

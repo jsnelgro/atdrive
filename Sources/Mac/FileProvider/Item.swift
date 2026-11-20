@@ -101,9 +101,10 @@ final class Item: NSObject, NSFileProviderItem, NSFileProviderItemDecorating {
             // Shared with you, or another app's: only its owner changes it.
             return node.isFolder ? [.allowsReading, .allowsContentEnumerating] : [.allowsReading]
         case .other:
-            // The mount itself is yours, in your drive: it can be renamed, moved and removed.
+            // The mount itself is yours, in your drive: it can be moved and removed. Its name is
+            // its owner's (`JoinedSnapshot.sharedNames`).
             var capabilities: NSFileProviderItemCapabilities = [
-                .allowsReading, .allowsRenaming, .allowsReparenting, .allowsDeleting,
+                .allowsReading, .allowsReparenting, .allowsDeleting,
             ]
             if node.isFolder { capabilities.insert(.allowsContentEnumerating) }
             return capabilities

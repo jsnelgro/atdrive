@@ -148,4 +148,30 @@ import Testing
         #expect(try files("photos") == ["a.txt", "trip"])
         #expect(try await onDrive(owner, "/photos/mine.txt") == nil)
     }
+
+    /// The share itself can move around Bob's drive, but its name is its owner's: renamed here,
+    /// it's named back.
+    @Test func theShareCanMoveButNotBeRenamed() async throws {
+        let fm = FileManager.default
+        try fm.moveItem(at: folder.appendingPathComponent("photos"), to: folder.appendingPathComponent("pics"))
+        try await settle()
+        #expect(try files().filter { !$0.hasPrefix(".") } == ["photos"])
+        #expect(read("photos/a.txt") == "aaa")
+        #expect(events.all.contains { $0.kind == .undone })
+
+        try fm.createDirectory(at: folder.appendingPathComponent("shared"), withIntermediateDirectories: true)
+        try fm.moveItem(
+            at: folder.appendingPathComponent("photos"), to: folder.appendingPathComponent("shared/photos"))
+        try await settle()
+        #expect(read("shared/photos/a.txt") == "aaa")
+        #expect(try await onDrive(bob, "/shared/photos/a.txt") == "aaa", "moved in Bob's drive")
+    }
+
+    @Test func theOwnersRenameArrives() async throws {
+        let photos = try #require(try await owner.tree().locate(DrivePath("/photos")))
+        _ = try await owner.move(photos, to: nil, as: "pictures")
+        try await settle()
+        #expect(try files().filter { !$0.hasPrefix(".") } == ["pictures"])
+        #expect(read("pictures/trip/b.txt") == "bbb")
+    }
 }
