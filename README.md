@@ -9,7 +9,18 @@ A cli and macOS app providing an iCloud-like experience using ATProto Spaces. Th
 
 <img width="742" height="494" alt="macOS Finder Screenshot" src="https://github.com/user-attachments/assets/69353fcd-bd79-4906-ad38-7f70d043dc39" />
 
-## Building & Running
+## Get It
+You can download the latest release from Github here: https://github.com/jsnelgro/atdrive/releases
+
+Select `ATDrive-<version>-macos-arm64.zip` (it also includes the cli). Download, unzip, and move it to Applications.
+
+Important! It's signed but not notarized by Apple, so newer versions of macOS block it the first time you try to run the app. You need to run:
+```sh
+xattr -dr com.apple.quarantine /Applications/ATDrive.app
+```
+to make macOS happy. It's on the roadmap to improve this so it's less scary of a process to install the app. It's not a high priority for early development though.
+
+## Build It
 
 Requires a Swift 6 toolchain: Xcode or the Command Line Tools on macOS,
 [swift.org](https://www.swift.org/install/). There's also a `scripts/setup-swift.sh` command but I haven't tried it personally. Claude used it in its sandbox.
@@ -25,9 +36,9 @@ Then start the macOS Finder app with this command:
 scripts/run-app.sh
 ```
 
-A menubar item should appear. Click it and login with your handle. In Finder, you should now see an ATDrive Location next to iCloud Drive. You're done, start using it as sync/cloud storage!
-
 ## Usage
+
+A menubar item should appear upon starting the macOS app. Click it and login with your handle. In Finder, you should now see an ATDrive Location next to iCloud Drive (can click "Show in Finder" in the menubar app). You're done, start using it as sync/cloud storage!
 
 If you don't care about the Finder/macOS integration, you can also use the cli directly for everything. Here are some useful commands and examples:
 
