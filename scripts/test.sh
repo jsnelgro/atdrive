@@ -9,6 +9,7 @@
 # ATDRIVE_LIVE_HANDLE is set.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+. scripts/lib/build-path.sh
 if [ -n "${ATDRIVE_TEST_MODE:-}" ]; then
     swift test "$@"
     exit
