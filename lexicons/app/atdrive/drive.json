@@ -14,7 +14,8 @@
         "app.atdrive.device",
         "app.atdrive.member",
         "app.atdrive.link",
-        "app.atdrive.contact"
+        "app.atdrive.contact",
+        "app.atdrive.declined"
       ],
       "title": "ATDrive"
     }

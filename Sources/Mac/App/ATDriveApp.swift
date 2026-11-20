@@ -20,8 +20,12 @@ struct ATDriveApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra("ATDrive", systemImage: "externaldrive.badge.icloud") {
+        MenuBarExtra {
             MenuContent(model: model, encryption: encryption)
+        } label: {
+            // A share waiting to be accepted shows on the icon.
+            Image(systemName: model.pending.rows.isEmpty ? "externaldrive.badge.icloud" : "externaldrive.badge.plus")
+                .accessibilityLabel(model.pending.rows.isEmpty ? "ATDrive" : "ATDrive: shared with you")
         }
         .menuBarExtraStyle(.window)
         Settings {
@@ -53,6 +57,12 @@ struct MenuContent: View {
             }
             .padding(12)
 
+            if case .signedIn = model.state, !model.pending.rows.isEmpty {
+                Divider()
+                PendingSharesSection(model: model.pending)
+                    .padding(12)
+            }
+
             if case .signedIn = model.state {
                 Divider()
                 VStack(spacing: 0) {
@@ -82,6 +92,7 @@ struct MenuContent: View {
             .padding(6)
         }
         .frame(width: 300)
+        .task { await model.pending.refresh() }
     }
 
     // MARK: Signed in

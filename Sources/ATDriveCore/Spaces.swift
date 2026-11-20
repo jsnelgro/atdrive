@@ -364,6 +364,15 @@ extension XRPCClient {
         }
     }
 
+    /// Deletes every record of the account's in a space, at once.
+    public func clearSpaceRecords(space: String, repo: String) async throws {
+        struct Input: Encodable {
+            var space: String
+            var repo: String
+        }
+        let _: Empty = try await procedure("com.atproto.space.clearRecords", Input(space: space, repo: repo))
+    }
+
     /// Fetches a blob referenced by a record in the space.
     public func getSpaceBlob(space: String, repo: String, cid: String) async throws -> Data {
         try await queryBytes("com.atproto.space.getBlob", ["space": space, "repo": repo, "cid": cid])
@@ -584,8 +593,10 @@ struct Lenient<Value: Decodable>: Decodable {
 public enum SpacePolicy: Sendable, Equatable, Codable {
     /// Only its authority.
     case personal
-    /// Members, and with `publicRead` anyone.
-    case members(publicRead: Bool)
+    /// Members, and with `publicRead` anyone. Writes are tracked (listed by `listWriters`, so
+    /// readers find them) for members with write access, and with `publicWrite` for anyone but
+    /// members whose write access is off.
+    case members(publicRead: Bool, publicWrite: Bool = false)
     /// Any other policy, as given.
     case other(type: String)
 
@@ -599,7 +610,9 @@ public enum SpacePolicy: Sendable, Equatable, Codable {
         switch try container.decode(String.self, forKey: .type) {
         case Lexicon.personalSpacePolicy: self = .personal
         case Lexicon.memberSpacePolicy:
-            self = .members(publicRead: try container.decodeIfPresent(Bool.self, forKey: .publicRead) ?? false)
+            self = .members(
+                publicRead: try container.decodeIfPresent(Bool.self, forKey: .publicRead) ?? false,
+                publicWrite: try container.decodeIfPresent(Bool.self, forKey: .publicWrite) ?? false)
         case let type: self = .other(type: type)
         }
     }
@@ -608,10 +621,10 @@ public enum SpacePolicy: Sendable, Equatable, Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
         case .personal: try container.encode(Lexicon.personalSpacePolicy, forKey: .type)
-        case .members(let publicRead):
+        case .members(let publicRead, let publicWrite):
             try container.encode(Lexicon.memberSpacePolicy, forKey: .type)
             try container.encode(publicRead, forKey: .publicRead)
-            try container.encode(false, forKey: .publicWrite)
+            try container.encode(publicWrite, forKey: .publicWrite)
         case .other(let type): try container.encode(type, forKey: .type)
         }
     }
