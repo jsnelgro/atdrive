@@ -633,6 +633,14 @@ device settles it the same way. The Mac app and `atdrive sync` share these rules
 scripts/test.sh                       # unit tests (no network)
 ```
 
+On Linux, Nix gives you everything needed (Swift 6.4, swift-format, secret-tool) without
+installing Swift:
+
+```bash
+nix develop                           # a shell for scripts/test.sh, swift build, ...
+nix run .# -- --help                  # or just run atdrive
+```
+
 ```bash
 scripts/format.sh
 ```
@@ -671,13 +679,16 @@ release or a Tangled tag alike. The version is written down once, in
    git tag -a v0.3.0 -m "ATDrive 0.3.0" && git push origin v0.3.0
    ```
 
-3. **The Linux files** (static, x86_64 and aarch64), with `scripts/build-static.sh`:
-   - On GitHub, the Release workflow (`.github/workflows/release.yml`) does it when the tag is
-     pushed: it checks the tag matches the version, builds them and publishes a pre-release with
-     them, their checksums and build attestations.
-   - Anywhere else (say, after a move to Tangled), run it on any machine with a Swift 6.4.x
-     toolchain from swift.org, or in the `swift:6.4.2` container, and upload what it puts in
-     `dist/`.
+3. **The Linux files** (static, x86_64 and aarch64) come from `scripts/build-static.sh`, which
+   CI runs when the tag is pushed. It checks the tag matches the version first.
+   - **GitHub:** `.github/workflows/release.yml` publishes a pre-release with them, their
+     checksums and build attestations.
+   - **Tangled:** `.tangled/workflows/release-linux-*.yml` attach them to the tag, with
+     `scripts/publish-tangled.sh`. That needs two secrets under the repository's
+     **Settings → Pipelines → Secrets**: `RELEASE_HANDLE` (your handle) and
+     `RELEASE_APP_PASSWORD` (an app password for it).
+   - **By hand:** run it on any machine with a Swift 6.4.x toolchain from swift.org, or in the
+     `swift:6.4.2` container, and upload what it puts in `dist/`.
 4. **The Mac files,** on your Mac:
 
    ```bash
@@ -686,9 +697,22 @@ release or a Tangled tag alike. The version is written down once, in
 
    It builds the app signed with your Apple Development certificate, and the command-line tool
    on its own, into `dist/` with their checksums, shows them in Finder and opens the release
-   page (GitHub or Tangled, from the remote): drag them onto it. The app isn't notarized (that
-   needs a paid Apple Developer Program membership and a Developer ID certificate), which is
-   why testers remove the quarantine flag.
+   page on each forge you have as a remote (GitHub, Tangled): drag them onto it. The app isn't
+   notarized (that needs a paid Apple Developer Program membership and a Developer ID
+   certificate), which is why testers remove the quarantine flag.
+
+#### Publishing to GitHub and Tangled together
+
+Add Tangled as a second push URL of `origin`, so every push (branches and tags) goes to both:
+
+```bash
+git remote set-url --add --push origin git@github.com:jsnelgro/atdrive.git
+git remote set-url --add --push origin git@tangled.org:<your-handle>/atdrive
+```
+
+Copy the Tangled URL from the repository's page there (**Code → SSH**) if it differs. The first
+line keeps GitHub: once a push URL is set, `origin`'s fetch URL is no longer pushed to. Each forge's CI then does its part. On Tangled, tests run in the flake's dev shell
+(`.tangled/workflows/test.yml`); pick a spindle under **Settings → Pipelines** for them to run.
 
 Mac app logs (app and extension):
 

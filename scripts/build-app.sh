@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Builds build/ATDrive.app (macOS only): the menu-bar app with the File Provider extension inside
 # it at Contents/PlugIns/ATDriveFileProvider.appex and the atdrive command at
 # Contents/Helpers/atdrive, all signed. The command is signed with the app's App Group, so it

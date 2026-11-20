@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Builds fully static `atdrive` binaries for Linux, x86_64 and aarch64, packed for a release:
 #   dist/atdrive-<version>-linux-x86_64.tar.gz    and its checksum, ….tar.gz.sha256
 #   dist/atdrive-<version>-linux-aarch64.tar.gz

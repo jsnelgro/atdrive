@@ -1,0 +1,30 @@
+# On a v<version> tag: the static Linux binary for x86_64, attached to the tag with its checksum.
+# release-linux-aarch64.yml is the same for aarch64; they're separate so each fits the spindle's
+# time limit. Everything here is in scripts/: see "Releasing" in the README.
+#
+# Builds in the swift:6.4.2 container (Docker in the VM), as GitHub's release workflow does:
+# nixpkgs' Swift can't make the static (musl) build. Uploading needs the RELEASE_HANDLE and
+# RELEASE_APP_PASSWORD secrets (see scripts/publish-tangled.sh).
+when:
+  - event: ["push"]
+    tag: ["v*"]
+
+engine: microvm
+image: nixos
+
+virtualisation:
+  docker: true
+
+dependencies:
+  - git
+  - curl
+  - jq
+  - unstable#atproto-goat
+
+steps:
+  - name: Tag matches Sources/ATDriveCore/Version.swift
+    command: scripts/version.sh --check "$TANGLED_REF_NAME"
+  - name: Build
+    command: docker run --rm -v "$PWD:/src" -w /src swift:6.4.2-noble scripts/build-static.sh x86_64
+  - name: Attach to the tag
+    command: scripts/publish-tangled.sh dist/atdrive-*-linux-x86_64.tar.gz dist/atdrive-*-linux-x86_64.tar.gz.sha256

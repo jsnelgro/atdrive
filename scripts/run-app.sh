@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Builds ATDrive.app (debug), installs it to ~/Applications, and launches it, replacing any
 # running copy. Look for the drive icon in the menu bar, sign in, and the drive appears in
 # Finder's sidebar under Locations.

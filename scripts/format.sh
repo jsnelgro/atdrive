@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Formats all Swift code in place (config: .swift-format).
 set -euo pipefail
 cd "$(dirname "$0")/.."
