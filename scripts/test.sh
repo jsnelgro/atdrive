@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Runs the tests, twice: once with the drive-logic suites on a plain drive, and once with them on
 # an encrypted one (ATDRIVE_TEST_MODE, see TestMode in FakePDS.swift). Extra arguments go to
 # swift test, e.g.

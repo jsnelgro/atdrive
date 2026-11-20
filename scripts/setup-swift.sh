@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Gets a Swift toolchain on Linux (for agent sandboxes and fresh machines). Prints the line to
 # source afterwards. Run `scripts/setup-swift.sh --undo` to drop the fallback's local changes.
 #

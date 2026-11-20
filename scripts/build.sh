@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Builds a release `atdrive` binary into ./build.
 # On Linux the Swift runtime is linked in statically, so the binary runs without Swift installed.
 #

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Builds a release's Mac files on your Mac, ready to upload by hand. Run it with the release's tag
 # checked out:
 #
@@ -7,8 +7,8 @@
 # Writes to dist/, each with its checksum (<file>.sha256):
 #   ATDrive-<version>-macos-arm64.zip       the app, signed with your Apple Development certificate
 #   atdrive-<version>-macos-arm64.tar.gz    the command-line tool on its own, unsigned
-# then shows them in Finder and opens the release page: drag them onto it. Nothing here is tied to
-# a forge: it works the same for a GitHub release or a Tangled tag. (The Linux files come from
+# then shows them in Finder and opens the release page (on GitHub, Tangled or both, from the
+# remotes): drag them onto it. Nothing here is tied to a forge. (The Linux files come from
 # scripts/build-static.sh, which the GitHub release workflow runs.)
 #
 # The app isn't Developer ID signed or notarized (that needs the paid Apple Developer Program):
@@ -49,19 +49,24 @@ for file in "$APP_ZIP" "$CLI_TAR"; do
   (cd dist && shasum -a 256 "$file" > "$file.sha256")
 done
 
-# The release page, from the remote: github.com/<owner>/<repo> or tangled.org/<handle>/<repo>.
-remote=$(git remote get-url origin 2>/dev/null || true)
-path=$(echo "$remote" | sed -E -e 's#^(git@|ssh://git@|https://)##' -e 's#^([^/:]+)[:/]#\1/#' -e 's#\.git$##' -e 's#/@#/#')
-case "$path" in
-  github.com/*) page="https://$path/releases/edit/$TAG" ;;
-  tangled.org/* | tangled.sh/*) page="https://$path/tags/$TAG" ;;
-  *) page="" ;;
-esac
+# The release pages, from the remotes: github.com/<owner>/<repo> and tangled.org/<handle>/<repo>
+# (push to both, and both get one).
+pages=()
+for remote in $(git remote); do
+  path=$(git remote get-url "$remote" | sed -E -e 's#^(git@|ssh://git@|https://)##' \
+    -e 's#^([^/:]+)[:/]#\1/#' -e 's#\.git$##' -e 's#/@#/#')
+  case "$path" in
+    github.com/*) pages+=("https://$path/releases/edit/$TAG") ;;
+    tangled.org/* | tangled.sh/*) pages+=("https://$path/tags/$TAG") ;;
+  esac
+done
 
 echo
 echo "Built, in dist/:"
 for file in "$APP_ZIP" "$CLI_TAR"; do echo "  $file  $file.sha256"; done
-echo "Upload all four to the $TAG release${page:+: $page}"
+echo "Upload all four to the $TAG release:"
+for page in "${pages[@]}"; do echo "  $page"; done
+[[ ${#pages[@]} -gt 0 ]] || echo "  (no GitHub or Tangled remote found: upload them wherever the release is)"
 open -R "dist/$APP_ZIP"
-[[ -n "$page" ]] && open "$page"
+for page in "${pages[@]}"; do open "$page"; done
 exit 0

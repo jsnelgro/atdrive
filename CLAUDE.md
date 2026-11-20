@@ -25,9 +25,16 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
   and aarch64) packed into `dist/`, as released. Needs a Swift 6.4.x toolchain listed in the script
   (the SDK must match it exactly); installs the SDK.
   Linux-only code must build against musl as well as glibc (`#if canImport(Musl)`).
-- Releases: a `v<version>` tag runs `.github/workflows/release.yml` (the Linux files);
-  `scripts/release-mac.sh` (on the maintainer's Mac) builds the Mac files to upload by hand. Keep the release logic in
-  `scripts/` and the workflow thin: the project may move to Tangled. See "Releasing" in the README.
+- Releases: a `v<version>` tag runs `.github/workflows/release.yml` and
+  `.tangled/workflows/release-linux-*.yml` (the Linux files; `scripts/publish-tangled.sh` attaches
+  them to the Tangled tag); `scripts/release-mac.sh` (on the maintainer's Mac) builds the Mac
+  files to upload by hand. The repo is pushed to GitHub and Tangled: keep the release logic in
+  `scripts/` and the workflows thin. See "Releasing" in the README.
+- `flake.nix` (Linux): `nix develop` for a shell with Swift 6.4 from nixpkgs; `nix build .#atdrive`.
+  When `Package.resolved` changes, update `swiftpmDeps`' hash in `flake.nix` (build, and copy the
+  hash Nix prints). nixpkgs' Swift can't do the static musl build (its compiler adds Nix's glibc
+  headers), and needs `SWT_SWIFT_ERROR_BACKTRACING_ENABLED=0` (set in the dev shell) or tests that
+  throw crash. Scripts start with `#!/usr/bin/env bash`: NixOS (Tangled's CI) has no `/bin/bash`.
 - `scripts/format.sh`: formatting (config in `.swift-format`).
 - `scripts/build-app.sh` / `scripts/run-app.sh` (macOS): build `build/ATDrive.app` (and install
   and launch it). Signing needs an Apple Development certificate; `ALLOW_ADHOC=1` builds

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Prints ATDrive's version (ATDriveVersion.current in Sources/ATDriveCore/Version.swift).
 #
 # Usage: scripts/version.sh
