@@ -25,6 +25,7 @@ public enum OAuthLogin {
     /// - Other people's drive spaces: read only, for what's shared with you (a delegation token
     ///   needs a `read` grant for the space, under any authority).
     /// - Your sharing key, in your public repo.
+    /// - Your inbox, and invites in other people's (#68): an invite to something you share.
     /// - Blob uploads: needed for file contents.
     ///
     /// Naming ATDrive's space type in a scope makes the PDS look up its published lexicon for the
@@ -56,20 +57,29 @@ public enum OAuthLogin {
     /// ATDrive's spaces only (`narrowScope`).
     public static let lexiconsPublished = false
 
-    /// Access to ATDrive's spaces only: yours to read, write and manage, other people's to read.
+    /// Access to ATDrive's spaces only: yours to read, write and manage, other people's to read;
+    /// your inbox, and invites in other people's (#68).
     public static let narrowScope =
         "atproto space:\(Lexicon.driveSpace)?\(collections)&\(manage) "
-        + "space:\(Lexicon.driveSpace)?authority=*&action=read repo:\(Lexicon.shareKey) blob:*/*"
+        + "space:\(Lexicon.driveSpace)?authority=*&action=read "
+        + "space:\(Lexicon.inboxSpace)?manage=create&manage=update \(inviting(Lexicon.inboxSpace)) "
+        + "repo:\(Lexicon.shareKey) blob:*/*"
 
     /// Until the lexicons are published: the same, for spaces of any type.
     public static let broadScope =
-        "atproto space:*?\(collections)&\(manage) space:*?authority=*&action=read repo:\(Lexicon.shareKey) blob:*/*"
+        "atproto space:*?\(collections)&\(manage) space:*?authority=*&action=read \(inviting("*")) "
+        + "repo:\(Lexicon.shareKey) blob:*/*"
+
+    /// Writing invites into other people's inboxes (`JoinedDrive.invite`).
+    private static func inviting(_ type: String) -> String {
+        "space:\(type)?authority=*&collection=\(Lexicon.invite)&action=create&action=update&action=delete"
+    }
 
     private static let manage = "manage=create&manage=update&manage=delete"
 
     private static let collections = [
         Lexicon.node, Lexicon.version, Lexicon.chunks, Lexicon.settings, Lexicon.device, Lexicon.member, Lexicon.link,
-        Lexicon.contact,
+        Lexicon.contact, Lexicon.declined,
     ].map { "collection=\($0)" }.joined(separator: "&")
 
     public static func clientID(

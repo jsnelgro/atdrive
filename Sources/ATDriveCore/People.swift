@@ -124,7 +124,13 @@ extension JoinedDrive {
     /// keyring is wrapped again, for the key they publish now. A key that changed since it was
     /// verified or last wrapped for is refused (`keyChanged`) unless `allowingChangedKeys`: the
     /// owner checked it.
-    public func addMembers(_ dids: [String], to mount: Node, allowingChangedKeys: Bool = false) async throws {
+    ///
+    /// Each one is then invited (`invite`): it waits for them among their pending shares. Returns
+    /// who couldn't be invited; they're members all the same, and can open it from its link.
+    @discardableResult
+    public func addMembers(_ dids: [String], to mount: Node, allowingChangedKeys: Bool = false) async throws
+        -> [InviteFailure]
+    {
         let (info, share) = try await ownShare(mount)
         if case .members = try await home.client.getSpacePolicy(info.space) {} else {
             // Unshared since (`personalspace`): members again, link off.
@@ -136,7 +142,7 @@ extension JoinedDrive {
             }
         }
         try await home.client.putMembers(info.space, dids.map { SpaceMember(did: $0) })
-        guard let keyring = share.keyring else { return }
+        guard let keyring = share.keyring else { return await invite(dids, to: info.space) }
         guard let resolver = access?.resolver else { throw MountUnavailable() }
         let mine = try await ensureSharingKey()
         var writes: [SpaceWrite] = []
@@ -154,6 +160,7 @@ extension JoinedDrive {
                     : .update(collection: Lexicon.member, rkey: did, value: value))
         }
         for batch in share.transactions(writes) { try await share.apply(batch) }
+        return await invite(dids, to: info.space)
     }
 
     /// Removes people. Their member records go, and an encrypted share gets a new key for what's
@@ -161,6 +168,7 @@ extension JoinedDrive {
     public func removeMembers(_ dids: [String], from mount: Node) async throws {
         let (info, share) = try await ownShare(mount)
         try await home.client.removeMembers(info.space, dids: dids)
+        await withdrawInvites(dids, from: info.space)
         let existing = try await memberEntries(share)
         let doomed = dids.filter { existing[$0] != nil }
         if !doomed.isEmpty {

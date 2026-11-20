@@ -55,9 +55,12 @@ struct Login: AsyncParsableCommand {
         try SessionStore().save(session)
         print("Logged in as @\(session.handle) (\(session.did)) on \(session.service.host ?? "\(session.service)")")
         try await KeySetup.run()
-        // So others can share encrypted files with this account (best effort: it's done again
-        // whenever it's needed).
-        _ = try? await Context.load().joined.ensureSharingKey()
+        // So others can share encrypted files with this account, and say so (best effort: they're
+        // made again whenever they're needed).
+        if let joined = try? await Context.load().joined {
+            _ = try? await joined.ensureSharingKey()
+            try? await joined.ensureInbox()
+        }
     }
 }
 

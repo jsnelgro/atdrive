@@ -22,7 +22,8 @@ import Testing
 /// in the commit, its CID and the CID it replaced; `listRepoOps` serves that log with a value
 /// only for ops whose version is still current, and the current commit on every page.
 ///
-/// Spaces have policies: `personalspace`, or `memberspace` with members and `publicRead`. Other
+/// Spaces have policies: `personalspace`, or `memberspace` with members, `publicRead` and
+/// `publicWrite` (which lets anyone write their repo in it: invites, #68). Other
 /// accounts read them as the protocol says: a delegation token from their own PDS, a credential
 /// from `authorizeSpaceSync`, then reads that carry it with a request signature (checked), and
 /// MACs on commits. A member removed, or a space deleted, has its credentials revoked at once.
@@ -329,7 +330,7 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
             } else if caller != state.authority {
                 return error(400, "SpaceNotFound")
             }
-            let writers = repos.filter { $0.key.space == space && $0.value.rev != nil }
+            let writers = repos.filter { $0.key.space == space && $0.value.rev != nil && tracks($0.key.did, state) }
                 .sorted { $0.value.rev! < $1.value.rev! }
             return json([
                 "repos": writers.map { key, repo -> [String: Any] in
@@ -450,9 +451,7 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
             "com.atproto.space.clearRecords":
             guard let caller, caller == repo else { return error(401, "AuthRequired") }
             guard let state = spaces[space], !state.deleted else { return error(400, "SpaceNotFound") }
-            guard state.authority == caller || state.members[caller]?.write == true else {
-                return error(400, "NotAuthorized")
-            }
+            guard tracks(caller, state) else { return error(400, "NotAuthorized") }
             return write(method, body: body, request: request, key: RepoKey(space: space, did: repo))
 
         case "com.atproto.space.listRecords", "com.atproto.space.getBlob", "com.atproto.space.getLatestCommit",
@@ -496,8 +495,19 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
 
     private func canRead(_ reader: String?, _ state: SpaceState) -> Bool {
         if reader == state.authority { return true }
-        guard case .members(let publicRead) = state.policy else { return false }
+        guard case .members(let publicRead, _) = state.policy else { return false }
         return publicRead || reader.flatMap { state.members[$0]?.read } == true
+    }
+
+    /// Whether the space tracks `writer`'s writes (lists it in `listWriters`): its authority,
+    /// members with write access, and with `publicWrite` anyone but members without it. (The
+    /// protocol lets anyone write their own repo in any space, and only stops tracking it; here
+    /// an untracked write is refused, so a test notices one.)
+    private func tracks(_ writer: String, _ state: SpaceState) -> Bool {
+        if writer == state.authority { return true }
+        if let member = state.members[writer] { return member.write }
+        if case .members(_, true) = state.policy { return true }
+        return false
     }
 
     private func revokeCredentials(in space: String) {

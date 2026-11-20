@@ -189,6 +189,16 @@ Its owner's drive mounts it where the folder was.
   associated data.
 - **`contact`** (home drive; key: a DID): `publicKey`, `verifiedAt`: a sharing key verified with a
   code. Sealed on an encrypted drive.
+- **Inbox** (`at://<did>/space/app.atdrive.inbox/self`): each account's, under `memberspace` with
+  no members, `publicRead: false` and `publicWrite: true`, so only its owner reads it and anyone's
+  writes to it are tracked (`listWriters`).
+- **`app.atdrive.invite`** (the sharer's repo in the recipient's inbox; key: the share's space
+  key): `space` (the share's address), `createdAt`. Written when someone is added to a share,
+  deleted when they're taken off or it stops being shared. A recipient counts only invites whose
+  space's authority is the invite's writer, of type `app.atdrive.drive`, and opens the share (as a
+  member) for its name: an invite carries nothing else, so an encrypted share's name stays sealed.
+- **`declined`** (home drive; key: the first 16 bytes of SHA-256 of the share's address, hex):
+  `space`, `declinedAt`: an invite said no to. Sealed on an encrypted drive.
 - **Links:** `atdrive://open?at=<the address, percent-encoded>`, plus `#<link key, base64url>` for
   an encrypted share's public link.
 - **Verification code:** as the pairing code, with the label `atdrive sharing key verification v1`
