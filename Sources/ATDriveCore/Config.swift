@@ -201,7 +201,10 @@ public struct ConfigFile: Sendable {
 
     public struct Entry: Sendable, Equatable {
         public var key: String
+        /// As TOML, on one line.
         public var value: String
+        /// As TOML, as a file has it (a list one item per line).
+        public var fileValue: String
         public var help: String
         /// In the file, rather than the default.
         public var isSet: Bool
@@ -223,7 +226,8 @@ public struct ConfigFile: Sendable {
             }
             entries.append(
                 Entry(
-                    key: setting.key, value: setting.value(config).description, help: setting.help,
+                    key: setting.key, value: setting.value(config).description,
+                    fileValue: setting.value(config).fileText, help: setting.help,
                     isSet: document.entries[setting.key] != nil))
         }
         let known = Set(LocalConfig.settings.map(\.key))
@@ -284,6 +288,45 @@ public struct ConfigFile: Sendable {
             try? FileManager.default.removeItem(at: temporary)
             throw error
         }
+    }
+}
+
+extension ConfigFile.Loaded {
+    /// Every setting as config.toml would have it, each under its table with its help as a
+    /// comment above: what the file sets as it is, and the defaults commented out (`# key = …`).
+    /// What `atdrive config` shows. It's TOML, so any of it can be copied into the file.
+    public var toml: String {
+        var lines: [String] = []
+        var table: Substring?
+        for entry in entries {
+            let parts = entry.key.split(separator: ".", maxSplits: 1)
+            let (section, key) = parts.count == 2 ? (parts[0], parts[1]) : ("", parts[0])
+            if section != table {
+                if !lines.isEmpty { lines.append("") }
+                if !section.isEmpty { lines.append("[\(section)]") }
+                table = section
+            } else {
+                lines.append("")
+            }
+            lines += Self.wrap(entry.help, width: 98).map { "# \($0)" }
+            let assignment = "\(key) = \(entry.fileValue)".split(separator: "\n", omittingEmptySubsequences: false)
+            lines += assignment.map { entry.isSet ? String($0) : "# \($0)" }
+        }
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    static func wrap(_ text: String, width: Int) -> [String] {
+        var lines: [String] = []
+        var line = ""
+        for word in text.split(separator: " ") {
+            if !line.isEmpty, line.count + 1 + word.count > width {
+                lines.append(line)
+                line = ""
+            }
+            line += line.isEmpty ? String(word) : " \(word)"
+        }
+        if !line.isEmpty { lines.append(line) }
+        return lines
     }
 }
 

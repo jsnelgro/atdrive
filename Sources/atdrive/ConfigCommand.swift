@@ -16,14 +16,11 @@ struct ShowConfig: AsyncParsableCommand {
     func run() async throws {
         let file = ConfigFile.standard()
         let loaded = try file.loadInDetail()
-        print("Settings: \(file.url.path)\(loaded.exists ? "" : " (not created yet: everything is at its default)")")
-        let width = loaded.entries.map { $0.key.count + $0.value.count }.max() ?? 0
-        for entry in loaded.entries {
-            let assignment = "\(entry.key) = \(entry.value)"
-            let padding = String(repeating: " ", count: width - entry.key.count - entry.value.count)
-            print("  \(assignment)\(padding)  \(entry.isSet ? "" : "(default) ")# \(entry.help)")
-        }
+        print("# \(file.url.path)\(loaded.exists ? "" : " (not created yet)")")
+        print("# Settings that are commented out are at their defaults: uncomment one to change it.")
+        print("")
+        print(loaded.toml)
         for key in loaded.unknownKeys { Output.warn("config.toml sets \(key), which isn't a setting") }
-        print("Secrets (your session and this device's key): \(SessionStore().storage)")
+        print("# Your session and this device's key are kept elsewhere: \(SessionStore().storage)")
     }
 }

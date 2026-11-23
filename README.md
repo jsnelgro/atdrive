@@ -320,8 +320,10 @@ Signing in is always through the browser: atproto spaces don't accept app passwo
 This computer's settings are in `~/.config/atdrive/config.toml`. The CLI and the Mac app read
 the same file, and the Mac app's **Settings…** window writes to it, changing only the value you
 changed, so your comments and layout stay. Nothing secret is kept there, so it's safe to keep
-with your dotfiles. `atdrive config` lists every setting and says where the file and your secrets
-are.
+with your dotfiles. The file only needs what you change: anything it leaves out is at its default,
+so new settings (and better defaults) reach you without editing it. `atdrive config` shows every
+setting as TOML, what you've set as it is and the defaults commented out, ready to copy into the
+file, and says where the file and your secrets are.
 
 ```toml
 [sync]

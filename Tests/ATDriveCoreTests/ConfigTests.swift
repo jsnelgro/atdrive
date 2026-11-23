@@ -37,6 +37,35 @@ import Testing
         #expect(loaded.entries.allSatisfy { !$0.isSet })
     }
 
+    @Test func showsEverySettingAsTOML() throws {
+        let file = try configFile(
+            """
+            [sync]
+            interval = 60
+            [ignore]
+            patterns = ["node_modules/", '\\#*#']
+            """)
+        let loaded = try file.loadInDetail()
+        let shown = loaded.toml
+        #expect(shown.contains("[sync]\n# Seconds between checks"))
+        #expect(shown.contains("\ninterval = 60\n"))
+        #expect(shown.contains("\n# enabled = false\n"))
+        #expect(shown.contains("patterns = [\n  \"node_modules/\",\n  \"\\\\#*#\",\n]"))
+        #expect(!shown.split(separator: "\n").contains { $0.count > 100 && $0.hasPrefix("# ") && !$0.contains(" = ") })
+
+        // It's a config.toml: as it is, it means the same settings…
+        let asShown = try configFile(shown).load()
+        #expect(asShown == loaded.config)
+        // …and so it does with every default uncommented.
+        let uncommented = shown.split(separator: "\n", omittingEmptySubsequences: false).map { line in
+            line.hasPrefix("# ") && (line.contains(" = ") || line.hasPrefix("#   ") || line == "# ]")
+                ? String(line.dropFirst(2)) : String(line)
+        }.joined(separator: "\n")
+        let everything = try configFile(uncommented).loadInDetail()
+        #expect(everything.config == loaded.config)
+        #expect(everything.entries.allSatisfy { $0.isSet })
+    }
+
     @Test func readsSettings() throws {
         let file = try configFile(
             """
