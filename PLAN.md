@@ -99,6 +99,13 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
     badge and Spotlight's handling of it included.
   - **Later:** spaces shared with you found without their address (#56); public repo data as a
     view of its own, with record type filters (#57).
+- [x] **Ignore files** (#71, see *Folder sync* below): `.atdriveignore` files, `.gitignore` files
+  and `ignore.patterns` in config.toml, exactly as git reads them, in `atdrive sync`, `atdrive put
+  -r` (`--include-ignored`) and the Mac app (new items stay on that Mac). The clutter list is
+  `ignore.patterns`' default, not built in. `atdrive dev list-ignored` / `delete-ignored` show and clean up both sides.
+  - **Tested** with unit tests: the matcher against git's `t3070-wildmatch` cases, the combining
+    rules, and sync scenarios. macOS CI builds the app.
+  - **Not yet exercised:** the Mac part on a real Mac (`excludedFromSync` in `createItem`).
 - [ ] **Later:**
   - Shared folders others can edit (#25).
   - `x-callback-url` actions, for Shortcuts and other apps (#31).
@@ -124,6 +131,13 @@ moved).
   overwritten or deleted if its `lstat` changed since the folder was listed; it's left for the next
   pass. Only items that got all the way through are saved as agreed, so an interrupted pass picks
   up where it left off (and an interrupted conflict doesn't make two copies).
+- **Ignore files** (#71, `Ignore.swift`): `.atdriveignore`, `.gitignore` (unless
+  `ignore.respect_gitignore` is off) and `ignore.patterns`, with git's meaning. The rules are read from
+  the folder at the start of each pass and applied to all three views (the folder, the drive and
+  the saved state), so whatever they ignore is invisible to the merge: left alone on both sides,
+  and dropped from the state. Un-ignored, it's new on both sides and paired up by path and
+  contents. A folder deleted on the drive that still holds ignored files here stays here (and
+  stays in the state, so putting something new in it brings it back on the drive).
 - **Guards:** it stops if the folder or `.atdrive` disappears, refuses a folder synced with
   another account, and takes a lock so only one sync runs per folder. Files changed in the last
   couple of seconds wait (they may still be being written).

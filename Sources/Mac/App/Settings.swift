@@ -171,6 +171,17 @@ struct SettingsView: View {
                         Text(Self.describe(seconds: seconds)).tag(seconds)
                     }
                 }
+                Toggle(
+                    isOn: Binding(
+                        get: { app.config.ignoreRespectGitignore },
+                        set: { on in app.updateConfig { $0.ignoreRespectGitignore = on } }
+                    )
+                ) {
+                    Text("Respect .gitignore files")
+                    Text(
+                        "New things they ignore stay on this Mac, as do those .atdriveignore files ignore (always) and ignore.patterns in config.toml lists."
+                    )
+                }
                 Text("Saved in ~/.config/atdrive/config.toml, which the atdrive command uses too.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
