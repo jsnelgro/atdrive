@@ -14,6 +14,7 @@ public struct FileStat: Codable, Sendable, Equatable {
 
 /// Names the sync never copies in either direction: its own state folder, half-finished
 /// downloads, and lock, swap and metadata files that editors and file browsers leave around.
+/// Built in, unlike what ignore files ignore (`IgnoreRules`), and can't be brought back.
 public enum SyncIgnore {
     /// The folder at the top of a synced folder that holds the sync's own state.
     public static let stateFolder = ".atdrive"
@@ -124,9 +125,13 @@ struct FolderScan {
     var unreadable: Set<String> = []
     /// Symlinks, sockets and the like, which aren't synced (relative paths).
     var skipped: [String] = []
+    /// The ignore rules, with every ignore file in the folder read. What they ignore isn't
+    /// listed, or looked inside.
+    var ignore: IgnoreRules
 
-    init(root: String) throws {
+    init(root: String, ignore settings: IgnoreSettings = IgnoreSettings()) throws {
         guard LocalFS.isFolder(root) else { throw SyncError.folderMissing(root) }
+        ignore = IgnoreRules(settings)
         var stack = [""]
         while let folder = stack.popLast() {
             let absolute = folder.isEmpty ? root : "\(root)/\(folder)"
@@ -138,10 +143,13 @@ struct FolderScan {
                 unreadable.insert(folder)
                 continue
             }
+            // Before anything in the folder is looked at: its own ignore files apply to it.
+            ignore.read(folder: folder, in: root, names: Set(names))
             for name in names where !SyncIgnore.isIgnored(name, atTop: folder.isEmpty) {
                 let path = folder.isEmpty ? name : "\(folder)/\(name)"
                 guard (try? DrivePath.validate(name: name)) != nil, let (kind, stat) = LocalFS.status("\(root)/\(path)")
                 else { continue }
+                if kind != .other, ignore.matches(path, isFolder: kind == .folder) { continue }
                 switch kind {
                 case .folder:
                     items[path] = Item(isFolder: true, stat: stat)

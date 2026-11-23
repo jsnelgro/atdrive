@@ -141,6 +141,49 @@ actor DriveIndex {
         defer { resend = [] }
         return resend
     }
+
+    /// Ignore files' text, by record CID (`isIgnored`).
+    private(set) var ignoreTexts: [String: String] = [:]
+
+    func rememberIgnoreText(_ text: String, for cid: String) {
+        if ignoreTexts.count > 256 { ignoreTexts = [:] }
+        ignoreTexts[cid] = text
+    }
+}
+
+// MARK: Ignore files
+
+extension DriveIndex {
+    /// Whether something new called `name` in `folder` is to stay on this Mac only: ignored by the
+    /// ignore files in the drive above it (`.atdriveignore`, `.gitignore`), and config.toml's
+    /// `ignore.*` (passed on by the app), as `atdrive sync` would ignore it (`IgnoreRules`).
+    /// Something inside a folder that's ignored is ignored too. Throws if an ignore file can't be
+    /// read: better to try again later than to upload what it may ignore.
+    func isIgnored(_ name: String, isFolder: Bool, in folder: String?, tree: DriveTree) async throws -> Bool {
+        let settings = IgnoreShare.settings
+        var rules = IgnoreRules(settings)
+        for place in IgnoreRules.files(for: folder, in: tree, settings: settings) {
+            rules.add(
+                folder: place.folder, atdriveignore: try await text(of: place.atdriveignore),
+                gitignore: try await text(of: place.gitignore))
+        }
+        guard !rules.isEmpty else { return false }
+        let above = folder.flatMap { tree.nodes[$0] }.map { tree.path(of: $0).components } ?? []
+        var lookup = IgnoreRules.Lookup(rules)
+        return lookup.isIgnored(above + [name], isFolder: isFolder)
+    }
+
+    /// An ignore file's text, remembered by record CID (which changes when it's edited).
+    private func text(of node: Node?) async throws -> String? {
+        guard let node else { return nil }
+        if let known = ignoreTexts[node.cid] { return known }
+        guard (node.record.size ?? 0) <= IgnoreRules.maximumFileSize else { return nil }
+        var data = Data()
+        try await drive().read(node) { data += $0 }
+        let text = String(decoding: data, as: UTF8.self)
+        rememberIgnoreText(text, for: node.cid)
+        return text
+    }
 }
 
 extension NSFileProviderSyncAnchor {

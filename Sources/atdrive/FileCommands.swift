@@ -93,6 +93,8 @@ struct Put: AsyncParsableCommand {
               atdrive put notes.txt /docs/todo.txt  → /docs/todo.txt
               atdrive put -r Photos /backup         → /backup/Photos/... (if /backup exists)
             Existing files are replaced in place; unchanged ones are skipped.
+
+            Inside the folders it uploads, it skips what ignore files ignore, as git does: .atdriveignore files (always), .gitignore files (unless ignore.gitignore = false in config.toml), and ignore.patterns in config.toml (in .gitignore's syntax, as if in a .atdriveignore at the top). In one folder, .atdriveignore wins over .gitignore, so `!.env` in it brings back a .env that git ignores. What you name on the command line is always uploaded; --no-ignore uploads everything.
             """
     )
 
@@ -102,16 +104,22 @@ struct Put: AsyncParsableCommand {
     @Flag(name: .shortAndLong, help: "Upload folders and everything in them.")
     var recursive = false
 
+    @Flag(help: "Upload what .atdriveignore, .gitignore and config.toml's ignore.patterns ignore, too.")
+    var noIgnore = false
+
     func validate() throws {
         if paths.isEmpty { throw ValidationError("nothing to upload") }
     }
 
     func run() async throws {
+        // A config.toml that can't be read stops it, rather than upload what it may ignore.
+        let ignore = noIgnore || !recursive ? IgnoreSettings.none : try ConfigFile.standard().load().ignore
         let drive = try await Context.load().joined
         let sources = paths.count == 1 ? paths : Array(paths.dropLast())
         let destination = DrivePath(paths.count == 1 ? "/" : paths.last!)
         let tree = try await drive.tree()
-        var uploader = Uploader(drive: drive, state: DriveState(tree), recursive: recursive, known: tree.chunkCIDs)
+        var uploader = Uploader(
+            drive: drive, state: DriveState(tree), recursive: recursive, ignore: ignore, known: tree.chunkCIDs)
 
         let target = try tree.find(destination)
         for source in sources {
@@ -156,15 +164,30 @@ struct Uploader {
     let drive: JoinedDrive
     var state: DriveState
     let recursive: Bool
+    /// What's skipped inside a folder being uploaded (besides the built-in names, `SyncIgnore`).
+    let ignore: IgnoreSettings
     /// Chunks the drive has: those current files use, and those uploaded since.
     var known: Set<String>
+    /// The folder being uploaded (named on the command line), and its ignore rules so far.
+    private var top = ""
+    private var rules = IgnoreRules(.none)
+
+    init(drive: JoinedDrive, state: DriveState, recursive: Bool, ignore: IgnoreSettings, known: Set<String>) {
+        self.drive = drive
+        self.state = state
+        self.recursive = recursive
+        self.ignore = ignore
+        self.known = known
+    }
 
     mutating func upload(_ local: URL, isDirectory: Bool, as name: String, in parent: String?, at path: DrivePath)
         async throws
     {
         if isDirectory {
             guard recursive else { throw ATDriveError.needsRecursive(local.relativePath) }
-            try await uploadFolder(local, as: name, in: parent, at: path)
+            top = local.standardizedFileURL.path
+            rules = IgnoreRules(ignore)
+            try await uploadFolder(local, as: name, in: parent, at: path, relative: "")
         } else {
             try await uploadFile(local, as: name, in: parent, at: path)
         }
@@ -187,9 +210,10 @@ struct Uploader {
         print("↑ \(path)  (\(Output.size(node.record.size ?? 0)))")
     }
 
-    private mutating func uploadFolder(_ local: URL, as name: String, in parent: String?, at path: DrivePath)
-        async throws
-    {
+    /// `relative`: where it is in the folder named on the command line (`""` for that one).
+    private mutating func uploadFolder(
+        _ local: URL, as name: String, in parent: String?, at path: DrivePath, relative: String
+    ) async throws {
         let folder: Node
         switch state.child(named: name, in: parent) {
         case let existing? where existing.isFolder:
@@ -203,13 +227,21 @@ struct Uploader {
         }
         let entries = try FileManager.default.contentsOfDirectory(
             at: local, includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey])
+        rules.read(folder: relative, in: top, names: Set(entries.map(\.lastPathComponent)))
         for entry in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
             let values = try entry.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey])
-            let childPath = path.appending(entry.lastPathComponent)
+            let childName = entry.lastPathComponent
+            let childPath = path.appending(childName)
+            let childRelative = relative.isEmpty ? childName : "\(relative)/\(childName)"
+            if SyncIgnore.isIgnored(childName, atTop: relative.isEmpty) { continue }
+            if values.isSymbolicLink != true, rules.matches(childRelative, isFolder: values.isDirectory == true) {
+                print("- \(childPath)\(values.isDirectory == true ? "/" : "")  (ignored)")
+                continue
+            }
             if values.isSymbolicLink == true {
                 Output.warn("skipping symlink \(entry.path)")
             } else if values.isDirectory == true {
-                try await uploadFolder(entry, as: entry.lastPathComponent, in: folder.id, at: childPath)
+                try await uploadFolder(entry, as: childName, in: folder.id, at: childPath, relative: childRelative)
             } else if values.isRegularFile == true {
                 try await uploadFile(entry, as: entry.lastPathComponent, in: folder.id, at: childPath)
             } else {

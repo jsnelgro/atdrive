@@ -92,6 +92,12 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
   - `ConflictRules.swift`: what happens when something changed in two places (edits, moves,
     deletes, deleted folders). **Both** `SyncPlan` and the Mac extension decide with it, so the
     platforms agree; change the rules there, not in either caller. `ConflictName.swift`: copy names.
+  - `Ignore.swift`: `.atdriveignore` / `.gitignore` / `ignore.patterns` (#71), with git's meaning
+    exactly: `IgnorePattern` is a port of git's wildmatch and line rules, `IgnoreRules` combines
+    the files as git does. Sync applies one set of rules (read from the folder at the start of a
+    pass) to the folder, the drive and the saved state alike, so what's ignored is left alone on
+    both sides. `put -r` and the Mac extension (new items only, `excludedFromSync`) use it too.
+    `SyncIgnore` (in `Sync/LocalFiles.swift`) is the built-in clutter list, separate.
   - `Sync/`: two-way folder sync (`atdrive sync`, the Linux "drive folder"). `SyncPlan` is the pure
     three-way merge (last agreed state vs. folder vs. drive, keyed by node ID); `FolderSync` /
     `SyncRun` apply it with POSIX calls; `FolderWatcher` is inotify. See PLAN.md, "Folder sync".

@@ -34,6 +34,16 @@ public struct LocalConfig: Sendable, Equatable {
     /// Spaces not to show, found by themselves or included.
     public var spacesExclude: [String] = []
 
+    /// Respect `.gitignore` files, as well as `.atdriveignore` files (which always are).
+    public var ignoreGitignore = true
+
+    /// Ignored everywhere on this computer: lines of a `.atdriveignore` at the top of the drive,
+    /// which every ignore file in the drive can override.
+    public var ignorePatterns: [String] = []
+
+    /// What decides which files are left alone (`IgnoreRules`).
+    public var ignore: IgnoreSettings { IgnoreSettings(gitignore: ignoreGitignore, patterns: ignorePatterns) }
+
     /// The settings the drive needs to show Spaces; `nil` while it's off.
     public var spaces: SpacesSettings? {
         guard spacesEnabled else { return nil }
@@ -112,6 +122,28 @@ public struct LocalConfig: Sendable, Equatable {
                 return nil
             },
             value: { .boolean($0.spacesSpotlight) }),
+        Setting(
+            key: "ignore.gitignore",
+            help: "Leave alone what .gitignore files ignore, as well as what .atdriveignore files do (always).",
+            read: { config, value in
+                guard case .boolean(let respected) = value else { return "must be true or false" }
+                config.ignoreGitignore = respected
+                return nil
+            },
+            value: { .boolean($0.ignoreGitignore) }),
+        Setting(
+            key: "ignore.patterns",
+            help:
+                "Ignored everywhere on this computer, in .gitignore's syntax: like a .atdriveignore at the top of the drive.",
+            read: { config, value in
+                guard case .strings(let patterns) = value else { return "must be a list of patterns, in quotes" }
+                if patterns.contains(where: { $0.contains("\n") || $0.contains("\r") }) {
+                    return "must have one pattern per item (no line breaks)"
+                }
+                config.ignorePatterns = patterns
+                return nil
+            },
+            value: { .strings($0.ignorePatterns) }),
     ]
 
     struct Setting: Sendable {

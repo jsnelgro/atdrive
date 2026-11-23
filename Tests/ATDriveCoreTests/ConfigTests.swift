@@ -29,7 +29,11 @@ import Testing
         let loaded = try configFile().loadInDetail()
         #expect(loaded.config == LocalConfig())
         #expect(!loaded.exists)
-        #expect(loaded.entries.map(\.key) == ["sync.interval", "spaces.enabled", "spaces.folder", "spaces.include", "spaces.exclude", "spaces.spotlight"])
+        #expect(
+            loaded.entries.map(\.key) == [
+                "sync.interval", "spaces.enabled", "spaces.folder", "spaces.include", "spaces.exclude",
+                "spaces.spotlight", "ignore.gitignore", "ignore.patterns",
+            ])
         #expect(loaded.entries.allSatisfy { !$0.isSet })
     }
 
@@ -44,6 +48,28 @@ import Testing
         #expect(loaded.config.syncInterval == 60)
         #expect(loaded.entries.first?.isSet == true)
         #expect(loaded.unknownKeys.isEmpty)
+    }
+
+    @Test func ignoreSettings() throws {
+        #expect(LocalConfig().ignore == IgnoreSettings(gitignore: true, patterns: []))
+        let config = try configFile(
+            """
+            [ignore]
+            gitignore = false
+            patterns = [
+              "node_modules/",
+              '*.tmp',  # literal strings work too
+              '\\#not-a-comment',
+            ]
+            """
+        ).load()
+        #expect(
+            config.ignore == IgnoreSettings(gitignore: false, patterns: ["node_modules/", "*.tmp", "\\#not-a-comment"]))
+        #expect(throws: ConfigError.self) { try configFile("[ignore]\ngitignore = \"no\"\n").load() }
+        #expect(throws: ConfigError.self) { try configFile("[ignore]\npatterns = \"*.tmp\"\n").load() }
+        let file = ConfigFile(url: directory.appendingPathComponent("fresh/config.toml"))
+        try file.update { $0.ignorePatterns = ["*.log"] }
+        #expect(try file.load().ignorePatterns == ["*.log"])
     }
 
     @Test func dottedKeysWorkToo() throws {

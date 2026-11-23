@@ -42,8 +42,10 @@ struct SyncBase {
     let paths: [String: String]
 
     /// Keeps only items whose folders are all known (anything else is treated as new on both
-    /// sides, and matched up again by path and contents).
-    init(_ saved: [String: SyncState.Item]) {
+    /// sides, and matched up again by path and contents), and that aren't ignored: something
+    /// ignored now is left alone on both sides, and dropped from the saved state. If it stops
+    /// being ignored, it's new on both sides, and paired up again.
+    init(_ saved: [String: SyncState.Item], ignore: IgnoreRules = IgnoreRules(.none)) {
         var paths: [String: String?] = [:]
         func path(_ id: String, depth: Int = 0) -> String? {
             if let known = paths[id] { return known }
@@ -53,8 +55,12 @@ struct SyncBase {
                 result =
                     saved[parent]?.folder == true ? path(parent, depth: depth + 1).map { "\($0)/\(item.name)" } : nil
             }
-            if let found = result, SyncIgnore.isIgnored(path: found.split(separator: "/").map(String.init)) {
-                result = nil
+            // Its folders were checked on the way (an ignored one has no path).
+            if let found = result {
+                let components = found.split(separator: "/").map(String.init)
+                if SyncIgnore.isIgnored(path: components) || ignore.matches(components, isFolder: item.folder) {
+                    result = nil
+                }
             }
             paths[id] = .some(result)
             return result
@@ -187,7 +193,7 @@ struct LocalView {
     }
 }
 
-/// The drive now, minus anything ignored.
+/// The drive now, minus anything ignored (built in, or by the folder's ignore rules).
 struct RemoteView {
     let tree: DriveTree
     let entries: [String: SyncEntry]
@@ -198,8 +204,9 @@ struct RemoteView {
 
     /// `held`: mounts that can't be read right now (`JoinedSnapshot.held`). Whatever was synced
     /// from one is unknown: left alone, never taken for deleted.
-    init(_ tree: DriveTree, base: SyncBase, held: Set<String> = []) {
+    init(_ tree: DriveTree, base: SyncBase, held: Set<String> = [], ignore: IgnoreRules = IgnoreRules(.none)) {
         self.tree = tree
+        var ignored = IgnoreRules.Lookup(ignore)
         var entries: [String: SyncEntry] = [:]
         var unknown = Set(tree.unreadable.keys)
         for id in base.entries.keys {
@@ -217,7 +224,7 @@ struct RemoteView {
                 }
                 path = place.split(separator: "/").map(String.init) + path
             }
-            guard !SyncIgnore.isIgnored(path: path) else { continue }
+            guard !SyncIgnore.isIgnored(path: path), !ignored.isIgnored(path, isFolder: node.isFolder) else { continue }
             entries[node.id] = SyncEntry(
                 parent: tree.parent(of: node.id), name: node.name, isFolder: node.isFolder,
                 sha256: node.isFolder ? nil : node.record.sha256)

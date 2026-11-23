@@ -89,6 +89,24 @@ public enum SpacesShare {
     private static var defaults: UserDefaults? { AppGroup.identifier.flatMap { UserDefaults(suiteName: $0) } }
 }
 
+/// What's ignored besides the ignore files in the drive (`ignore.*` in config.toml), for the
+/// extension, which can't read config.toml: the app writes it to the App Group's defaults whenever
+/// the file changes. Until it has, the defaults (`.gitignore` files count; no patterns).
+public enum IgnoreShare {
+    public static var settings: IgnoreSettings {
+        get {
+            defaults?.data(forKey: key).flatMap { try? JSONDecoder().decode(IgnoreSettings.self, from: $0) }
+                ?? IgnoreSettings()
+        }
+        set {
+            if let data = try? JSONEncoder().encode(newValue) { defaults?.set(data, forKey: key) }
+        }
+    }
+
+    private static let key = "ignoreSettings"
+    private static var defaults: UserDefaults? { AppGroup.identifier.flatMap { UserDefaults(suiteName: $0) } }
+}
+
 public enum Log {
     public static let subsystem = "app.atdrive"
 }

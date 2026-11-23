@@ -106,6 +106,13 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 }
                 let isFolder = type.conforms(to: .directory)
 
+                // Ignored (.atdriveignore, .gitignore, config.toml): it stays on this Mac only,
+                // and so does anything put in it. Things already in the drive aren't affected.
+                if try await index.isIgnored(name, isFolder: isFolder, in: parent, tree: tree) {
+                    logger.info("ignored, so kept on this Mac only")
+                    return completionHandler(nil, [], false, NSFileProviderError(.excludedFromSync))
+                }
+
                 if let existing = tree.child(named: name, in: parent) {
                     let identical: Bool
                     if existing.isFolder != isFolder {
