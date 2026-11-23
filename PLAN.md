@@ -652,6 +652,15 @@ Checked against the proposal and the reference branch on 2026-11-17:
   yours moved in goes back where it was. What was edited or added in one is kept first, at the
   top of your drive: an edit as a conflicted copy, something new as it is. Nothing is uploaded
   to, or deleted from, the share.
+- **Their names are their owners' (#68):** the joined tree shows someone else's share under the
+  name its owner gives it (a shared file's name, or a shared folder's `settings.name`), numbered
+  if something beside it has that name (`JoinedSnapshot.sharedNames`); the mount record's own
+  name is used only until the share has been read. The mount is still yours: it can move
+  anywhere in your drive, or be removed, but `JoinedDrive.move` refuses a new name
+  (`notYoursToRename`), Finder doesn't offer renaming (and names it back if it happens anyway),
+  and a synced folder puts the name back (`ReadOnlyFolders.named`), and a shared file's
+  contents too. Renaming a share of yours renames it in its space as well, so everyone who has
+  it sees the new name.
 - **No nesting:** nothing inside a mount can be shared, and a mount can't go in another.
 
 ### Sharing a folder

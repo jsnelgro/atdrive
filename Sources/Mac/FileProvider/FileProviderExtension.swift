@@ -208,6 +208,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     here.parent = try await folderID(item.parentItemIdentifier, in: tree, drive: drive)
                 }
                 if changedFields.contains(.filename) { here.name = item.filename }
+                // Shared with you: its name is its owner's. Renamed here anyway (Finder doesn't
+                // offer it), it's named back; moved beside something of that name, the drive
+                // numbers it.
+                let ownersName = SharingRole.of(node, in: tree, account: Item.account) == .other
+                if ownersName { here.name = there.name }
                 var target = ConflictRules.location(base: before, local: here, remote: there)
                 if target != here {
                     logger.notice("\(node.id, privacy: .public) moved on both sides: kept the drive's move")
@@ -215,7 +220,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 if node.isFolder, let parent = target.parent, tree.isInside(parent, folder: node.id) {
                     target = there  // a folder can't go inside itself: leave it where the drive has it
                 }
-                if target != there, let clash = tree.child(named: target.name, in: target.parent),
+                if target != there, !ownersName, let clash = tree.child(named: target.name, in: target.parent),
                     clash.id != node.id
                 {
                     target.name = Self.conflictName(for: target.name, in: target.parent, tree: tree)

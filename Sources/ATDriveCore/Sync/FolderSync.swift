@@ -187,6 +187,8 @@ public final class FolderSync {
                 uniqueKeysWithValues: snapshot.mounts.filter { $0.value.readOnly && !$0.value.isHeld }.map {
                     ($0.key, true)
                 }))
+        // Their names are their owners': moved here they stay moved, renamed they're named back.
+        readOnly.named = Set(snapshot.mounts.filter { $0.value.readOnly && !$0.value.isHeld }.keys)
         if snapshot.spaces != nil {
             readOnly.keepsCopies[SpacesFolder.id] = false
             readOnly.locked.insert(SpacesFolder.id)
@@ -617,7 +619,10 @@ final class SyncRun {
         for id in order where pending[id]!.contains(.remote) && !blocked.contains(id) {
             let entry = plan.merged[id]!
             let target = entry.parent.map { created[$0] ?? $0 }
-            if let owner = readOnlyOwner(of: target) ?? readOnlyOwner(of: nodes[id] != nil ? id : nil) {
+            // (Someone else's share itself is a record of yours: it can move. Its name is put
+            // back before this: `ReadOnlyFolders.named`.)
+            let inside = nodes[id] != nil && NodeID.split(id).mount != nil ? id : nil
+            if let owner = readOnlyOwner(of: target) ?? readOnlyOwner(of: inside) {
                 // Shared with this account, read-only: the change stays here, never uploaded.
                 block(id, "read-only, shared by \(owner)")
                 continue

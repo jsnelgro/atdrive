@@ -35,6 +35,18 @@ extension Drive {
         } catch let error as XRPCError where error.error == "RecordAlreadyExists" {}
     }
 
+    /// Gives a share (this drive) a new name, for those who open it (`DriveSettings.name`).
+    func rename(to name: String) async throws {
+        guard let record = try await settingsRecord(), var settings = settings(stored: record.value, keyring: keyring)
+        else { throw DriveAccessError.damaged("settings") }
+        guard settings.name != name else { return }
+        settings.name = name
+        settings.generation += 1
+        try await apply([
+            .update(collection: Lexicon.settings, rkey: Lexicon.settingsKey, value: try stored(settings, with: keyring))
+        ])
+    }
+
     /// Writes a mount node: `info`'s space appears as `name` in `parent`.
     @discardableResult
     func createMount(_ info: MountInfo, named name: String, in parent: String?, id: String? = nil) async throws -> Node
