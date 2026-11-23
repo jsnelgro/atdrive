@@ -402,8 +402,15 @@ build/
   editor's swap file may hold unsaved work.
 - **Cleaning up:** `atdrive dev list-ignored` lists everything that's ignored, in your synced
   folder and in the drive (what got in before it was ignored, or from a device that doesn't
-  ignore it). `atdrive dev delete-ignored` lists the same and, once you say yes, deletes it: what's
-  in your synced folder for good (there's no other copy), and what's in the drive to the trash.
+  ignore it). `atdrive dev delete-ignored` lists the same and, once you say yes, deletes it.
+  - What's in the drive goes to the drive's trash.
+  - What's in your synced folder was never in the drive, so it goes to this computer's trash: the
+    Trash on a Mac, the desktop's trash on Linux (`~/.local/share/Trash`, which file managers and
+    `gio trash` show).
+
+  The synced folder is the one `atdrive sync --install` set up, or else `~/atdrive`; `--folder`
+  names another. It has to be a folder `atdrive sync` keeps in sync with your drive, so another
+  folder can't be cleaned out by mistake.
 
 ## History and trash
 

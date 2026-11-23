@@ -99,7 +99,8 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
     both sides. `put -r` and the Mac extension (new items only, `excludedFromSync`) use it too.
     The clutter list (`.DS_Store`, swap files) is `IgnoreSettings.defaultPatterns`, explicit in
     config; `SyncIgnore` (in `Sync/LocalFiles.swift`) is only what ATDrive uses itself (`.atdrive`,
-    `*.atdrive-partial`). `IgnoredFiles.swift`: what's ignored, for `atdrive dev list-ignored` / `delete-ignored`.
+    `*.atdrive-partial`). `IgnoredFiles.swift`: what's ignored, for `atdrive dev list-ignored` / `delete-ignored`, which
+    move local files to this computer's trash (`SystemTrash.swift`: the freedesktop.org spec on Linux).
   - `Sync/`: two-way folder sync (`atdrive sync`, the Linux "drive folder"). `SyncPlan` is the pure
     three-way merge (last agreed state vs. folder vs. drive, keyed by node ID); `FolderSync` /
     `SyncRun` apply it with POSIX calls; `FolderWatcher` is inotify. See PLAN.md, "Folder sync".

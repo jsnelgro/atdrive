@@ -305,15 +305,21 @@ enum Service {
         return config.appendingPathComponent("systemd/user/\(name)")
     }
 
-    /// `%` starts a specifier anywhere in a unit file.
-    private static func escape(_ text: String) -> String { text.replacingOccurrences(of: "%", with: "%%") }
-
-    /// Quotes a word for a unit file; in commands, `$` also expands variables.
+    private static func escape(_ text: String) -> String { SystemdUnit.escape(text) }
     private static func quote(_ word: String, forCommand: Bool) -> String {
-        var escaped = escape(
-            word.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))
-        if forCommand { escaped = escaped.replacingOccurrences(of: "$", with: "$$") }
-        return "\"\(escaped)\""
+        SystemdUnit.quote(word, forCommand: forCommand)
+    }
+
+    /// The folder the installed service syncs (from its unit file), if it's installed.
+    static var installedFolder: String? {
+        #if os(Linux)
+            guard let unit = try? String(contentsOf: unitFile, encoding: .utf8),
+                let words = SystemdUnit.command(in: unit), words.count >= 3, words[1] == "sync"
+            else { return nil }
+            return words[2]
+        #else
+            return nil
+        #endif
     }
 
     static func systemctl(_ arguments: String...) -> Bool {
