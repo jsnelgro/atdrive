@@ -34,6 +34,18 @@ public struct LocalConfig: Sendable, Equatable {
     /// Spaces not to show, found by themselves or included.
     public var spacesExclude: [String] = []
 
+    /// Respect `.gitignore` files, as well as `.atdriveignore` files (which always are).
+    public var ignoreRespectGitignore = true
+
+    /// Ignored everywhere on this computer: lines of a `.atdriveignore` at the top of the drive,
+    /// which every ignore file in the drive can override.
+    public var ignorePatterns: [String] = IgnoreSettings.defaultPatterns
+
+    /// What decides which files are left alone (`IgnoreRules`).
+    public var ignore: IgnoreSettings {
+        IgnoreSettings(respectGitignore: ignoreRespectGitignore, patterns: ignorePatterns)
+    }
+
     /// The settings the drive needs to show Spaces; `nil` while it's off.
     public var spaces: SpacesSettings? {
         guard spacesEnabled else { return nil }
@@ -112,6 +124,28 @@ public struct LocalConfig: Sendable, Equatable {
                 return nil
             },
             value: { .boolean($0.spacesSpotlight) }),
+        Setting(
+            key: "ignore.respect_gitignore",
+            help: "Leave out what .gitignore files ignore, as well as what .atdriveignore files ignore (always).",
+            read: { config, value in
+                guard case .boolean(let respected) = value else { return "must be true or false" }
+                config.ignoreRespectGitignore = respected
+                return nil
+            },
+            value: { .boolean($0.ignoreRespectGitignore) }),
+        Setting(
+            key: "ignore.patterns",
+            help:
+                "Ignored everywhere on this computer, in .gitignore's syntax: like a .atdriveignore at the top of the drive. The default is what file browsers and editors leave around; setting it replaces that list.",
+            read: { config, value in
+                guard case .strings(let patterns) = value else { return "must be a list of patterns, in quotes" }
+                if patterns.contains(where: { $0.contains("\n") || $0.contains("\r") }) {
+                    return "must have one pattern per item (no line breaks)"
+                }
+                config.ignorePatterns = patterns
+                return nil
+            },
+            value: { .strings($0.ignorePatterns) }),
     ]
 
     struct Setting: Sendable {
@@ -167,7 +201,10 @@ public struct ConfigFile: Sendable {
 
     public struct Entry: Sendable, Equatable {
         public var key: String
+        /// As TOML, on one line.
         public var value: String
+        /// As TOML, as a file has it (a list one item per line).
+        public var fileValue: String
         public var help: String
         /// In the file, rather than the default.
         public var isSet: Bool
@@ -189,7 +226,8 @@ public struct ConfigFile: Sendable {
             }
             entries.append(
                 Entry(
-                    key: setting.key, value: setting.value(config).description, help: setting.help,
+                    key: setting.key, value: setting.value(config).description,
+                    fileValue: setting.value(config).fileText, help: setting.help,
                     isSet: document.entries[setting.key] != nil))
         }
         let known = Set(LocalConfig.settings.map(\.key))
@@ -250,6 +288,45 @@ public struct ConfigFile: Sendable {
             try? FileManager.default.removeItem(at: temporary)
             throw error
         }
+    }
+}
+
+extension ConfigFile.Loaded {
+    /// Every setting as config.toml would have it, each under its table with its help as a
+    /// comment above: what the file sets as it is, and the defaults commented out (`# key = …`).
+    /// What `atdrive config` shows. It's TOML, so any of it can be copied into the file.
+    public var toml: String {
+        var lines: [String] = []
+        var table: Substring?
+        for entry in entries {
+            let parts = entry.key.split(separator: ".", maxSplits: 1)
+            let (section, key) = parts.count == 2 ? (parts[0], parts[1]) : ("", parts[0])
+            if section != table {
+                if !lines.isEmpty { lines.append("") }
+                if !section.isEmpty { lines.append("[\(section)]") }
+                table = section
+            } else {
+                lines.append("")
+            }
+            lines += Self.wrap(entry.help, width: 98).map { "# \($0)" }
+            let assignment = "\(key) = \(entry.fileValue)".split(separator: "\n", omittingEmptySubsequences: false)
+            lines += assignment.map { entry.isSet ? String($0) : "# \($0)" }
+        }
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    static func wrap(_ text: String, width: Int) -> [String] {
+        var lines: [String] = []
+        var line = ""
+        for word in text.split(separator: " ") {
+            if !line.isEmpty, line.count + 1 + word.count > width {
+                lines.append(line)
+                line = ""
+            }
+            line += line.isEmpty ? String(word) : " \(word)"
+        }
+        if !line.isEmpty { lines.append(line) }
+        return lines
     }
 }
 

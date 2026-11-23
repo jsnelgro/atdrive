@@ -29,8 +29,41 @@ import Testing
         let loaded = try configFile().loadInDetail()
         #expect(loaded.config == LocalConfig())
         #expect(!loaded.exists)
-        #expect(loaded.entries.map(\.key) == ["sync.interval", "spaces.enabled", "spaces.folder", "spaces.include", "spaces.exclude", "spaces.spotlight"])
+        #expect(
+            loaded.entries.map(\.key) == [
+                "sync.interval", "spaces.enabled", "spaces.folder", "spaces.include", "spaces.exclude",
+                "spaces.spotlight", "ignore.respect_gitignore", "ignore.patterns",
+            ])
         #expect(loaded.entries.allSatisfy { !$0.isSet })
+    }
+
+    @Test func showsEverySettingAsTOML() throws {
+        let file = try configFile(
+            """
+            [sync]
+            interval = 60
+            [ignore]
+            patterns = ["node_modules/", '\\#*#']
+            """)
+        let loaded = try file.loadInDetail()
+        let shown = loaded.toml
+        #expect(shown.contains("[sync]\n# Seconds between checks"))
+        #expect(shown.contains("\ninterval = 60\n"))
+        #expect(shown.contains("\n# enabled = false\n"))
+        #expect(shown.contains("patterns = [\n  \"node_modules/\",\n  \"\\\\#*#\",\n]"))
+        #expect(!shown.split(separator: "\n").contains { $0.count > 100 && $0.hasPrefix("# ") && !$0.contains(" = ") })
+
+        // It's a config.toml: as it is, it means the same settings…
+        let asShown = try configFile(shown).load()
+        #expect(asShown == loaded.config)
+        // …and so it does with every default uncommented.
+        let uncommented = shown.split(separator: "\n", omittingEmptySubsequences: false).map { line in
+            line.hasPrefix("# ") && (line.contains(" = ") || line.hasPrefix("#   ") || line == "# ]")
+                ? String(line.dropFirst(2)) : String(line)
+        }.joined(separator: "\n")
+        let everything = try configFile(uncommented).loadInDetail()
+        #expect(everything.config == loaded.config)
+        #expect(everything.entries.allSatisfy { $0.isSet })
     }
 
     @Test func readsSettings() throws {
@@ -44,6 +77,34 @@ import Testing
         #expect(loaded.config.syncInterval == 60)
         #expect(loaded.entries.first?.isSet == true)
         #expect(loaded.unknownKeys.isEmpty)
+    }
+
+    @Test func ignoreSettings() throws {
+        #expect(LocalConfig().ignore == IgnoreSettings())
+        #expect(LocalConfig().ignore.respectGitignore)
+        #expect(LocalConfig().ignorePatterns == IgnoreSettings.defaultPatterns)
+        let config = try configFile(
+            """
+            [ignore]
+            respect_gitignore = false
+            patterns = [
+              "node_modules/",
+              '*.tmp',  # literal strings work too
+              '\\#not-a-comment',
+            ]
+            """
+        ).load()
+        #expect(
+            config.ignore
+                == IgnoreSettings(respectGitignore: false, patterns: ["node_modules/", "*.tmp", "\\#not-a-comment"]))
+        #expect(throws: ConfigError.self) { try configFile("[ignore]\nrespect_gitignore = \"no\"\n").load() }
+        #expect(throws: ConfigError.self) { try configFile("[ignore]\npatterns = \"*.tmp\"\n").load() }
+        let file = ConfigFile(url: directory.appendingPathComponent("fresh/config.toml"))
+        try file.update { $0.ignorePatterns = ["*.log"] }
+        #expect(try file.load().ignorePatterns == ["*.log"])
+        // The defaults survive being written out (backslashes and all).
+        try file.update { $0.ignorePatterns = IgnoreSettings.defaultPatterns + ["*.log"] }
+        #expect(try file.load().ignorePatterns == IgnoreSettings.defaultPatterns + ["*.log"])
     }
 
     @Test func dottedKeysWorkToo() throws {

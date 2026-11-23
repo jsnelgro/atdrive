@@ -12,24 +12,18 @@ public struct FileStat: Codable, Sendable, Equatable {
     public var changed: Int64
 }
 
-/// Names the sync never copies in either direction: its own state folder, half-finished
-/// downloads, and lock, swap and metadata files that editors and file browsers leave around.
+/// What ATDrive uses itself, so never syncs or uploads, whatever the ignore settings: the sync's
+/// state folder at the top of a synced folder (`StateFolder`), and half-finished downloads.
+/// Everything else that's left out is up to the ignore rules (`IgnoreRules`); the clutter file
+/// browsers and editors leave around is in their defaults (`IgnoreSettings.defaultPatterns`).
 public enum SyncIgnore {
     /// The folder at the top of a synced folder that holds the sync's own state.
     public static let stateFolder = ".atdrive"
+    /// A download in progress (`.<name>.atdrive-partial`), renamed into place when it's done.
+    public static let partialSuffix = ".atdrive-partial"
 
     public static func isIgnored(_ name: String, atTop: Bool) -> Bool {
-        if atTop, name == stateFolder { return true }
-        if name == ".DS_Store" || name == "Thumbs.db" || name.hasSuffix(".atdrive-partial") { return true }
-        // Vim swap files: .name.swp, .swo, ….
-        if name.hasPrefix("."), name.count > 4 {
-            let tail = name.suffix(4)
-            if tail.hasPrefix(".sw"), tail.last!.isLetter { return true }
-        }
-        // LibreOffice and Microsoft Office lock files; Emacs autosave and lock files.
-        if name.hasPrefix(".~lock.") || name.hasPrefix("~$") || name.hasPrefix(".#") { return true }
-        if name.count > 1, name.hasPrefix("#"), name.hasSuffix("#") { return true }
-        return false
+        (atTop && name == stateFolder) || name.hasSuffix(partialSuffix)
     }
 
     /// Whether anything along a relative path (`a/b/c`) is ignored.
@@ -93,11 +87,16 @@ enum LocalFS {
     @discardableResult
     static func removeFolder(_ path: String) -> Bool {
         for name in (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? []
-        where SyncIgnore.isIgnored(name, atTop: false) && status("\(path)/\(name)")?.kind == .file {
+        where disposable.contains(name) && status("\(path)/\(name)")?.kind == .file {
             unlink("\(path)/\(name)")
         }
         return rmdir(path) == 0
     }
+
+    /// Files a file browser makes in any folder it shows, which go when the folder does (when it's
+    /// deleted on the drive). Anything else ignored keeps the folder here, editors' swap files
+    /// included: they may hold unsaved work.
+    static let disposable: Set<String> = [".DS_Store", "Thumbs.db"]
 
     /// Copies permission bits from one file to another.
     static func copyPermissions(from source: String, to destination: String) {
@@ -124,9 +123,15 @@ struct FolderScan {
     var unreadable: Set<String> = []
     /// Symlinks, sockets and the like, which aren't synced (relative paths).
     var skipped: [String] = []
+    /// The ignore rules, with every ignore file in the folder read. What they ignore isn't
+    /// listed, or looked inside.
+    var ignore: IgnoreRules
+    /// What they ignore: the outermost things only (an ignored folder, not what's in it).
+    var ignored: [(path: String, isFolder: Bool)] = []
 
-    init(root: String) throws {
+    init(root: String, ignore settings: IgnoreSettings = IgnoreSettings()) throws {
         guard LocalFS.isFolder(root) else { throw SyncError.folderMissing(root) }
+        ignore = IgnoreRules(settings)
         var stack = [""]
         while let folder = stack.popLast() {
             let absolute = folder.isEmpty ? root : "\(root)/\(folder)"
@@ -138,10 +143,16 @@ struct FolderScan {
                 unreadable.insert(folder)
                 continue
             }
+            // Before anything in the folder is looked at: its own ignore files apply to it.
+            ignore.read(folder: folder, in: root, names: Set(names))
             for name in names where !SyncIgnore.isIgnored(name, atTop: folder.isEmpty) {
                 let path = folder.isEmpty ? name : "\(folder)/\(name)"
                 guard (try? DrivePath.validate(name: name)) != nil, let (kind, stat) = LocalFS.status("\(root)/\(path)")
                 else { continue }
+                if kind != .other, ignore.matches(path, isFolder: kind == .folder) {
+                    ignored.append((path, kind == .folder))
+                    continue
+                }
                 switch kind {
                 case .folder:
                     items[path] = Item(isFolder: true, stat: stat)
