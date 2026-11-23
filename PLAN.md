@@ -102,7 +102,7 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
 - [x] **Ignore files** (#71, see *Folder sync* below): `.atdriveignore` files, `.gitignore` files
   and `ignore.patterns` in config.toml, exactly as git reads them, in `atdrive sync`, `atdrive put
   -r` (`--include-ignored`) and the Mac app (new items stay on that Mac). The clutter list is
-  `ignore.patterns`' default, not built in. `atdrive dev delete-ignored` cleans up both sides.
+  `ignore.patterns`' default, not built in. `atdrive dev list-ignored` / `delete-ignored` show and clean up both sides.
   - **Tested** with unit tests: the matcher against git's `t3070-wildmatch` cases, the combining
     rules, and sync scenarios. macOS CI builds the app.
   - **Not yet exercised:** the Mac part on a real Mac (`excludedFromSync` in `createItem`).

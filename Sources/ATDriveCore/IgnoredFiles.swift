@@ -1,6 +1,6 @@
 import Foundation
 
-/// What's ignored, to delete it (`atdrive dev delete-ignored`): the outermost ignored things
+/// What's ignored (`atdrive dev list-ignored`, `delete-ignored`): the outermost ignored things
 /// only (an ignored folder, not also everything in it), sorted by path.
 public enum IgnoredFiles {
     /// In a local folder, as `atdrive sync` sees it: by the ignore files in it and the settings.

@@ -98,7 +98,12 @@ struct Put: AsyncParsableCommand {
             - what .atdriveignore files ignore (always);
             - what .gitignore files ignore (unless ignore.respect_gitignore = false in config.toml);
             - ignore.patterns in config.toml, as if in a .atdriveignore at the top. By default, what file browsers and editors leave around (.DS_Store, swap and lock files); `atdrive config` lists them.
-            In one folder, .atdriveignore wins over .gitignore, so `!.env` in it brings back a .env that git ignores. What you name on the command line is always uploaded, and --include-ignored uploads everything inside the folders too.
+            In one folder, .atdriveignore wins over .gitignore, so `!.env` in it brings back a .env that git ignores.
+
+            --include-ignored turns all of that off for this upload:
+              atdrive put -r myapp /code                    → leaves out myapp/build/, myapp/.env, … (what's ignored)
+              atdrive put -r --include-ignored myapp /code  → uploads everything in myapp
+            Something you name on the command line is uploaded even if it's ignored (`atdrive put .env`).
 
             Never uploaded: a synced folder's own .atdrive folder (at the top of what you upload), and half-finished downloads (*.atdrive-partial).
             """
@@ -110,7 +115,7 @@ struct Put: AsyncParsableCommand {
     @Flag(name: .shortAndLong, help: "Upload folders and everything in them.")
     var recursive = false
 
-    @Flag(help: "Upload what's ignored, too (by .atdriveignore and .gitignore files, and ignore.patterns).")
+    @Flag(help: "Leave nothing out: upload what's ignored too (see above).")
     var includeIgnored = false
 
     func validate() throws {

@@ -6,100 +6,49 @@ import Foundation
 struct Dev: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "For developing and testing ATDrive.",
-        subcommands: [Reset.self, DeleteIgnored.self, DiskUsage.self, Lexicons.self])
+        subcommands: [Reset.self, ListIgnored.self, DeleteIgnored.self, DiskUsage.self, Lexicons.self])
+}
+
+struct ListIgnored: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "list-ignored",
+        abstract: "List what's ignored, in your synced folder and in the drive.",
+        discussion: IgnoredThings.explanation)
+
+    @Option(help: "The synced folder (default: ~/atdrive).")
+    var folder: String?
+
+    func run() async throws {
+        let found = try await IgnoredThings.find(folder: folder)
+        found.list(deleting: false)
+    }
 }
 
 struct DeleteIgnored: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "delete-ignored",
         abstract: "Delete what's ignored, in your synced folder and in the drive.",
-        discussion: """
-            What's ignored: what .atdriveignore and .gitignore files ignore (the latter unless ignore.respect_gitignore = false), and ignore.patterns in config.toml. It lists everything first, and asks.
-            - In the synced folder (~/atdrive, or --folder), by the ignore files there, as `atdrive sync` sees them. These are deleted for good: they were never in the drive, so there's no other copy and no trash.
-            - In the drive, by the ignore files in it: what got in before it was ignored, or from somewhere that doesn't ignore it. These go to the trash (`atdrive restore` brings one back). Your own files only: not shares, or the Spaces folder.
-            An ignored folder goes with everything in it. A synced folder's own .atdrive folder is never touched.
+        discussion: IgnoredThings.explanation + "\n\n" + """
+            It lists it all first (as `atdrive dev list-ignored` does), and asks. What's in the synced folder is deleted for good: it was never in the drive, so there's no other copy. What's in the drive goes to the trash (`atdrive restore` brings it back).
             """)
 
-    @Option(help: "The local folder (default: ~/atdrive).")
+    @Option(help: "The synced folder (default: ~/atdrive).")
     var folder: String?
-
-    @Flag(help: "Only in the local folder.")
-    var localOnly = false
-
-    @Flag(help: "Only in the drive.")
-    var driveOnly = false
-
-    @Flag(help: "List what would be deleted, and delete nothing.")
-    var dryRun = false
 
     @Flag(name: .shortAndLong, help: "Don't ask: delete straight away.")
     var yes = false
 
-    func validate() throws {
-        if localOnly, driveOnly { throw ValidationError("--local-only and --drive-only: pick one") }
-    }
-
     func run() async throws {
-        let settings = try ConfigFile.standard().load().ignore
-
-        // Here.
-        var root: String?
-        var local: [(path: String, isFolder: Bool)] = []
-        if !driveOnly {
-            let path = NSString(string: folder ?? "~/atdrive").expandingTildeInPath
-            var isFolder: ObjCBool = false
-            if FileManager.default.fileExists(atPath: path, isDirectory: &isFolder), isFolder.boolValue {
-                root = path
-                local = try IgnoredFiles.local(in: path, settings: settings)
-            } else if folder != nil {
-                throw ATDriveError.notAFolder(path)
-            } else {
-                Output.warn("no folder at \(path): skipping it (--folder names another)")
-            }
-        }
-
-        // In the drive.
-        var context: Context?
-        var tree: DriveTree?
-        var remote: [Node] = []
-        if !localOnly {
-            let loaded = try await Context.load()
-            let drive = loaded.joined
-            let snapshot = try await drive.update(nil)
-            remote = try await IgnoredFiles.inDrive(snapshot.tree, settings: settings) { node in
-                var data = Data()
-                try await drive.read(node) { data += $0 }
-                return String(decoding: data, as: UTF8.self)
-            }
-            context = loaded
-            tree = snapshot.tree
-        }
-
-        if local.isEmpty, remote.isEmpty {
-            print("Nothing is ignored\(localOnly ? " here" : driveOnly ? " in the drive" : "").")
-            return
-        }
-        if let root, !local.isEmpty {
-            print("In \(root), deleted for good:")
-            for item in local { print("  \(item.path)\(item.isFolder ? "/" : "")") }
-        }
-        if let tree, !remote.isEmpty {
-            print("In the drive, to the trash:")
-            for node in remote { print("  \(tree.path(of: node))\(node.isFolder ? "/" : "")") }
-        }
-        if dryRun {
-            print("Nothing deleted (--dry-run).")
-            return
-        }
+        let found = try await IgnoredThings.find(folder: folder)
+        guard found.list(deleting: true) else { return }
         if !yes {
-            guard try Output.confirm("Delete \(local.count + remote.count) things?") else {
+            guard try Output.confirm("Delete \(found.count) things?") else {
                 print("Nothing deleted.")
                 return
             }
         }
-
-        if let root {
-            for item in local {
+        if let root = found.root {
+            for item in found.local {
                 do {
                     try FileManager.default.removeItem(atPath: "\(root)/\(item.path)")
                     print("✗ \(item.path)\(item.isFolder ? "/" : "")")
@@ -108,15 +57,77 @@ struct DeleteIgnored: AsyncParsableCommand {
                 }
             }
         }
-        if let context, let tree {
-            for node in remote {
-                let nodes = node.isFolder ? tree.descendants(of: node.id) + [node] : [node]
-                try await context.joined.delete(nodes)
-                print(
-                    "✗ \(tree.path(of: node))\(node.isFolder ? "/" : "")\(nodes.count > 1 ? "  (\(nodes.count) items)" : "")"
-                )
-            }
+        for node in found.remote {
+            let nodes = node.isFolder ? found.tree.descendants(of: node.id) + [node] : [node]
+            try await found.drive.delete(nodes)
+            print(
+                "✗ \(found.tree.path(of: node))\(node.isFolder ? "/" : "")\(nodes.count > 1 ? "  (\(nodes.count) items)" : "")"
+            )
         }
+    }
+}
+
+/// What's ignored, in the synced folder and in the drive: what `dev list-ignored` lists and
+/// `dev delete-ignored` deletes. The outermost things only: an ignored folder goes with
+/// everything in it.
+struct IgnoredThings {
+    static let explanation = """
+        What's ignored: what .atdriveignore files ignore, what .gitignore files ignore (unless ignore.respect_gitignore = false), and ignore.patterns in config.toml.
+        - In the synced folder, by the ignore files there, as `atdrive sync` sees them.
+        - In the drive, by the ignore files in it: things that got in before they were ignored, or from somewhere that doesn't ignore them. Your own files only: not shares, or the Spaces folder.
+        A synced folder's own .atdrive folder never counts.
+        """
+
+    /// The synced folder, if there is one.
+    var root: String?
+    var local: [(path: String, isFolder: Bool)] = []
+    let drive: JoinedDrive
+    let tree: DriveTree
+    var remote: [Node] = []
+
+    var count: Int { local.count + remote.count }
+
+    static func find(folder: String?) async throws -> IgnoredThings {
+        let settings = try ConfigFile.standard().load().ignore
+        let drive = try await Context.load().joined
+        let tree = try await drive.update(nil).tree
+        var found = IgnoredThings(drive: drive, tree: tree)
+
+        let path = NSString(string: folder ?? "~/atdrive").expandingTildeInPath
+        var isFolder: ObjCBool = false
+        if FileManager.default.fileExists(atPath: path, isDirectory: &isFolder), isFolder.boolValue {
+            found.root = path
+            found.local = try IgnoredFiles.local(in: path, settings: settings)
+        } else if folder != nil {
+            throw ATDriveError.notAFolder(path)
+        } else {
+            Output.warn("no synced folder at \(path), so only the drive (--folder names another)")
+        }
+
+        found.remote = try await IgnoredFiles.inDrive(tree, settings: settings) { node in
+            var data = Data()
+            try await drive.read(node) { data += $0 }
+            return String(decoding: data, as: UTF8.self)
+        }
+        return found
+    }
+
+    /// Prints it all; whether there's anything.
+    @discardableResult
+    func list(deleting: Bool) -> Bool {
+        if local.isEmpty, remote.isEmpty {
+            print("Nothing is ignored.")
+            return false
+        }
+        if let root, !local.isEmpty {
+            print("In \(root)\(deleting ? ", deleted for good" : ""):")
+            for item in local { print("  \(item.path)\(item.isFolder ? "/" : "")") }
+        }
+        if !remote.isEmpty {
+            print("In the drive\(deleting ? ", to the trash" : ""):")
+            for node in remote { print("  \(tree.path(of: node))\(node.isFolder ? "/" : "")") }
+        }
+        return true
     }
 }
 

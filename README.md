@@ -400,13 +400,10 @@ build/
 - **A folder deleted elsewhere** that still has ignored files in it here is kept here, with just
   those files, rather than deleted with them. Only `.DS_Store` and `Thumbs.db` go with it. An
   editor's swap file may hold unsaved work.
-- **Cleaning up:** `atdrive dev delete-ignored` lists everything that's ignored and deletes it
-  once you say yes:
-  - in your synced folder, for good, since there's no other copy;
-  - in the drive, to the trash (what got in before it was ignored, or from a device that doesn't
-    ignore it).
-
-  Use `--dry-run` to only list, and `--local-only` or `--drive-only` for one side.
+- **Cleaning up:** `atdrive dev list-ignored` lists everything that's ignored, in your synced
+  folder and in the drive (what got in before it was ignored, or from a device that doesn't
+  ignore it). `atdrive dev delete-ignored` lists the same and, once you say yes, deletes it: what's
+  in your synced folder for good (there's no other copy), and what's in the drive to the trash.
 
 ## History and trash
 
