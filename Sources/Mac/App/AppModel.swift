@@ -135,6 +135,8 @@ final class AppModel {
     /// Passes Spaces' settings on to the extension (which can't read config.toml) and to this
     /// app's drive, and has Finder show the change.
     private func shareSpacesSettings() {
+        // The ignore settings too: the extension reads them when something new is added.
+        if config.ignore != IgnoreShare.settings { IgnoreShare.settings = config.ignore }
         let settings = config.spaces
         guard settings != SpacesShare.settings || config.spacesSpotlight != SpacesShare.spotlight else { return }
         SpacesShare.settings = settings

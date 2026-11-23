@@ -13,6 +13,8 @@ struct Sync: AsyncParsableCommand {
               atdrive sync --install        keep ~/atdrive in sync in the
                                             background (Linux, systemd)
 
+            What's ignored is left alone: neither uploaded nor downloaded, and never deleted on either side. A .atdriveignore in any folder works exactly like a .gitignore, and .gitignore files count too (unless ignore.respect_gitignore = false in config.toml). ignore.patterns in config.toml is like a .atdriveignore at the top of the folder; by default it lists what file browsers and editors leave around (`atdrive config` shows it). `atdrive dev list-ignored` lists what's ignored, and `atdrive dev delete-ignored` deletes it.
+
             A folder that already has files in it is merged with the drive: matching files and folders are paired up, and nothing is deleted. A file edited in both places keeps the drive's version under its name, and yours is saved next to it as "name (conflicted copy <date>)".
             """
     )
@@ -71,7 +73,9 @@ struct Sync: AsyncParsableCommand {
         var context = waits ? try await Self.waitForSignIn() : try await Context.load()
         let sync: FolderSync
         do {
-            sync = try FolderSync(folder: url, drive: context.joined) { SyncLog.write($0.description) }
+            sync = try FolderSync(folder: url, drive: context.joined, ignore: settings.ignore) {
+                SyncLog.write($0.description)
+            }
         } catch let error as SyncError {
             throw Self.fatal(error)
         }
@@ -102,6 +106,10 @@ struct Sync: AsyncParsableCommand {
                     let spaces = settings.spaces
                     reloadConfig()
                     if checkEvery != previous { SyncLog.write("Checking the drive every \(checkEvery)s now.") }
+                    if settings.ignore != sync.ignore {
+                        sync.ignore = settings.ignore
+                        SyncLog.write("The ignore settings changed; they apply from the next pass.")
+                    }
                     if settings.spaces != spaces {
                         context.joined.showSpaces(settings.spaces)
                         SyncLog.write(settings.spaces == nil ? "Spaces is off now." : "Spaces changed; updating it.")
@@ -297,15 +305,21 @@ enum Service {
         return config.appendingPathComponent("systemd/user/\(name)")
     }
 
-    /// `%` starts a specifier anywhere in a unit file.
-    private static func escape(_ text: String) -> String { text.replacingOccurrences(of: "%", with: "%%") }
-
-    /// Quotes a word for a unit file; in commands, `$` also expands variables.
+    private static func escape(_ text: String) -> String { SystemdUnit.escape(text) }
     private static func quote(_ word: String, forCommand: Bool) -> String {
-        var escaped = escape(
-            word.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))
-        if forCommand { escaped = escaped.replacingOccurrences(of: "$", with: "$$") }
-        return "\"\(escaped)\""
+        SystemdUnit.quote(word, forCommand: forCommand)
+    }
+
+    /// The folder the installed service syncs (from its unit file), if it's installed.
+    static var installedFolder: String? {
+        #if os(Linux)
+            guard let unit = try? String(contentsOf: unitFile, encoding: .utf8),
+                let words = SystemdUnit.command(in: unit), words.count >= 3, words[1] == "sync"
+            else { return nil }
+            return words[2]
+        #else
+            return nil
+        #endif
     }
 
     static func systemctl(_ arguments: String...) -> Bool {

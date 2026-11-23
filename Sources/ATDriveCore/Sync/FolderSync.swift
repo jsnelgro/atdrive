@@ -30,6 +30,10 @@ public final class FolderSync {
     public private(set) var drive: JoinedDrive
     /// Files changed more recently than this are left for the next pass (still being written).
     public let settle: TimeInterval
+    /// What's left alone besides the built-in names: `.atdriveignore` files, and `.gitignore`
+    /// files and config.toml's patterns as these say (`IgnoreRules`). Ignored things are neither
+    /// uploaded nor downloaded, and never deleted on either side. Takes effect at the next pass.
+    public var ignore: IgnoreSettings
     /// How often history is pruned.
     public static let pruneInterval: TimeInterval = 24 * 60 * 60
 
@@ -65,7 +69,7 @@ public final class FolderSync {
     /// Opens a folder for syncing with the drive, creating it if needed. Throws if it's synced
     /// with another account's drive or another `atdrive sync` is already syncing it.
     public init(
-        folder url: URL, drive: JoinedDrive, settle: TimeInterval = 2,
+        folder url: URL, drive: JoinedDrive, settle: TimeInterval = 2, ignore: IgnoreSettings = IgnoreSettings(),
         log: @escaping @Sendable (SyncEvent) -> Void = { _ in }
     ) throws {
         let path = url.standardizedFileURL.path
@@ -76,6 +80,7 @@ public final class FolderSync {
         guard LocalFS.isFolder(root) else { throw SyncError.notAFolder(path) }
         self.drive = drive
         self.settle = settle
+        self.ignore = ignore
         self.log = log
         folder = StateFolder(root: root)
         if !LocalFS.makeFolder(folder.path) { throw SyncError.notAFolder(folder.path) }
@@ -105,9 +110,11 @@ public final class FolderSync {
 
     /// A folder synced with a drive that mounts nothing of other people's (their shares are held).
     public convenience init(
-        folder url: URL, drive: Drive, settle: TimeInterval = 2, log: @escaping @Sendable (SyncEvent) -> Void = { _ in }
+        folder url: URL, drive: Drive, settle: TimeInterval = 2, ignore: IgnoreSettings = IgnoreSettings(),
+        log: @escaping @Sendable (SyncEvent) -> Void = { _ in }
     ) throws {
-        try self.init(folder: url, drive: JoinedDrive(home: drive, access: nil), settle: settle, log: log)
+        try self.init(
+            folder: url, drive: JoinedDrive(home: drive, access: nil), settle: settle, ignore: ignore, log: log)
     }
 
     deinit { close(lockDescriptor) }
@@ -131,8 +138,10 @@ public final class FolderSync {
         recoverStaging()
         try? FileManager.default.removeItem(atPath: folder.downloads)
 
-        let base = SyncBase(state.items)
-        let local = LocalView(scan: try FolderScan(root: root), base: base, root: root, settle: settle)
+        // The ignore rules come from the folder as it is now, and go for all three views alike.
+        let scan = try FolderScan(root: root, ignore: ignore)
+        let base = SyncBase(state.items, ignore: scan.ignore)
+        let local = LocalView(scan: scan, base: base, root: root, settle: settle)
         for path in local.skipped { report(SyncEvent(.skipped, "/" + path, "not a regular file or folder")) }
         var checked = false
         if checkRemote || remote == nil || remoteIsStale || local.differs(from: base) {
@@ -168,7 +177,7 @@ public final class FolderSync {
             throw DriveAccessError.noDrive
         }
         let snapshot = remote!
-        let view = RemoteView(snapshot.tree, base: base, held: snapshot.held)
+        let view = RemoteView(snapshot.tree, base: base, held: snapshot.held, ignore: scan.ignore)
         reportUnknown(view, base: base)
         reportMounts(snapshot)
         // Other people's shares: the drive's version wins, and what was edited or added here is
@@ -542,7 +551,17 @@ final class SyncRun {
                 local.entries[localID]!.isFolder
                 ? LocalFS.removeFolder(path)
                 : LocalFS.status(path)?.stat == stats[localID] && LocalFS.removeFile(path)
-            guard removed else { continue }
+            guard removed else {
+                // Usually ignored files (never deleted): the folder stays here, and stays deleted
+                // on the drive unless something that isn't ignored is put in it.
+                if local.entries[localID]!.isFolder, LocalFS.isFolder(path) {
+                    log(
+                        SyncEvent(
+                            .skipped, "/" + local.paths[localID]!,
+                            "deleted on the drive, but kept here: there are ignored files in it"))
+                }
+                continue
+            }
             deletedHere.insert(localID)
             if let parent = local.entries[localID]!.parent, doomedSet.contains(parent) { continue }
             log(SyncEvent(.deletedHere, "/" + local.paths[localID]!))
@@ -837,5 +856,14 @@ extension String {
     var parentPathAbsolute: String {
         let parent = parentPath
         return parent.isEmpty ? "/" : parent
+    }
+}
+
+extension FolderSync {
+    /// Whether `path` is a folder `atdrive sync` keeps in sync with `drive`: its `.atdrive` state
+    /// says so.
+    public static func isSynced(_ path: String, with drive: Drive) -> Bool {
+        guard let state = try? StateFolder(root: path).load() else { return false }
+        return state.owner == drive.owner && state.space == drive.space
     }
 }

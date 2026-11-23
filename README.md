@@ -234,9 +234,10 @@ within 30 seconds.
   files and folders are paired up, and nothing is deleted.
 - **Conflicts** are settled the same way as on the Mac (see [Conflicts](#conflicts)): no edit is
   lost.
-- **What isn't synced:** symlinks and other special files, and clutter: `.DS_Store`,
-  `Thumbs.db`, and the swap and lock files editors leave around (Vim, Emacs, LibreOffice, Office).
-  Files are synced once they've stopped changing for a couple of seconds.
+- **What isn't synced:** what's ignored (see [Ignoring files](#ignoring-files)): by default, the
+  clutter file browsers and editors leave around (`.DS_Store`, `Thumbs.db`, Vim, Emacs,
+  LibreOffice and Office swap and lock files). Nor are symlinks and other special files. Files are
+  synced once they've stopped changing for a couple of seconds.
 - **Safety:** the sync keeps its own state in `~/atdrive/.atdrive`. If the folder disappears (say,
   a disk that's no longer mounted), syncing stops rather than deleting things from the drive.
   Deleting `.atdrive` starts over with a merge.
@@ -322,8 +323,10 @@ Signing in is always through the browser: atproto spaces don't accept app passwo
 This computer's settings are in `~/.config/atdrive/config.toml`. The CLI and the Mac app read
 the same file, and the Mac app's **Settings…** window writes to it, changing only the value you
 changed, so your comments and layout stay. Nothing secret is kept there, so it's safe to keep
-with your dotfiles. `atdrive config` lists every setting and says where the file and your secrets
-are.
+with your dotfiles. The file only needs what you change: anything it leaves out is at its default,
+so new settings (and better defaults) reach you without editing it. `atdrive config` shows every
+setting as TOML, what you've set as it is and the defaults commented out, ready to copy into the
+file, and says where the file and your secrets are.
 
 ```toml
 [sync]
@@ -331,6 +334,13 @@ interval = 60  # seconds between checks for changes made elsewhere (default 30, 
 
 [spaces]
 enabled = true     # a read-only folder of what's in every space you're in (default false; see Spaces)
+
+[ignore]
+respect_gitignore = true   # leave out what .gitignore files ignore too (default true; see Ignoring files)
+patterns = [               # ignored everywhere on this computer (this replaces the default list)
+  ".DS_Store",
+  "node_modules/",
+]
 ```
 
 - **Changes take effect without a restart:** `atdrive sync` and the Mac app read the file again
@@ -355,6 +365,57 @@ enabled = true     # a read-only folder of what's in every space you're in (defa
 - **The Mac app always uses `~/.config/atdrive`:** it can't see `XDG_CONFIG_HOME` or
   `ATDRIVE_CONFIG_DIR` from your shell. If you set either, the CLI and the app read different
   files.
+
+## Ignoring files
+
+Keep things out of the drive the way you keep them out of git: put a `.atdriveignore` file in
+any folder. It works exactly like a `.gitignore` (same syntax, same rules), for that folder and
+everything in it. ATDrive follows `.gitignore` files too, so a project's build output and
+`node_modules` stay out without any setup.
+
+```gitignore
+# ~/atdrive/code/myapp/.atdriveignore
+build/
+*.log
+!.env          # synced, though .gitignore ignores it
+```
+
+- **What ignored means:** left alone, both ways. It isn't uploaded, isn't downloaded, and is
+  never deleted on either side. Something already in the drive that you ignore later stays there
+  (`atdrive rm` removes it) and stays here. Stop ignoring it and the two copies are paired up
+  again, like a first sync: nothing is lost.
+- **Which file wins:** as in git, the last matching line wins, and a deeper folder's file beats a
+  shallower one's. In one folder, `.atdriveignore` beats `.gitignore`, so it can bring back
+  something git ignores (`!.env`). Nothing inside an ignored folder can be brought back.
+- **Ignore files sync too,** so every device follows them (unless an ignore file ignores itself,
+  as git allows).
+- **`config.toml`:** `ignore.patterns` is like a `.atdriveignore` at the top of the drive that only
+  this computer has; any ignore file in the drive can override it. Its default is the clutter
+  file browsers and editors leave around (`atdrive config` lists it): setting it replaces that
+  list, so keep the ones you want. `ignore.respect_gitignore = false` stops following `.gitignore`
+  files (`.atdriveignore` files always count). See [Settings](#settings).
+- **Where:** `atdrive sync`; `atdrive put -r`, inside the folders it uploads (what you name on the
+  command line is always uploaded; `--include-ignored` uploads everything); and the Mac app, where
+  something new that's ignored stays on that Mac only (Finder shows it as not syncing). On the Mac
+  the rules come from the ignore files in the drive, and only new things are affected.
+  `atdrive get` downloads whatever you ask for, ignored or not.
+- **Never synced or uploaded, whatever the settings:** what ATDrive uses itself. That's a synced
+  folder's `.atdrive` folder (the sync's state; see below) and half-finished downloads
+  (`*.atdrive-partial`).
+- **A folder deleted elsewhere** that still has ignored files in it here is kept here, with just
+  those files, rather than deleted with them. Only `.DS_Store` and `Thumbs.db` go with it. An
+  editor's swap file may hold unsaved work.
+- **Cleaning up:** `atdrive dev list-ignored` lists everything that's ignored, in your synced
+  folder and in the drive (what got in before it was ignored, or from a device that doesn't
+  ignore it). `atdrive dev delete-ignored` lists the same and, once you say yes, deletes it.
+  - What's in the drive goes to the drive's trash.
+  - What's in your synced folder was never in the drive, so it goes to this computer's trash: the
+    Trash on a Mac, the desktop's trash on Linux (`~/.local/share/Trash`, which file managers and
+    `gio trash` show).
+
+  The synced folder is the one `atdrive sync --install` set up, or else `~/atdrive`; `--folder`
+  names another. It has to be a folder `atdrive sync` keeps in sync with your drive, so another
+  folder can't be cleaned out by mistake.
 
 ## History and trash
 
