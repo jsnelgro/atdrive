@@ -32,7 +32,7 @@ import Testing
         #expect(
             loaded.entries.map(\.key) == [
                 "sync.interval", "spaces.enabled", "spaces.folder", "spaces.include", "spaces.exclude",
-                "spaces.spotlight", "ignore.gitignore", "ignore.patterns",
+                "spaces.spotlight", "ignore.respect_gitignore", "ignore.patterns",
             ])
         #expect(loaded.entries.allSatisfy { !$0.isSet })
     }
@@ -51,11 +51,13 @@ import Testing
     }
 
     @Test func ignoreSettings() throws {
-        #expect(LocalConfig().ignore == IgnoreSettings(gitignore: true, patterns: []))
+        #expect(LocalConfig().ignore == IgnoreSettings())
+        #expect(LocalConfig().ignore.respectGitignore)
+        #expect(LocalConfig().ignorePatterns == IgnoreSettings.defaultPatterns)
         let config = try configFile(
             """
             [ignore]
-            gitignore = false
+            respect_gitignore = false
             patterns = [
               "node_modules/",
               '*.tmp',  # literal strings work too
@@ -64,12 +66,16 @@ import Testing
             """
         ).load()
         #expect(
-            config.ignore == IgnoreSettings(gitignore: false, patterns: ["node_modules/", "*.tmp", "\\#not-a-comment"]))
-        #expect(throws: ConfigError.self) { try configFile("[ignore]\ngitignore = \"no\"\n").load() }
+            config.ignore
+                == IgnoreSettings(respectGitignore: false, patterns: ["node_modules/", "*.tmp", "\\#not-a-comment"]))
+        #expect(throws: ConfigError.self) { try configFile("[ignore]\nrespect_gitignore = \"no\"\n").load() }
         #expect(throws: ConfigError.self) { try configFile("[ignore]\npatterns = \"*.tmp\"\n").load() }
         let file = ConfigFile(url: directory.appendingPathComponent("fresh/config.toml"))
         try file.update { $0.ignorePatterns = ["*.log"] }
         #expect(try file.load().ignorePatterns == ["*.log"])
+        // The defaults survive being written out (backslashes and all).
+        try file.update { $0.ignorePatterns = IgnoreSettings.defaultPatterns + ["*.log"] }
+        #expect(try file.load().ignorePatterns == IgnoreSettings.defaultPatterns + ["*.log"])
     }
 
     @Test func dottedKeysWorkToo() throws {

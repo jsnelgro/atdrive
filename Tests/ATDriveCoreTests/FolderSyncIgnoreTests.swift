@@ -32,7 +32,7 @@ extension FolderSyncTests {
         let sync = try open()
         try await sync.sync()
         #expect(try await driveFiles() == [".gitignore", "notes.txt"])
-        sync.ignore = IgnoreSettings(gitignore: false)
+        sync.ignore = IgnoreSettings(respectGitignore: false)
         try await sync.sync()
         #expect(try await driveFiles() == [".env", ".gitignore", "notes.txt"])
     }
@@ -40,7 +40,7 @@ extension FolderSyncTests {
     @Test func atdriveignoreAlwaysCounts() async throws {
         try write(".atdriveignore", "*.tmp\n")
         try write("a.tmp", "t")
-        let sync = try open(ignore: IgnoreSettings(gitignore: false))
+        let sync = try open(ignore: IgnoreSettings(respectGitignore: false))
         try await sync.sync()
         #expect(try await driveFiles() == [".atdriveignore"])
     }
@@ -148,5 +148,45 @@ extension FolderSyncTests {
         try write("big.cache", "c")
         try await sync.sync()
         #expect(try await driveFiles() == [".atdriveignore"])
+    }
+
+    // MARK: Finding what's ignored (atdrive dev delete-ignored)
+
+    @Test func findsWhatsIgnoredHere() throws {
+        try write(".atdriveignore", "*.log\nbuild/\n")
+        try write(".gitignore", ".env\n")
+        try write("a.txt", "a")
+        try write("x.log", "l")
+        try write(".env", "SECRET=1")
+        try write("build/out/bin", "b")
+        try write("src/y.log", "l")
+        try write("src/.DS_Store", "finder")
+        try write("photo.jpg.atdrive-partial", "half")
+        let found = try IgnoredFiles.local(in: folder.path, settings: IgnoreSettings())
+        // Outermost only; the sync's own things never.
+        #expect(found.map(\.path) == [".env", "build", "src/.DS_Store", "src/y.log", "x.log"])
+        #expect(found.map(\.isFolder) == [false, true, false, false, false])
+        let withoutGit = try IgnoredFiles.local(in: folder.path, settings: IgnoreSettings(respectGitignore: false))
+        #expect(!withoutGit.map(\.path).contains(".env"))
+    }
+
+    @Test func findsWhatsIgnoredInTheDrive() async throws {
+        try await put("/.atdriveignore", "*.log\nbuild/\n")
+        try await put("/docs/.gitignore", "*.tmp\n")
+        try await put("/build/out/bin", "b")
+        try await put("/docs/run.log", "l")
+        try await put("/docs/scratch.tmp", "t")
+        try await put("/docs/keep.txt", "k")
+        try await put("/notes.txt", "n")
+        let tree = try await other.tree()
+        func find(_ settings: IgnoreSettings) async throws -> [String] {
+            try await IgnoredFiles.inDrive(tree, settings: settings) { node in
+                var data = Data()
+                try await other.read(node) { data += $0 }
+                return String(decoding: data, as: UTF8.self)
+            }.map { tree.path(of: $0).description }
+        }
+        #expect(try await find(IgnoreSettings()) == ["/build", "/docs/run.log", "/docs/scratch.tmp"])
+        #expect(try await find(IgnoreSettings(respectGitignore: false)) == ["/build", "/docs/run.log"])
     }
 }

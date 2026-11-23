@@ -231,10 +231,10 @@ within 30 seconds.
   files and folders are paired up, and nothing is deleted.
 - **Conflicts** are settled the same way as on the Mac (see [Conflicts](#conflicts)): no edit is
   lost.
-- **What isn't synced:** what your ignore files ignore (see [Ignoring files](#ignoring-files)),
-  symlinks and other special files, and clutter: `.DS_Store`, `Thumbs.db`, and the swap and lock
-  files editors leave around (Vim, Emacs, LibreOffice, Office). Files are synced once they've
-  stopped changing for a couple of seconds.
+- **What isn't synced:** what's ignored (see [Ignoring files](#ignoring-files)): by default, the
+  clutter file browsers and editors leave around (`.DS_Store`, `Thumbs.db`, Vim, Emacs,
+  LibreOffice and Office swap and lock files). Nor are symlinks and other special files. Files are
+  synced once they've stopped changing for a couple of seconds.
 - **Safety:** the sync keeps its own state in `~/atdrive/.atdrive`. If the folder disappears (say,
   a disk that's no longer mounted), syncing stops rather than deleting things from the drive.
   Deleting `.atdrive` starts over with a merge.
@@ -331,10 +331,10 @@ interval = 60  # seconds between checks for changes made elsewhere (default 30, 
 enabled = true     # a read-only folder of what's in every space you're in (default false; see Spaces)
 
 [ignore]
-gitignore = true   # leave alone what .gitignore files ignore (default true; see Ignoring files)
-patterns = [       # ignored everywhere on this computer
+respect_gitignore = true   # leave out what .gitignore files ignore too (default true; see Ignoring files)
+patterns = [               # ignored everywhere on this computer (this replaces the default list)
+  ".DS_Store",
   "node_modules/",
-  "*.tmp",
 ]
 ```
 
@@ -385,16 +385,28 @@ build/
 - **Ignore files sync too,** so every device follows them (unless an ignore file ignores itself,
   as git allows).
 - **`config.toml`:** `ignore.patterns` is like a `.atdriveignore` at the top of the drive that only
-  this computer has; any ignore file in the drive can override it. `ignore.gitignore = false`
-  stops following `.gitignore` files (`.atdriveignore` files always count). See
-  [Settings](#settings).
+  this computer has; any ignore file in the drive can override it. Its default is the clutter
+  file browsers and editors leave around (`atdrive config` lists it): setting it replaces that
+  list, so keep the ones you want. `ignore.respect_gitignore = false` stops following `.gitignore`
+  files (`.atdriveignore` files always count). See [Settings](#settings).
 - **Where:** `atdrive sync`; `atdrive put -r`, inside the folders it uploads (what you name on the
-  command line is always uploaded; `--no-ignore` uploads everything); and the Mac app, where
+  command line is always uploaded; `--include-ignored` uploads everything); and the Mac app, where
   something new that's ignored stays on that Mac only (Finder shows it as not syncing). On the Mac
   the rules come from the ignore files in the drive, and only new things are affected.
-  `atdrive get` downloads what you ask for.
+  `atdrive get` downloads whatever you ask for, ignored or not.
+- **Never synced or uploaded, whatever the settings:** what ATDrive uses itself. That's a synced
+  folder's `.atdrive` folder (the sync's state; see below) and half-finished downloads
+  (`*.atdrive-partial`).
 - **A folder deleted elsewhere** that still has ignored files in it here is kept here, with just
-  those files, rather than deleted with them.
+  those files, rather than deleted with them. Only `.DS_Store` and `Thumbs.db` go with it. An
+  editor's swap file may hold unsaved work.
+- **Cleaning up:** `atdrive dev delete-ignored` lists everything that's ignored and deletes it
+  once you say yes:
+  - in your synced folder, for good, since there's no other copy;
+  - in the drive, to the trash (what got in before it was ignored, or from a device that doesn't
+    ignore it).
+
+  Use `--dry-run` to only list, and `--local-only` or `--drive-only` for one side.
 
 ## History and trash
 

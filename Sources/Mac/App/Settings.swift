@@ -173,7 +173,8 @@ struct SettingsView: View {
                 }
                 Toggle(
                     isOn: Binding(
-                        get: { app.config.ignoreGitignore }, set: { on in app.updateConfig { $0.ignoreGitignore = on } }
+                        get: { app.config.ignoreRespectGitignore },
+                        set: { on in app.updateConfig { $0.ignoreRespectGitignore = on } }
                     )
                 ) {
                     Text("Respect .gitignore files")

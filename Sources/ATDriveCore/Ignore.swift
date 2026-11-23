@@ -1,22 +1,34 @@
 import Foundation
 
-/// What decides which files ATDrive leaves alone, besides the built-in ones (`SyncIgnore`):
-/// `.atdriveignore` files (always), `.gitignore` files (unless `gitignore` is off), and
-/// `patterns`, from config.toml (`ignore.*`).
+/// What decides which files ATDrive leaves alone: `.atdriveignore` files (always), `.gitignore`
+/// files (if `respectGitignore`), and `patterns`, from config.toml (`ignore.*`). Besides these,
+/// only what the sync and downloads use themselves is skipped (`SyncIgnore`).
 public struct IgnoreSettings: Sendable, Equatable, Codable {
     /// Whether `.gitignore` files count too.
-    public var gitignore = true
+    public var respectGitignore = true
     /// Lines of a `.atdriveignore` at the top of everything this computer syncs or uploads, below
     /// every ignore file in precedence (like git's `core.excludesFile`).
-    public var patterns: [String] = []
+    public var patterns: [String] = Self.defaultPatterns
 
-    public init(gitignore: Bool = true, patterns: [String] = []) {
-        self.gitignore = gitignore
+    public init(respectGitignore: Bool = true, patterns: [String] = Self.defaultPatterns) {
+        self.respectGitignore = respectGitignore
         self.patterns = patterns
     }
 
-    /// Nothing ignored but the built-in names: what `--no-ignore` asks for.
-    public static let none = IgnoreSettings(gitignore: false, patterns: [])
+    /// `patterns` unless config.toml says otherwise: what file browsers and editors leave around.
+    /// Setting `ignore.patterns` replaces the list, and a `!` line in an ignore file brings one back.
+    public static let defaultPatterns = [
+        ".DS_Store",  // Finder
+        "Thumbs.db",  // Windows Explorer
+        ".*.sw[a-z]",  // Vim swap files
+        "\\#*#",  // Emacs autosave files
+        ".#*",  // Emacs lock files
+        ".~lock.*",  // LibreOffice lock files
+        "~$*",  // Microsoft Office lock files
+    ]
+
+    /// Nothing ignored (but `SyncIgnore`'s): what `--include-ignored` asks for.
+    public static let none = IgnoreSettings(respectGitignore: false, patterns: [])
 }
 
 /// Ignore rules for one folder tree (a synced folder, or a folder being uploaded), with
@@ -54,7 +66,7 @@ public struct IgnoreRules: Sendable {
     /// say so.
     public mutating func add(folder: String, atdriveignore: String?, gitignore: String?) {
         var patterns: [IgnorePattern] = []
-        if settings.gitignore, let gitignore { patterns += IgnorePattern.parse(gitignore) }
+        if settings.respectGitignore, let gitignore { patterns += IgnorePattern.parse(gitignore) }
         if let atdriveignore { patterns += IgnorePattern.parse(atdriveignore) }
         if patterns.isEmpty { folders[folder] = nil } else { folders[folder] = patterns }
     }
@@ -74,7 +86,7 @@ public struct IgnoreRules: Sendable {
         }
         add(
             folder: folder, atdriveignore: text(Self.fileName),
-            gitignore: settings.gitignore ? text(Self.gitFileName) : nil)
+            gitignore: settings.respectGitignore ? text(Self.gitFileName) : nil)
     }
 
     /// Whether something is ignored by its own path, its folders taken as not ignored: what a
@@ -124,7 +136,7 @@ public struct IgnoreRules: Sendable {
             func file(_ name: String) -> Node? {
                 tree.child(named: name, in: id).flatMap { $0.isFolder ? nil : $0 }
             }
-            return (path, file(fileName), settings.gitignore ? file(gitFileName) : nil)
+            return (path, file(fileName), settings.respectGitignore ? file(gitFileName) : nil)
         }
     }
 

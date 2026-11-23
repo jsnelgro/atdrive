@@ -94,7 +94,13 @@ struct Put: AsyncParsableCommand {
               atdrive put -r Photos /backup         → /backup/Photos/... (if /backup exists)
             Existing files are replaced in place; unchanged ones are skipped.
 
-            Inside the folders it uploads, it skips what ignore files ignore, as git does: .atdriveignore files (always), .gitignore files (unless ignore.gitignore = false in config.toml), and ignore.patterns in config.toml (in .gitignore's syntax, as if in a .atdriveignore at the top). In one folder, .atdriveignore wins over .gitignore, so `!.env` in it brings back a .env that git ignores. What you name on the command line is always uploaded; --no-ignore uploads everything.
+            Inside the folders it uploads, it leaves out what's ignored, as git does:
+            - what .atdriveignore files ignore (always);
+            - what .gitignore files ignore (unless ignore.respect_gitignore = false in config.toml);
+            - ignore.patterns in config.toml, as if in a .atdriveignore at the top. By default, what file browsers and editors leave around (.DS_Store, swap and lock files); `atdrive config` lists them.
+            In one folder, .atdriveignore wins over .gitignore, so `!.env` in it brings back a .env that git ignores. What you name on the command line is always uploaded, and --include-ignored uploads everything inside the folders too.
+
+            Never uploaded: a synced folder's own .atdrive folder (at the top of what you upload), and half-finished downloads (*.atdrive-partial).
             """
     )
 
@@ -104,8 +110,8 @@ struct Put: AsyncParsableCommand {
     @Flag(name: .shortAndLong, help: "Upload folders and everything in them.")
     var recursive = false
 
-    @Flag(help: "Upload what .atdriveignore, .gitignore and config.toml's ignore.patterns ignore, too.")
-    var noIgnore = false
+    @Flag(help: "Upload what's ignored, too (by .atdriveignore and .gitignore files, and ignore.patterns).")
+    var includeIgnored = false
 
     func validate() throws {
         if paths.isEmpty { throw ValidationError("nothing to upload") }
@@ -113,7 +119,7 @@ struct Put: AsyncParsableCommand {
 
     func run() async throws {
         // A config.toml that can't be read stops it, rather than upload what it may ignore.
-        let ignore = noIgnore || !recursive ? IgnoreSettings.none : try ConfigFile.standard().load().ignore
+        let ignore = includeIgnored || !recursive ? IgnoreSettings.none : try ConfigFile.standard().load().ignore
         let drive = try await Context.load().joined
         let sources = paths.count == 1 ? paths : Array(paths.dropLast())
         let destination = DrivePath(paths.count == 1 ? "/" : paths.last!)
@@ -164,7 +170,7 @@ struct Uploader {
     let drive: JoinedDrive
     var state: DriveState
     let recursive: Bool
-    /// What's skipped inside a folder being uploaded (besides the built-in names, `SyncIgnore`).
+    /// What's left out inside a folder being uploaded (and `SyncIgnore`'s names, always).
     let ignore: IgnoreSettings
     /// Chunks the drive has: those current files use, and those uploaded since.
     var known: Set<String>

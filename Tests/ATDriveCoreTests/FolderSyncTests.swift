@@ -417,19 +417,25 @@ import Testing
     @Test func ignoredFilesStayPut() async throws {
         try write(".DS_Store", "finder")
         try write("docs/.notes.txt.swp", "vim")
+        try write("docs/.DS_Store", "finder")
         try write("docs/notes.txt", "real")
+        try write("pics/.DS_Store", "finder")
+        try write("pics/a.jpg", "jpg")
         try await put("/Thumbs.db", "windows")
         let sync = try open()
         try await sync.sync()
-        #expect(try await driveFiles() == ["Thumbs.db", "docs/", "docs/notes.txt"])
-        #expect(try localFiles() == [".DS_Store", "docs/", "docs/.notes.txt.swp", "docs/notes.txt"])
+        #expect(try await driveFiles() == ["Thumbs.db", "docs/", "docs/notes.txt", "pics/", "pics/a.jpg"])
 
-        // A folder deleted elsewhere goes, clutter and all; ignored things on the drive stay.
+        // A folder deleted elsewhere goes, a file browser's clutter and all; one with an editor's
+        // swap file in it stays (with just that), since it may hold unsaved work. Ignored things
+        // on the drive stay.
         try await other.delete([try await node("/docs/notes.txt"), try await node("/docs")])
+        try await other.delete([try await node("/pics/a.jpg"), try await node("/pics")])
         try await sync.sync()
-        #expect(try localFiles() == [".DS_Store"])
+        #expect(try localFiles() == [".DS_Store", "docs/", "docs/.notes.txt.swp"])
         #expect(try await driveFiles() == ["Thumbs.db"])
         #expect(try await sync.sync().changes == 0)
+        #expect(try await driveFiles() == ["Thumbs.db"])
     }
 
     @Test func aFileEditedDuringItsDownloadIsNotOverwritten() async throws {
@@ -717,16 +723,22 @@ import Testing
     }
 
     @Test func ignoredNames() {
+        // The default patterns, which ignore what the built-in list used to.
+        let rules = IgnoreRules(IgnoreSettings())
         for name in [
             ".DS_Store", "Thumbs.db", ".notes.txt.swp", ".x.swo", ".~lock.report.odt#", "~$report.docx",
-            "#draft.txt#", ".#draft.txt", "photo.jpg.atdrive-partial",
+            "#draft.txt#", ".#draft.txt",
         ] {
-            #expect(SyncIgnore.isIgnored(name, atTop: false), "\(name)")
-        }
-        for name in [".gitignore", ".swp", "notes.swp", "~notes", "#hashtag", ".atdrive", "draft.txt#"] {
+            #expect(rules.matches(name, isFolder: false), "\(name)")
             #expect(!SyncIgnore.isIgnored(name, atTop: false), "\(name)")
         }
+        for name in [".gitignore", ".swp", "notes.swp", "~notes", "#hashtag", ".atdrive", "draft.txt#", "#"] {
+            #expect(!rules.matches(name, isFolder: false), "\(name)")
+        }
+        // What ATDrive uses itself, whatever the settings.
+        #expect(SyncIgnore.isIgnored("photo.jpg.atdrive-partial", atTop: false))
         #expect(SyncIgnore.isIgnored(".atdrive", atTop: true))
+        #expect(!SyncIgnore.isIgnored(".atdrive", atTop: false))
     }
 }
 

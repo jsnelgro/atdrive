@@ -35,14 +35,16 @@ public struct LocalConfig: Sendable, Equatable {
     public var spacesExclude: [String] = []
 
     /// Respect `.gitignore` files, as well as `.atdriveignore` files (which always are).
-    public var ignoreGitignore = true
+    public var ignoreRespectGitignore = true
 
     /// Ignored everywhere on this computer: lines of a `.atdriveignore` at the top of the drive,
     /// which every ignore file in the drive can override.
-    public var ignorePatterns: [String] = []
+    public var ignorePatterns: [String] = IgnoreSettings.defaultPatterns
 
     /// What decides which files are left alone (`IgnoreRules`).
-    public var ignore: IgnoreSettings { IgnoreSettings(gitignore: ignoreGitignore, patterns: ignorePatterns) }
+    public var ignore: IgnoreSettings {
+        IgnoreSettings(respectGitignore: ignoreRespectGitignore, patterns: ignorePatterns)
+    }
 
     /// The settings the drive needs to show Spaces; `nil` while it's off.
     public var spaces: SpacesSettings? {
@@ -123,18 +125,18 @@ public struct LocalConfig: Sendable, Equatable {
             },
             value: { .boolean($0.spacesSpotlight) }),
         Setting(
-            key: "ignore.gitignore",
-            help: "Leave alone what .gitignore files ignore, as well as what .atdriveignore files do (always).",
+            key: "ignore.respect_gitignore",
+            help: "Leave out what .gitignore files ignore, as well as what .atdriveignore files ignore (always).",
             read: { config, value in
                 guard case .boolean(let respected) = value else { return "must be true or false" }
-                config.ignoreGitignore = respected
+                config.ignoreRespectGitignore = respected
                 return nil
             },
-            value: { .boolean($0.ignoreGitignore) }),
+            value: { .boolean($0.ignoreRespectGitignore) }),
         Setting(
             key: "ignore.patterns",
             help:
-                "Ignored everywhere on this computer, in .gitignore's syntax: like a .atdriveignore at the top of the drive.",
+                "Ignored everywhere on this computer, in .gitignore's syntax: like a .atdriveignore at the top of the drive. The default is what file browsers and editors leave around; setting it replaces that list.",
             read: { config, value in
                 guard case .strings(let patterns) = value else { return "must be a list of patterns, in quotes" }
                 if patterns.contains(where: { $0.contains("\n") || $0.contains("\r") }) {

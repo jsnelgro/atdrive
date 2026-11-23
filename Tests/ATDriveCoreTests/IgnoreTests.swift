@@ -133,7 +133,7 @@ import Testing
     }
 
     @Test func gitignoreCanBeTurnedOff() {
-        var rules = IgnoreRules(IgnoreSettings(gitignore: false))
+        var rules = IgnoreRules(IgnoreSettings(respectGitignore: false))
         rules.add(folder: "", atdriveignore: "*.tmp\n", gitignore: "*.log\n")
         #expect(!rules.matches("a.log", isFolder: false))
         #expect(rules.matches("a.tmp", isFolder: false))
@@ -199,7 +199,7 @@ import Testing
         #expect(files.map(\.folder) == ["", "a", "a/b"])
         #expect(files.map(\.atdriveignore?.id) == ["top-ignore", nil, "b-ignore"])
         #expect(files.map(\.gitignore?.id) == ["top-git", nil, nil])
-        let withoutGit = IgnoreRules.files(for: nil, in: tree, settings: IgnoreSettings(gitignore: false))
+        let withoutGit = IgnoreRules.files(for: nil, in: tree, settings: IgnoreSettings(respectGitignore: false))
         #expect(withoutGit.map(\.folder) == [""])
         #expect(withoutGit.first?.gitignore == nil)
     }

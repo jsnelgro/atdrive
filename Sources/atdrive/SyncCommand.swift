@@ -13,7 +13,7 @@ struct Sync: AsyncParsableCommand {
               atdrive sync --install        keep ~/atdrive in sync in the
                                             background (Linux, systemd)
 
-            What ignore files ignore is left alone: neither uploaded nor downloaded, and never deleted on either side. A .atdriveignore in any folder works exactly like a .gitignore, and .gitignore files count too (unless ignore.gitignore = false in config.toml). ignore.patterns in config.toml is like a .atdriveignore at the top of the folder.
+            What's ignored is left alone: neither uploaded nor downloaded, and never deleted on either side. A .atdriveignore in any folder works exactly like a .gitignore, and .gitignore files count too (unless ignore.respect_gitignore = false in config.toml). ignore.patterns in config.toml is like a .atdriveignore at the top of the folder; by default it lists what file browsers and editors leave around (`atdrive config` shows it). `atdrive dev delete-ignored` deletes what's ignored.
 
             A folder that already has files in it is merged with the drive: matching files and folders are paired up, and nothing is deleted. A file edited in both places keeps the drive's version under its name, and yours is saved next to it as "name (conflicted copy <date>)".
             """

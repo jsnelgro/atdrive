@@ -91,7 +91,7 @@ public enum SpacesShare {
 
 /// What's ignored besides the ignore files in the drive (`ignore.*` in config.toml), for the
 /// extension, which can't read config.toml: the app writes it to the App Group's defaults whenever
-/// the file changes. Until it has, the defaults (`.gitignore` files count; no patterns).
+/// the file changes. Until it has, the defaults (`.gitignore` files count; the default patterns).
 public enum IgnoreShare {
     public static var settings: IgnoreSettings {
         get {
