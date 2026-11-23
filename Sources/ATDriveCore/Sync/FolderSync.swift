@@ -853,3 +853,12 @@ extension String {
         return parent.isEmpty ? "/" : parent
     }
 }
+
+extension FolderSync {
+    /// Whether `path` is a folder `atdrive sync` keeps in sync with `drive`: its `.atdrive` state
+    /// says so.
+    public static func isSynced(_ path: String, with drive: Drive) -> Bool {
+        guard let state = try? StateFolder(root: path).load() else { return false }
+        return state.owner == drive.owner && state.space == drive.space
+    }
+}

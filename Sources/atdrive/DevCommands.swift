@@ -13,14 +13,14 @@ struct ListIgnored: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "list-ignored",
         abstract: "List what's ignored, in your synced folder and in the drive.",
-        discussion: IgnoredThings.explanation)
+        discussion: IgnoredCommand.explanation)
 
-    @Option(help: IgnoredThings.folderHelp)
+    @Option(help: IgnoredCommand.folderHelp)
     var folder: String?
 
     func run() async throws {
-        let found = try await IgnoredThings.find(folder: folder)
-        found.list(deleting: false)
+        let (_, found) = try await IgnoredCommand.find(folder: folder)
+        IgnoredCommand.list(found, deleting: false)
     }
 }
 
@@ -28,49 +28,39 @@ struct DeleteIgnored: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "delete-ignored",
         abstract: "Delete what's ignored, in your synced folder and in the drive.",
-        discussion: IgnoredThings.explanation + "\n\n" + """
+        discussion: IgnoredCommand.explanation + "\n\n" + """
             It lists it all first (as `atdrive dev list-ignored` does), and asks. What's in the drive goes to the drive's trash (`atdrive restore` brings it back). What's in the synced folder was never in the drive, so it goes to this computer's trash instead (on Linux, the desktop's: ~/.local/share/Trash, which file managers and `gio trash` show).
             """)
 
-    @Option(help: IgnoredThings.folderHelp)
+    @Option(help: IgnoredCommand.folderHelp)
     var folder: String?
 
     @Flag(name: .shortAndLong, help: "Don't ask: delete straight away.")
     var yes = false
 
     func run() async throws {
-        let found = try await IgnoredThings.find(folder: folder)
-        guard found.list(deleting: true) else { return }
+        let (drive, found) = try await IgnoredCommand.find(folder: folder)
+        guard IgnoredCommand.list(found, deleting: true) else { return }
         if !yes {
             guard try Output.confirm("Delete \(found.count) things?") else {
                 print("Nothing deleted.")
                 return
             }
         }
-        if let root = found.root {
-            for item in found.local {
-                do {
-                    try SystemTrash.move("\(root)/\(item.path)")
-                    print("✗ \(item.path)\(item.isFolder ? "/" : "")")
-                } catch {
-                    Output.warn("couldn't move \(item.path) to the trash, so it's still there: \(error)")
-                }
+        try await IgnoredFiles.delete(found, in: drive) { deletion in
+            let name = "\(deletion.path)\(deletion.isFolder ? "/" : "")"
+            if let problem = deletion.problem {
+                Output.warn("couldn't move \(name) to the trash, so it's still there: \(problem)")
+            } else {
+                print("✗ \(name)\(deletion.count > 1 ? "  (\(deletion.count) items)" : "")")
             }
-        }
-        for node in found.remote {
-            let nodes = node.isFolder ? found.tree.descendants(of: node.id) + [node] : [node]
-            try await found.drive.delete(nodes)
-            print(
-                "✗ \(found.tree.path(of: node))\(node.isFolder ? "/" : "")\(nodes.count > 1 ? "  (\(nodes.count) items)" : "")"
-            )
         }
     }
 }
 
-/// What's ignored, in the synced folder and in the drive: what `dev list-ignored` lists and
-/// `dev delete-ignored` deletes. The outermost things only: an ignored folder goes with
-/// everything in it.
-struct IgnoredThings {
+/// What `dev list-ignored` and `dev delete-ignored` share: the finding is in the core
+/// (`IgnoredFiles`); this is the printing.
+enum IgnoredCommand {
     static let explanation = """
         What's ignored: what .atdriveignore files ignore, what .gitignore files ignore (unless ignore.respect_gitignore = false), and ignore.patterns in config.toml.
         - In the synced folder, by the ignore files there, as `atdrive sync` sees them.
@@ -82,82 +72,41 @@ struct IgnoredThings {
     static let folderHelp: ArgumentHelp =
         "The synced folder (default: the one `atdrive sync --install` set up, or ~/atdrive)."
 
-    /// The synced folder, if there is one.
-    var root: String?
-    var local: [(path: String, isFolder: Bool)] = []
-    let drive: JoinedDrive
-    let tree: DriveTree
-    var remote: [Node] = []
-
-    var count: Int { local.count + remote.count }
-
-    static func find(folder: String?) async throws -> IgnoredThings {
+    static func find(folder named: String?) async throws -> (JoinedDrive, IgnoredFiles.Found) {
         let settings = try ConfigFile.standard().load().ignore
         let context = try await Context.load()
-        let drive = context.joined
-        let tree = try await drive.update(nil).tree
-        var found = IgnoredThings(drive: drive, tree: tree)
-
-        if let root = try syncedFolder(folder, of: context.drive) {
-            found.root = root
-            found.local = try IgnoredFiles.local(in: root, settings: settings)
+        func expand(_ path: String) -> String { NSString(string: path).expandingTildeInPath }
+        let folder = try IgnoredFiles.folder(
+            named: named.map(expand), installed: Service.installedFolder, standard: expand("~/atdrive"),
+            drive: context.drive)
+        switch folder {
+        case .named(let path), .standard(let path): print("Synced folder: \(path)")
+        case .installed(let path): print("Synced folder: \(path) (set up by `atdrive sync --install`)")
+        case .none(let installed?):
+            Output.warn(
+                "\(installed), which `atdrive sync --install` set up, isn't synced with this drive: only looking in the drive"
+            )
+        case .none(nil):
+            print(
+                "No synced folder (none set up by `atdrive sync --install`, and ~/atdrive isn't one): only the drive.")
         }
-
-        found.remote = try await IgnoredFiles.inDrive(tree, settings: settings) { node in
-            var data = Data()
-            try await drive.read(node) { data += $0 }
-            return String(decoding: data, as: UTF8.self)
-        }
-        return found
-    }
-
-    /// The synced folder to look in: the one named, or the one `atdrive sync --install` set up,
-    /// or ~/atdrive; only ever one `atdrive sync` keeps in sync with this drive.
-    static func syncedFolder(_ named: String?, of drive: Drive) throws -> String? {
-        func path(_ raw: String) -> String {
-            URL(fileURLWithPath: NSString(string: raw).expandingTildeInPath).standardizedFileURL.path
-        }
-        if let named {
-            let folder = path(named)
-            guard FolderSync.isSynced(folder, with: drive) else {
-                throw CommandError("\(folder) isn't a folder `atdrive sync` keeps in sync with this drive")
-            }
-            print("Synced folder: \(folder)")
-            return folder
-        }
-        if let installed = Service.installedFolder {
-            guard FolderSync.isSynced(installed, with: drive) else {
-                Output.warn(
-                    "\(installed), which `atdrive sync --install` set up, isn't synced with this drive: only looking in the drive"
-                )
-                return nil
-            }
-            print("Synced folder: \(installed) (set up by `atdrive sync --install`)")
-            return installed
-        }
-        let home = path("~/atdrive")
-        guard FolderSync.isSynced(home, with: drive) else {
-            print("No synced folder (none set up by `atdrive sync --install`, and \(home) isn't one): only the drive.")
-            return nil
-        }
-        print("Synced folder: \(home)")
-        return home
+        return (context.joined, try await IgnoredFiles.find(in: context.joined, folder: folder, settings: settings))
     }
 
     /// Prints it all; whether there's anything.
     @discardableResult
-    func list(deleting: Bool) -> Bool {
-        if local.isEmpty, remote.isEmpty {
+    static func list(_ found: IgnoredFiles.Found, deleting: Bool) -> Bool {
+        if found.isEmpty {
             print("Nothing is ignored.")
             return false
         }
-        if let root, !local.isEmpty {
+        if let root = found.folder.path, !found.local.isEmpty {
             print("In \(root)\(deleting ? ", to this computer's trash" : ""):")
-            for item in local { print("  \(item.path)\(item.isFolder ? "/" : "")") }
+            for item in found.local { print("  \(item.path)\(item.isFolder ? "/" : "")") }
         }
-        if !remote.isEmpty {
+        if !found.remote.isEmpty {
             print("In the drive\(deleting ? ", to the drive's trash" : ""):")
-            for node in remote { print("  \(tree.path(of: node))\(node.isFolder ? "/" : "")") }
+            for node in found.remote { print("  \(found.tree.path(of: node))\(node.isFolder ? "/" : "")") }
         }
         return true
     }

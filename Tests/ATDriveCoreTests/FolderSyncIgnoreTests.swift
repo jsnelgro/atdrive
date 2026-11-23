@@ -189,4 +189,102 @@ extension FolderSyncTests {
         #expect(try await find(IgnoreSettings()) == ["/build", "/docs/run.log", "/docs/scratch.tmp"])
         #expect(try await find(IgnoreSettings(respectGitignore: false)) == ["/build", "/docs/run.log"])
     }
+
+    // MARK: atdrive dev list-ignored / delete-ignored
+
+    @Test func picksOnlyAFolderSyncedWithTheDrive() async throws {
+        let elsewhere = try temporaryDirectory().path
+        let path = folder.standardizedFileURL.path
+        // Not synced yet: refused by name, and not picked otherwise.
+        #expect(throws: IgnoredFiles.NotSynced.self) {
+            try IgnoredFiles.folder(named: path, installed: nil, standard: path, drive: drive)
+        }
+        #expect(
+            try IgnoredFiles.folder(named: nil, installed: nil, standard: path, drive: drive)
+                == .none(installedElsewhere: nil))
+
+        try await open().sync()
+        #expect(
+            try IgnoredFiles.folder(named: path, installed: elsewhere, standard: elsewhere, drive: drive)
+                == .named(path))
+        #expect(
+            try IgnoredFiles.folder(named: nil, installed: path, standard: elsewhere, drive: drive) == .installed(path))
+        #expect(try IgnoredFiles.folder(named: nil, installed: nil, standard: path, drive: drive) == .standard(path))
+        // The installed one wins over ~/atdrive, and isn't swapped for it when it's not synced.
+        #expect(
+            try IgnoredFiles.folder(named: nil, installed: elsewhere, standard: path, drive: drive)
+                == .none(installedElsewhere: elsewhere))
+        #expect(throws: IgnoredFiles.NotSynced.self) {
+            try IgnoredFiles.folder(named: elsewhere, installed: path, standard: path, drive: drive)
+        }
+    }
+
+    @Test func listsAndDeletesWhatsIgnoredOnBothSides() async throws {
+        try write(".atdriveignore", "*.log\nbuild/\n")
+        try write("a.txt", "a")
+        try write("x.log", "local only")
+        try write("build/out/bin", "local build")
+        let sync = try open()
+        try await sync.sync()
+        // In the drive from somewhere that doesn't ignore them.
+        try await put("/build/old.bin", "old")
+        try await put("/docs/run.log", "log")
+        try await put("/docs/keep.txt", "keep")
+        try await sync.sync()
+
+        let joined = JoinedDrive(home: drive, access: nil)
+        let choice = IgnoredFiles.Folder.standard(folder.path)
+        let found = try await IgnoredFiles.find(in: joined, folder: choice, settings: IgnoreSettings())
+        #expect(found.local == [.init(path: "build", isFolder: true), .init(path: "x.log", isFolder: false)])
+        #expect(found.remote.map { found.tree.path(of: $0).description } == ["/build", "/docs/run.log"])
+
+        let trash = try temporaryDirectory()
+        var deletions: [IgnoredFiles.Deletion] = []
+        try await IgnoredFiles.delete(
+            found, in: joined,
+            trash: { path in
+                let name = URL(fileURLWithPath: path).lastPathComponent
+                try FileManager.default.moveItem(atPath: path, toPath: trash.appendingPathComponent(name).path)
+            },
+            report: { deletions.append($0) })
+        #expect(
+            deletions == [
+                .init(path: "build", isFolder: true, inDrive: false, count: 1),
+                .init(path: "x.log", isFolder: false, inDrive: false, count: 1),
+                .init(path: "/build", isFolder: true, inDrive: true, count: 2),
+                .init(path: "/docs/run.log", isFolder: false, inDrive: true, count: 1),
+            ])
+        // Here: in this computer's trash, not deleted.
+        #expect(try localFiles() == [".atdriveignore", "a.txt", "docs/", "docs/keep.txt"])
+        #expect(try String(contentsOf: trash.appendingPathComponent("x.log"), encoding: .utf8) == "local only")
+        #expect(FileManager.default.fileExists(atPath: trash.appendingPathComponent("build/out/bin").path))
+        // In the drive: in its trash.
+        #expect(try await driveFiles() == [".atdriveignore", "a.txt", "docs/", "docs/keep.txt"])
+        let trashed = try await other.update(nil).trash().map(\.record.name)
+        #expect(Set(trashed).isSuperset(of: ["build", "old.bin", "run.log"]))
+        // Nothing for the sync to do, and nothing left to find.
+        #expect(try await sync.sync().changes == 0)
+        #expect(try await IgnoredFiles.find(in: joined, folder: choice, settings: IgnoreSettings()).isEmpty)
+    }
+
+    @Test func somethingTheTrashWontTakeIsLeftAndReported() async throws {
+        try write(".atdriveignore", "*.log\n")
+        try write("a.log", "a")
+        try write("b.log", "b")
+        try await open().sync()
+        let joined = JoinedDrive(home: drive, access: nil)
+        let found = try await IgnoredFiles.find(
+            in: joined, folder: .standard(folder.path), settings: IgnoreSettings())
+        struct Refused: Error, CustomStringConvertible { var description: String { "no room" } }
+        var deletions: [IgnoredFiles.Deletion] = []
+        try await IgnoredFiles.delete(
+            found, in: joined,
+            trash: { path in
+                if path.hasSuffix("a.log") { throw Refused() }
+                try FileManager.default.removeItem(atPath: path)
+            },
+            report: { deletions.append($0) })
+        #expect(deletions.map(\.problem) == ["no room", nil])
+        #expect(try localFiles() == [".atdriveignore", "a.log"])
+    }
 }
