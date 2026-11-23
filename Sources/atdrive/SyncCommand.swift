@@ -354,7 +354,7 @@ enum Service {
 }
 
 /// Opens `atdrive://` links on a Linux desktop: a desktop entry for `x-scheme-handler/atdrive`
-/// that runs `atdrive open-share <link>`, made the default handler. Installed with the sync service.
+/// that runs `atdrive accept <link>`, made the default handler. Installed with the sync service.
 enum LinkHandler {
     static let name = "atdrive-open.desktop"
 
@@ -372,7 +372,7 @@ enum LinkHandler {
             Type=Application
             Name=ATDrive
             Comment=Add something shared with you to your drive
-            Exec="\(executable.replacingOccurrences(of: "\"", with: "\\\""))" open %u
+            Exec="\(executable.replacingOccurrences(of: "\"", with: "\\\""))" accept %u
             Terminal=true
             NoDisplay=true
             MimeType=x-scheme-handler/atdrive;
@@ -388,7 +388,7 @@ enum LinkHandler {
         }
         _ = Service.run("update-desktop-database", file.deletingLastPathComponent().path)
         if Service.run("xdg-mime", "default", name, "x-scheme-handler/atdrive").status == 0 {
-            print("atdrive:// links now open here (`atdrive open-share <link>`).")
+            print("atdrive:// links now open here (`atdrive accept <link>`).")
         } else {
             print(
                 "Wrote \(file.path); to open atdrive:// links with it: xdg-mime default \(name) x-scheme-handler/atdrive"

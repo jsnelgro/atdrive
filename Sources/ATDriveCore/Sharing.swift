@@ -81,7 +81,7 @@ public struct OwnShare: Sendable, Equatable {
     public var mode: DriveMode?
     public var policy: SpacePolicy?
     public var members: [SpaceMember]
-    public var hasLink: Bool { if case .members(true)? = policy { true } else { false } }
+    public var hasLink: Bool { if case .members(true, _)? = policy { true } else { false } }
 }
 
 extension JoinedDrive {
@@ -198,9 +198,13 @@ extension JoinedDrive {
     }
 
     /// Nobody but its owner can read a space of this account's any more: `personalspace` (which
-    /// drops members and `publicRead`), and its member and link records gone.
+    /// drops members and `publicRead`), its member and link records gone, and its invites taken
+    /// back.
     func stopSharing(_ info: MountInfo) async throws {
+        // Who has it, for taking their invites back: the member list goes with the policy.
+        let members = (try? await home.client.listMembers(info.space)) ?? []
         try await home.client.updateSpace(info.space, policy: .personal)
+        await withdrawInvites(members.map(\.did), from: info.space)
         let share = Drive(client: home.client, owner: owner, space: info.space)
         let records = try await shareRecords(share)
         if !records.isEmpty {

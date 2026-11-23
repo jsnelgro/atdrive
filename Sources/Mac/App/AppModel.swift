@@ -59,6 +59,9 @@ final class AppModel {
     @ObservationIgnored private var joined: JoinedDrive?
     private let logger = Logger(subsystem: Log.subsystem, category: "app")
 
+    /// Shares waiting for the account to accept or decline them, for the menu.
+    let pending = PendingSharesModel()
+
     /// This Mac's settings, from `~/.config/atdrive/config.toml` (the CLI's too): read again
     /// before each check for changes, so an edit to the file takes effect without a restart.
     private(set) var config = LocalConfig()
@@ -74,6 +77,7 @@ final class AppModel {
     var deviceName: String { drive?.identity?.name ?? DeviceName.current }
 
     func start() {
+        pending.makeDrive = { [weak self] in await self?.joinedDrive() }
         guard let store = AppGroup.sessionStore() else {
             message = "App Group container unavailable. Build the app with scripts/build-app.sh."
             return
@@ -83,6 +87,7 @@ final class AppModel {
             Task { await openDrive(handle: session.handle) }
         }
         startPolling()
+        pending.start()
     }
 
     /// Checks the drive for changes made elsewhere every `sync.interval` seconds.
@@ -211,6 +216,7 @@ final class AppModel {
         }
         state = .signedOut
         message = nil
+        await pending.refresh(force: true)
     }
 
     // MARK: The drive's keys
@@ -354,6 +360,22 @@ final class AppModel {
         driveMode = drive?.mode
         state = .signedIn(handle: handle)
         await addToFinder(handle: handle)
+        await prepareSharing()
+    }
+
+    /// So people can share with this account: its sharing key published (for encrypted shares),
+    /// and its inbox made (for invites). Then what's waiting for it. Best effort: both are made
+    /// again whenever they're needed.
+    private func prepareSharing() async {
+        if let joined = await joinedDrive() {
+            do {
+                try await joined.ensureSharingKey()
+                try await joined.ensureInbox()
+            } catch {
+                logger.error("preparing for sharing failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+        await pending.refresh(force: true)
     }
 
     /// The drive with what's mounted in it, opened, for sharing and settings: `nil` until signed

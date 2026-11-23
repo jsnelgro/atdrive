@@ -1,0 +1,30 @@
+{
+  "lexicon": 1,
+  "id": "app.atdrive.declined",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "any",
+      "description": "In a home drive: a share its owner was invited to and declined, so it isn't pending any more. The record key is the first 16 bytes of the SHA-256 of the share's space address, in hex. Sealed on an encrypted drive.",
+      "record": {
+        "type": "object",
+        "properties": {
+          "space": {
+            "type": "string",
+            "format": "uri",
+            "description": "The share's space."
+          },
+          "declinedAt": {
+            "type": "string",
+            "format": "datetime"
+          },
+          "sealed": {
+            "type": "ref",
+            "ref": "app.atdrive.defs#sealedValue",
+            "description": "On an encrypted drive: the fields above, sealed."
+          }
+        }
+      }
+    }
+  }
+}

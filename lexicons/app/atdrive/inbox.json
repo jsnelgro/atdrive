@@ -1,0 +1,15 @@
+{
+  "lexicon": 1,
+  "id": "app.atdrive.inbox",
+  "defs": {
+    "main": {
+      "type": "space",
+      "key": "any",
+      "description": "An account's inbox (key \"self\"): where people who share a file or folder with it say so. Its owner alone reads it (memberspace, no members); anyone may write their own repo in it (publicWrite), each with an invite record per share. Inviting doesn't give access: being on the share's member list does.",
+      "collections": [
+        "app.atdrive.invite"
+      ],
+      "title": "ATDrive invites"
+    }
+  }
+}

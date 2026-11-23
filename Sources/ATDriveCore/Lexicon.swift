@@ -34,8 +34,18 @@ public enum Lexicon {
     /// Record collection, in the home drive, holding one record per person (keyed by their DID)
     /// whose sharing key was verified with a code (`VerifiedKey`).
     public static let contact = "app.atdrive.contact"
+    /// Record collection, in the home drive, holding one record per share this account declined
+    /// (`DeclinedShare`, keyed by `DeclinedShare.key(for:)`): it isn't pending any more.
+    public static let declined = "app.atdrive.declined"
     /// Space key of the default drive.
     public static let defaultDriveKey = "default"
+    /// Space type of an account's inbox: where people who share with it leave invites (#68).
+    public static let inboxSpace = "app.atdrive.inbox"
+    /// Space key of the inbox (each account has one).
+    public static let inboxKey = "self"
+    /// Record collection, in a sender's repo in someone's inbox, holding one record per share
+    /// waiting for them (`InviteRecord`), keyed by the share's space key.
+    public static let invite = "app.atdrive.invite"
 
     /// Record key of a version's `index`th `chunks` record (from 1): the version's own key, a
     /// dash, and the number.

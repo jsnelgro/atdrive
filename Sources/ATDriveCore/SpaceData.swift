@@ -45,7 +45,7 @@ public struct SpacesSettings: Sendable, Equatable, Codable {
 
 public enum SpaceDataError: Error, Equatable, CustomStringConvertible {
     case notASpace(String)
-    /// ATDrive's own spaces are the drive (`atdrive open-share` for one shared with you).
+    /// ATDrive's own spaces are the drive (`atdrive accept` for one shared with you).
     case driveSpace
     /// Spaces are off (`spaces.enabled` in config.toml).
     case off
@@ -57,7 +57,7 @@ public enum SpaceDataError: Error, Equatable, CustomStringConvertible {
         case .notASpace(let text):
             "\(text) isn't a space's address (at://<handle or DID>/space/<type>/<key>)"
         case .driveSpace:
-            "that's an ATDrive space: open it with `atdrive open-share <link>` to put it in your drive"
+            "that's an ATDrive space: open it with `atdrive accept <link>` to put it in your drive"
         case .off:
             "Spaces is off: set spaces.enabled = true in config.toml (`atdrive config` shows where it is)"
         case .needsSignIn:
@@ -189,10 +189,11 @@ public actor SpaceData {
         self.access = access
     }
 
-    /// Whether a space belongs in the spaces view: not ATDrive's own (that's the drive).
+    /// Whether a space belongs in the spaces view: not ATDrive's own (its drives, which are the
+    /// drive, and inboxes, whose invites are pending shares).
     public static func isShown(_ space: String) -> Bool {
         guard let parts = XRPCClient.spaceParts(space) else { return false }
-        return parts.type != Lexicon.driveSpace
+        return !parts.type.hasPrefix("app.atdrive.")
     }
 
     // MARK: Reading

@@ -11,14 +11,23 @@ public enum AccountReset {
         public var sharingKey: Bool
     }
 
-    /// Deletes every ATDrive space `owner` owns (its drive, and the folders it shared, so members
-    /// and link holders are told they're gone), and the sharing key it published. Nothing of other
+    /// Deletes every ATDrive space `owner` owns (its drive, the folders it shared, so members and
+    /// link holders are told they're gone, and its inbox), its invites in other people's inboxes,
+    /// and the sharing key it published. Nothing of other
     /// people's is touched: their shares just stop being mounted, with the drive.
     public static func run(client: XRPCClient, owner: String) async throws -> Result {
         let spaces = try await client.listSpaces(type: Lexicon.driveSpace).filter {
             XRPCClient.spaceParts($0)?.authority == owner
         }
         for space in spaces { try await client.deleteSpace(space) }
+        // Its inbox, and the invites it left in other people's (#68).
+        for inbox in try await client.listSpaces(type: Lexicon.inboxSpace) {
+            if XRPCClient.spaceParts(inbox)?.authority == owner {
+                try await client.deleteSpace(inbox)
+            } else {
+                try await client.clearSpaceRecords(space: inbox, repo: owner)
+            }
+        }
         let published =
             try await client.getPublicRecord(repo: owner, collection: Lexicon.shareKey, rkey: Lexicon.shareKeyKey)
             != nil

@@ -18,14 +18,18 @@ import Testing
         let records = [
             Lexicon.node, Lexicon.version, Lexicon.chunks, Lexicon.settings, Lexicon.device, Lexicon.member,
             Lexicon.link,
-            Lexicon.contact,
+            Lexicon.contact, Lexicon.declined,
         ]
-        #expect(ids.isSuperset(of: records + [Lexicon.driveSpace, Lexicon.shareKey]))
+        #expect(
+            ids.isSuperset(of: records + [Lexicon.driveSpace, Lexicon.shareKey, Lexicon.inboxSpace, Lexicon.invite]))
         let drive = try JSONValue(parsing: Data(contentsOf: Self.directory.appendingPathComponent("drive.json")))
         let main = try #require(drive["defs"]?["main"])
         #expect(main["type"]?.string == "space")
         #expect(main["title"]?.string == "ATDrive")
         #expect(Set(main["collections"]?.array?.compactMap(\.string) ?? []) == Set(records))
+        let inbox = try JSONValue(parsing: Data(contentsOf: Self.directory.appendingPathComponent("inbox.json")))
+        #expect(inbox["defs"]?["main"]?["type"]?.string == "space")
+        #expect(inbox["defs"]?["main"]?["collections"]?.array?.compactMap(\.string) == [Lexicon.invite])
     }
 
     @Test func scopesAskForWhatSharingNeeds() {
@@ -34,11 +38,14 @@ import Testing
             #expect(parts.contains { $0.contains("manage=update") && $0.contains("manage=delete") })
             #expect(parts.contains { $0.hasSuffix("?authority=*&action=read") })
             #expect(parts.contains("repo:\(Lexicon.shareKey)"))
-            for collection in [Lexicon.member, Lexicon.link, Lexicon.contact] {
+            for collection in [Lexicon.member, Lexicon.link, Lexicon.contact, Lexicon.declined] {
                 #expect(scope.contains("collection=\(collection)"))
             }
+            // Invites go into other people's inboxes.
+            #expect(parts.contains { $0.contains("authority=*&collection=\(Lexicon.invite)&action=create") })
         }
         #expect(OAuthLogin.narrowScope.contains("space:\(Lexicon.driveSpace)?authority=*&action=read"))
+        #expect(OAuthLogin.narrowScope.contains("space:\(Lexicon.inboxSpace)?manage=create"))
         #expect(!OAuthLogin.narrowScope.contains("space:*"))
     }
 }

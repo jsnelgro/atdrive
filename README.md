@@ -98,8 +98,11 @@ SUBCOMMANDS:
                           nobody, stop sharing it.
   shares                  What you share (with whom, and its
                           link), and what's shared with you.
-  open-share              Put something shared with you into
-                          your drive, from its link.
+  accept                  Add something shared with you to your
+                          drive: one waiting for you, or from
+                          its link.
+  decline                 Say no to something shared with you:
+                          it stops waiting for you.
   verify                  Check someone's sharing key with a
                           code you both compare.
   history                 Show what changed: when, how, on
@@ -275,7 +278,7 @@ atdrive rm -r /archive/taxes
 | `mkdir [-p] <path>…`, `mv <from> <to>`, `rm [-r] <path>…` | What you'd expect. `rm` puts things in the trash |
 | `sync [folder]` | Keep a folder in sync with the drive (see [claude notes here](#a-synced-folder-linux)) |
 | `share <path> [people…]`, `unshare <path> [people…]` | Share with people, or naming nobody, with a public link; take people off, or naming nobody, stop sharing (see [Sharing](#sharing)) |
-| `shares`, `open-share <link>`, `verify <person>` | What you share and what's shared with you; put something shared with you in your drive; check someone's key |
+| `shares`, `accept [what…]`, `decline <what…>`, `verify <person>` | What you share, what's shared with you, and what's waiting for you; add something shared with you to your drive (one waiting for you, or from its link), or say no to it; check someone's key |
 | `ls`, `tree`, `get`, `cat` with `--at <when>` | The drive as it was then (see [History and trash](#history-and-trash)) |
 | `history [path]` | What changed, when, and on which device: for a file, a folder, or the whole drive |
 | `restore <path> [--at <when>]` | Bring something back from the trash, or undo its latest change; with `--at`, as it was then |
@@ -527,6 +530,12 @@ or take it out of your drive, but not rename or change it. In a synced folder, a
 inside it (or to its name) is put back at the next sync. If you edited a file or added one there,
 your version is kept first, at the top of your drive, so you don't lose it.
 
+**Sharing with someone leaves it waiting for them.** It shows up in their ATDrive menu (the
+menu-bar icon gets a ＋), or in `atdrive accept`, and goes into their drive once they add it. They
+can also decline it. There's no link to pass around, though there is one if they'd rather. Someone
+who hasn't opened ATDrive since this version won't see it waiting: send them the link, or share it
+with them again once they have.
+
 In Finder, right-click: **Share…** (who has it, and the link), **Copy Link**, **Stop Sharing**.
 Shared things have a badge. Clicking an `atdrive://` link opens ATDrive, with **Add to My Drive**
 and **Download…**; so does **Add Shared Link…** in the menu bar.
@@ -540,7 +549,10 @@ atdrive shares                               # what you share, with whom, and it
 atdrive unshare /photos alice.bsky.social    # take alice off
 atdrive unshare /photos                      # stop sharing it: it's an ordinary folder again
 
-atdrive open-share 'atdrive://open?at=…'     # put something shared with you in your drive
+atdrive accept                               # go through what's waiting for you: add it, or decline it
+atdrive accept 1                             # add the first one waiting for you (`--all`: all of them)
+atdrive decline 2                            # say no to the second
+atdrive accept 'atdrive://open?at=…'         # add something to your drive from its link
 atdrive get 'atdrive://open?at=…' ~/Downloads   # just download it (no sign-in needed for a link)
 atdrive rm /from-alice                       # take something shared with you out of your drive
 ```

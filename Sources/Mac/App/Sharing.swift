@@ -208,11 +208,12 @@ final class ShareModel {
     func add() async {
         let text = newPerson.trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty else { return }
+        var failures: [InviteFailure] = []
         await run {
             let did = text.hasPrefix("did:") ? text : try await IdentityResolver().resolve(text).did
             let warnings = try await self.drive.memberWarnings([did], for: self.node)
             if warnings.isEmpty {
-                try await self.drive.addMembers([did], to: self.node)
+                failures = try await self.drive.addMembers([did], to: self.node)
                 self.newPerson = ""
             } else {
                 self.pendingDIDs = [did]
@@ -220,6 +221,7 @@ final class ShareModel {
             }
         }
         await load()
+        await report(failures)
     }
 
     /// Adds who `add` warned about, now that the user said so.
@@ -227,11 +229,24 @@ final class ShareModel {
         let dids = pendingDIDs
         pendingDIDs = []
         pendingWarnings = []
+        var failures: [InviteFailure] = []
         await run {
-            try await self.drive.addMembers(dids, to: self.node, allowingChangedKeys: true)
+            failures = try await self.drive.addMembers(dids, to: self.node, allowingChangedKeys: true)
             self.newPerson = ""
         }
         await load()
+        await report(failures)
+    }
+
+    /// People added, but not told: they have it all the same, from its link.
+    private func report(_ failures: [InviteFailure]) async {
+        guard !failures.isEmpty else { return }
+        var lines: [String] = []
+        for failure in failures {
+            lines.append("Couldn't tell \(await Self.name(failure.did)) it's waiting for them: \(failure.reason).")
+        }
+        lines.append("They have it all the same: send them its link (right-click it in Finder, Copy Link).")
+        message = lines.joined(separator: " ")
     }
 
     func cancelAdd() {
@@ -369,9 +384,10 @@ struct ShareView: View {
         GroupBox("People") {
             VStack(alignment: .leading, spacing: 8) {
                 if model.people.isEmpty {
-                    Text("Nobody yet. Add someone by their handle.")
+                    Text("Nobody yet. Add someone by their handle: it waits for them in ATDrive until they add it.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 ForEach(model.people) { person in
                     HStack(spacing: 8) {

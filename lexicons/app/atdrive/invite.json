@@ -1,0 +1,28 @@
+{
+  "lexicon": 1,
+  "id": "app.atdrive.invite",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "any",
+      "description": "In the sender's repo in someone's inbox: a share of the sender's waiting for them to accept it. The record key is the share's space key. Only shares whose authority is the sender count. It names the share and nothing else: its name and contents come from the share itself, which an encrypted share keeps sealed.",
+      "record": {
+        "type": "object",
+        "required": [
+          "space"
+        ],
+        "properties": {
+          "space": {
+            "type": "string",
+            "format": "uri",
+            "description": "The share's space: at://<sender>/space/app.atdrive.drive/<key>."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime"
+          }
+        }
+      }
+    }
+  }
+}

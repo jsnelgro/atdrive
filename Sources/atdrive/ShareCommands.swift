@@ -15,7 +15,7 @@ struct Share: AsyncParsableCommand {
 
             An encrypted drive's shares are encrypted, so whoever runs a PDS can't read them, even behind a link: the link ends with #<key>, and anyone with the whole link can read it.
 
-            Links look like atdrive://open?at=…: `atdrive open-share <link>` puts it in your drive, `atdrive get <link>` downloads a copy.
+            Sharing with people leaves it waiting for them: they accept it (`atdrive accept`, or the Mac app's menu) and it's added to their drive. You can also send them its link: `atdrive accept <link>` puts it in their drive, `atdrive get <link>` downloads a copy.
             """)
 
     @Argument(help: "File or folder in your drive.")
@@ -58,8 +58,16 @@ struct Share: AsyncParsableCommand {
             print("Not shared with anyone new.")
             return
         }
-        try await joined.addMembers(dids, to: mount, allowingChangedKeys: true)
-        print("✓ Shared \(path) with \(people.joined(separator: ", ")). Send them this link to open it:")
+        let failures = try await joined.addMembers(dids, to: mount, allowingChangedKeys: true)
+        print("✓ Shared \(path) with \(people.joined(separator: ", ")).")
+        let told = dids.filter { did in !failures.contains { $0.did == did } }
+        if !told.isEmpty {
+            print("  It's waiting for them to accept (`atdrive accept`, or ATDrive's menu on a Mac).")
+        }
+        for failure in failures {
+            Output.warn("couldn't tell \(await Handles.name(failure.did)) about it: \(failure.reason)")
+        }
+        print("  Its link, if they'd rather open it that way:")
         print("  \(ShareLinkAddress(space: mount.record.mount!.space))")
     }
 }
@@ -135,6 +143,21 @@ struct Shares: AsyncParsableCommand {
         let snapshot = try await joined.update(nil)
         var mine = try await joined.ownShares(in: snapshot)
         var theirs = joined.sharedWithMe(in: snapshot)
+        var waiting: [PendingShare] = []
+        if path == nil {
+            do {
+                waiting = try await joined.pendingShares()
+            } catch {
+                Output.warn("couldn't check for shares waiting for you: \(error)")
+            }
+        }
+        if !waiting.isEmpty {
+            print("Waiting for you (`atdrive accept`, `atdrive decline`):")
+            for (index, share) in waiting.enumerated() {
+                print("  \(await Pending.describe(share, number: index + 1))")
+            }
+            print("")
+        }
         if let path {
             let path = DrivePath(path)
             mine = mine.filter { $0.path == path }
@@ -165,7 +188,7 @@ struct Shares: AsyncParsableCommand {
         if path == nil || !theirs.isEmpty {
             if path == nil { print("") }
             print("Shared with you:")
-            if theirs.isEmpty { print("  nothing (`atdrive open-share <link>`)") }
+            if theirs.isEmpty { print("  nothing (`atdrive accept`)") }
             for (mount, state) in theirs {
                 let status = state.problem.map { "  (can't read it: \($0))" } ?? ""
                 print("  \(snapshot.tree.path(of: mount))  from \(await Handles.name(state.owner))\(status)")
@@ -174,27 +197,159 @@ struct Shares: AsyncParsableCommand {
     }
 }
 
+struct Accept: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Add something shared with you to your drive: one waiting for you, or from its link.",
+        discussion: """
+            atdrive accept                          go through what's waiting for you
+            atdrive accept 1 3                      accept those (numbered as `atdrive accept` lists them)
+            atdrive accept photos                   accept it by name
+            atdrive accept --all                    accept everything waiting for you
+            atdrive accept 'atdrive://open?at=…'    from a link someone sent you
+
+            It's added at the top of your drive, read-only, under its owner's name for it, and kept up to date. You can move it anywhere in your drive. `atdrive rm` takes it out of your drive again (it stays shared with you). To download a copy instead: `atdrive get <link>`.
+            """)
+
+    @Argument(help: "What to accept: numbers or names from the list of what's waiting for you, or links.")
+    var shares: [String] = []
+
+    @Flag(name: .shortAndLong, help: "Accept everything waiting for you.")
+    var all = false
+
+    func run() async throws {
+        let context = try await Context.load()
+        let joined = context.joined
+        let links = try shares.filter(Pending.isLink).map { try ShareLinkAddress(parsing: $0) }
+        for link in links {
+            let mount = try await joined.add(link)
+            print("✓ Added /\(mount.name), shared by \(await Handles.name(mount.record.mount!.owner)), read-only.")
+            if link.key != nil, context.drive.mode == .plain {
+                Output.warn(
+                    "your drive isn't encrypted, so its link key is kept readable: whoever runs your PDS could read this share"
+                )
+            }
+        }
+        let selectors = shares.filter { !Pending.isLink($0) }
+        guard all || !selectors.isEmpty || links.isEmpty else { return }
+
+        let waiting = try await joined.pendingShares()
+        guard !waiting.isEmpty else {
+            print(links.isEmpty ? "Nothing is waiting for you." : "Nothing else is waiting for you.")
+            return
+        }
+        if all || !selectors.isEmpty {
+            for share in all ? waiting : try Pending.pick(selectors, from: waiting) {
+                try await Self.accept(share, in: joined)
+            }
+            return
+        }
+        // One by one.
+        guard Prompt.isInteractive else {
+            print("Waiting for you:")
+            for (index, share) in waiting.enumerated() {
+                print("  \(await Pending.describe(share, number: index + 1))")
+            }
+            print("Accept with `atdrive accept <number>` (or --all), or say no with `atdrive decline <number>`.")
+            return
+        }
+        for (index, share) in waiting.enumerated() {
+            print(await Pending.describe(share, number: index + 1))
+            let answer = Prompt.line("  Add it to your drive? [y]es, [n]ot now, [d]ecline, [q]uit: ")?
+                .trimmingCharacters(in: .whitespaces).lowercased()
+            switch answer?.first {
+            case "y": try await Self.accept(share, in: joined)
+            case "d":
+                try await joined.decline(share)
+                print("  Declined.")
+            case "q", nil: return
+            default: continue
+            }
+        }
+    }
+
+    static func accept(_ share: PendingShare, in joined: JoinedDrive) async throws {
+        if let problem = share.problem {
+            throw ValidationError("\(await Pending.describe(share)) can't be opened now: \(problem)")
+        }
+        let mount = try await joined.accept(share)
+        print("✓ Added /\(mount.name), shared by \(await Handles.name(share.owner)), read-only.")
+    }
+}
+
+struct Decline: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Say no to something shared with you: it stops waiting for you.",
+        discussion: """
+            Its owner isn't told, and it's still shared with you: its link still opens it (`atdrive accept <link>`).
+            """)
+
+    @Argument(help: "Numbers or names from the list of what's waiting for you (`atdrive accept` shows it).")
+    var shares: [String]
+
+    func run() async throws {
+        let joined = try await Context.load().joined
+        let waiting = try await joined.pendingShares()
+        for share in try Pending.pick(shares, from: waiting) {
+            try await joined.decline(share)
+            print("✓ Declined \(await Pending.describe(share)).")
+        }
+    }
+}
+
+/// `atdrive open-share <link>`, from before `accept` took links: kept, hidden, so scripts that
+/// use it keep working.
 struct OpenShare: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "open-share", abstract: "Put something shared with you into your drive, from its link.",
-        discussion: """
-            It's added at the top of your drive, under its name, read-only, and kept up to date. `atdrive rm` takes it out of your drive again (it stays shared). To download a copy instead: `atdrive get <link>`.
-            """)
+        shouldDisplay: false)
 
     @Argument(help: "An atdrive:// link (or an at:// address).")
     var link: String
 
     func run() async throws {
-        let link = try ShareLinkAddress(parsing: link)
-        let context = try await Context.load()
-        let mount = try await context.joined.add(link)
-        let owner = await Handles.name(mount.record.mount!.owner)
-        print("✓ Added /\(mount.name), shared by \(owner), read-only.")
-        if link.key != nil, context.drive.mode == .plain {
-            Output.warn(
-                "your drive isn't encrypted, so its link key is kept readable: whoever runs your PDS could read this share"
-            )
+        try await Accept.parse([link]).run()
+    }
+}
+
+/// Shares waiting for this account, for the commands.
+enum Pending {
+    /// A link (or an `at://` address), rather than a number or name from the list.
+    static func isLink(_ text: String) -> Bool { text.contains("://") }
+
+    /// `1. photos/  from @alice.bsky.social, Nov 20`, and why it can't be opened, if it can't.
+    static func describe(_ share: PendingShare, number: Int? = nil) async -> String {
+        var line = number.map { "\($0). " } ?? ""
+        line += share.name.map { $0 + (share.isFile ? "" : "/") } ?? "(something)"
+        line += "  from \(await Handles.name(share.owner))"
+        if let sent = share.sentAt { line += ", \(sent.formatted(date: .abbreviated, time: .omitted))" }
+        if let problem = share.problem { line += "  (can't open it now: \(problem))" }
+        return line
+    }
+
+    /// The shares `selectors` name: numbers (from 1, as listed) or names.
+    static func pick(_ selectors: [String], from waiting: [PendingShare]) throws -> [PendingShare] {
+        var picked: [PendingShare] = []
+        for selector in selectors {
+            let share: PendingShare
+            if let number = Int(selector) {
+                guard waiting.indices.contains(number - 1) else {
+                    throw ValidationError("there's no number \(number): \(waiting.count) waiting for you")
+                }
+                share = waiting[number - 1]
+            } else {
+                let name = selector.hasSuffix("/") ? String(selector.dropLast()) : selector
+                let named = waiting.filter { $0.name == name }
+                guard let first = named.first else {
+                    throw ValidationError("nothing called \(selector) is waiting for you")
+                }
+                guard named.count == 1 else {
+                    throw ValidationError("\(named.count) called \(selector) are waiting for you: use their numbers")
+                }
+                share = first
+            }
+            if !picked.contains(share) { picked.append(share) }
         }
+        return picked
     }
 }
 

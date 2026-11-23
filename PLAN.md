@@ -619,7 +619,12 @@ Checked against the proposal and the reference branch on 2026-11-17:
 - **Blobs belong to the account** and are linked to records per space; the reference PDS accepts
   a record in a new space referencing a blob already uploaded, and garbage-collects across all
   spaces. So sharing uploads nothing.
-- **There's no "shared with me" list:** a link has to reach the recipient some other way.
+- **There's no "shared with me" list** in the protocol (#56): `listSpaces` leaves out spaces
+  you're only a member of, and `putMembers` tells nobody. ATDrive delivers its own invites
+  ("Pending shares", below); a link still works too.
+- **`memberspace` has `publicWrite`:** the host tracks anyone's writes to the space (lists them in
+  `listWriters`), except members whose write access is off. Anyone can always write their own
+  repo in a space; tracking is what makes readers find it.
 - **Spaces refuse app passwords** (since 2026-11-16): OAuth only.
 
 ### Shared folders are drives
@@ -723,12 +728,47 @@ Checked against the proposal and the reference branch on 2026-11-17:
   encrypted share's public link. The CLI also takes the bare `at://` address. A link works for
   members and, with the link on, for anyone.
 - **Opening one:** the Mac app (`CFBundleURLTypes`: a window with Add to My Drive and
-  Download…), `atdrive open-share <link>`, or `atdrive get <link>` to download
+  Download…), `atdrive accept <link>`, or `atdrive get <link>` to download
   once (signed out for a public link). `atdrive sync --install` makes ATDrive the
-  `x-scheme-handler/atdrive` on a Linux desktop.
+  `x-scheme-handler/atdrive` on a Linux desktop (running `atdrive accept %u`).
 - **A link to another app's space** says so; the Spaces folder (#28) shows those (`spaces.include`).
 - **Clickability:** many email and chat apps don't make `atdrive://` links clickable. If that's a
   real problem, the smallest fix is one static redirect page (the key stays in the fragment).
+
+### Pending shares
+
+Sharing with someone leaves the share waiting for them to accept or decline it (#68), instead of
+a link to pass along (`Invites.swift`, `docs/FORMAT.md`).
+
+- **An inbox per account:** `at://<did>/space/app.atdrive.inbox/self`, a `memberspace` with no
+  members (only its owner reads it) and `publicWrite` (anyone's writes are tracked). Made at
+  sign-in (`atdrive login`, the Mac app opening the drive) and whenever one is found missing
+  (`ensureInbox`).
+- **An invite** (`app.atdrive.invite`, keyed by the share's space key) goes in the sharer's own
+  repo in the recipient's inbox when they're added (`addMembers`); their PDS hears of it as of
+  any write to a space it's the authority of. Taking them off, or unsharing, deletes it (best
+  effort). Adding them again writes it again, which tells their PDS again: the way to re-send.
+- **It's only a pointer:** it names the share, nothing else, so an encrypted share's name stays
+  sealed. Being a member is what gives access. Invites to anyone's share but their writer's are
+  ignored, and a share that says you aren't a member (any more) isn't pending.
+- **Pending shares** (`pendingShares`): the inbox's writers (`listWriters`, with a credential for
+  your own space), each one's invites, minus shares already mounted (anywhere in the drive) and
+  declined ones, each opened for its name, newest first. **Accepting** mounts it at the top, as a
+  link does. **Declining** writes `app.atdrive.declined` in the home drive (sealed on an
+  encrypted drive), so it's declined on every device; its link still opens it.
+- **The CLI:** `atdrive shares` lists them; `atdrive accept` goes through them one by one, or
+  takes numbers, names, `--all`, or links (it replaced `open-share`, which stays as a hidden
+  alias); `atdrive decline` says no.
+- **The Mac app:** the menu lists them (Add, Decline), checked every 5 minutes and whenever the
+  menu opens; the menu-bar icon gets a ＋ while something's waiting.
+- **Scope:** writing invites into other people's inboxes needs
+  `space:<type>?authority=*&collection=app.atdrive.invite&action=create&action=update&action=delete`.
+  Sessions from before it can receive invites but not send them: they're told to sign in again,
+  and the share is made all the same.
+- **Not covered:** someone who hasn't opened this version yet has no inbox, so an invite sent
+  meanwhile isn't tracked (their PDS refuses the write notification). Share with them again once
+  they have, or send the link. Blocking a sender (`putMembers` on the inbox with no write access)
+  could come later.
 
 ### Finder
 
@@ -742,10 +782,11 @@ Checked against the proposal and the reference branch on 2026-11-17:
 ### Lexicons and scope
 
 - **Records:** `mount` as a node and version kind; `shared` as a change; `sharingKey` and `name`
-  in `settings`; `member`, `link` and `contact` in the drive space type's collections;
-  `shareKey` in the public repo.
+  in `settings`; `member`, `link`, `contact` and `declined` in the drive space type's collections;
+  `shareKey` in the public repo; the `inbox` space type, with `invite` its collection.
 - **Scope:** your drive spaces (read, write ATDrive's collections, `manage=create/update/delete`),
-  other accounts' drive spaces read-only (`authority=*&action=read`), and `repo:` the share key.
+  other accounts' drive spaces read-only (`authority=*&action=read`), your inbox, invites in
+  other accounts' inboxes, and `repo:` the share key.
   Naming the space type needs its lexicon published (the PDS resolves it for the consent
   screen), so until then the scope uses `space:*`, which the consent screen warns about.
   `atdrive dev lexicons publish` writes the schema records; then the DNS TXT record, then

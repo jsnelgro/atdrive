@@ -167,7 +167,7 @@ extension JoinedDrive {
     public func link(of mount: Node) async throws -> ShareLinkAddress? {
         let mount = try await current(mount)
         guard let info = mount.record.mount, info.owner == owner else { return nil }
-        guard case .members(true) = try await home.client.getSpacePolicy(info.space) else { return nil }
+        guard case .members(true, _) = try await home.client.getSpacePolicy(info.space) else { return nil }
         return ShareLinkAddress(space: info.space, key: info.linkKey?.data)
     }
 
