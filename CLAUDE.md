@@ -81,6 +81,9 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
     `Links.swift` (links, opening them), `People.swift` (members, the account's sharing key),
     `ShareKeys.swift` (member and link records), `Verification.swift` (verification codes).
     `Reset.swift`: `atdrive dev reset`.
+  - History: `History.swift` (restoring, purging, pruning), `DriveHistory.swift` (versions,
+    the trash, listings), per space. `JoinedHistory.swift`: the same across the joined drive
+    (the spaces this account writes), under joined IDs and paths, for the Mac app.
   - `SpaceData.swift`: Spaces (#28): every space the account is in, of any app, read-only
     (`SpaceData` reads it, `SpaceTree` lays it out as files, by app, space and record type).
     `SpacesFolder` (in `Mounts.swift`) puts it in the joined drive as a read-only folder
@@ -118,10 +121,11 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
   - `App/`: SwiftUI `MenuBarExtra`. Signs in, adds the File Provider domain, polls with
     `signalEnumerator`.
   - `Support/`: shared by both. App Group container (the ID comes from Info.plist
-    `ATDriveAppGroup`, filled in at build time) and the domain. `SharingRequests.swift`: how
-    Finder's sharing actions reach the app (the extension can't show windows): a request in the
-    App Group container plus a Darwin notification. The app's sharing windows and `atdrive://`
-    handling are in `App/Sharing.swift`.
+    `ATDriveAppGroup`, filled in at build time) and the domain. `FinderRequests.swift`: how
+    Finder's actions (sharing, Restore Previous Version…) reach the app (the extension can't show
+    windows): a request in the App Group container plus a Darwin notification. The app's sharing
+    windows and `atdrive://` handling are in `App/Sharing.swift`; the Trash and versions windows
+    in `App/History.swift`.
 - `Resources/{App,FileProvider,CLI}`: Info.plists and entitlements templates (`__BUNDLE_ID__`,
   `__APP_GROUP__`, `__VERSION__`). The version lives only in `Sources/ATDriveCore/Version.swift`
   (`scripts/version.sh` prints it). `build-app.sh` puts the CLI in the app at `Contents/Helpers/atdrive`, signed

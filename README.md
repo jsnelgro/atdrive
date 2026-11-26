@@ -189,7 +189,9 @@ That builds `ATDrive.app`, installs it to `~/Applications`, and launches it.
    one device, and signing out of either signs out of both.
 
 Files are downloaded the first time you open them. Right-click > Remove Download frees the space
-again. Changes made in two places at once are settled the same way as in a synced folder (see
+again. Right-click > **Restore Previous Version…** lists a file's versions, or a folder's changes,
+to put one back, and **Trash…** in the menu shows what was deleted (see
+[History and trash](#history-and-trash)). Changes made in two places at once are settled the same way as in a synced folder (see
 [Conflicts](#conflicts)): no edit is lost.
 
 `scripts/build-app.sh` builds the app without installing it. The top of the script lists its
@@ -449,6 +451,17 @@ atdrive restore /photos                     # bring it back from the trash
 - **Space:** history costs only what changed, since a chunk is stored once however many files and
   versions use it. `atdrive dev du` shows how much is current files and how much is history.
   `atdrive sync` and the Mac app delete history older than 30 days once a day.
+
+In the Mac app:
+
+- **Trash…** (in the menu) lists what was deleted, when, and where it was. **Restore** (or a
+  double-click) puts it back where it was, with the folders it was in.
+- **Restore Previous Version…** (right-click a file in Finder) lists its versions: each time its
+  contents changed, when, and on which device. Restoring one makes it the file's contents again,
+  keeping its name and place, as a new version, so it can be undone the same way. On a folder it
+  lists the changes in it, and puts the folder back as it was at a time you pick, or just after a
+  change. It isn't on things shared with you (their history is their owner's), or on a folder you
+  share (its history is what's in it).
 
 Times come from the clock of the device that made the change.
 
@@ -823,8 +836,8 @@ See [PLAN.md](PLAN.md) for the roadmap and design notes.
   what the drive has, but the extension doesn't yet get Finder's old copy to reuse.
 - **`atdrive sync` on a Mac** works, but two names that differ only in case (`Notes.txt` and
   `notes.txt`) clash on Mac disks. The app doesn't have this problem.
-- **History and the trash are only in the command line.** Things deleted in Finder or in a
-  synced folder still go to the trash, and `atdrive restore` brings them back.
+- **Emptying the trash, and `--at` reads (an old version opened without restoring it), are only
+  in the command line.** The Mac app shows the trash and restores from it, and restores versions.
 - **Symlinks and aliases aren't stored.**
 - **Approving and removing devices is only in the command line.** The Mac app can create a drive
   (encrypted or not), switch encryption, and join an encrypted drive (by approval or the recovery
