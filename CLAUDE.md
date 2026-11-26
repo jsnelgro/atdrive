@@ -66,7 +66,10 @@ SwiftPM package, no .xcodeproj. The CLI runs on macOS and Linux. The Finder inte
     `config.toml` or `~/.config`**: people keep that in version control. The drive's own settings
     are a record in the drive (`DriveSettings`), not local config.
   - `Spaces.swift`: **every** `com.atproto.space.*` call. The alpha API changes weekly, so keep it
-    contained here.
+    contained here. Space addresses: ATDrive stores and seals with `at://<did>/space/<type>/<key>`
+    (`spaceURI`; changing it would break encrypted drives, see docs/FORMAT.md), and the PDS takes
+    `at:space/<did>/<type>/<key>`: calls send `XRPCClient.wire(space)` and read spaces back with
+    `local`. `FakePDS` refuses the old form in parameters, as the PDS does.
   - `Records.swift`, `Lexicon.swift`: the `app.atdrive.*` record model (matches `lexicons/`).
   - `DriveTree.swift`: in-memory tree and path lookup. `Drive.swift`: upload, download, move, delete.
     One `Drive` is one space; a drive made of several spaces (shared folders) is several of them.

@@ -16,8 +16,8 @@ public struct ShareLinkAddress: Sendable, Equatable, CustomStringConvertible {
         self.key = key
     }
 
-    /// Reads `atdrive://open?at=…[#key]`, or a bare `at://` space address (with or without
-    /// `#key`).
+    /// Reads `atdrive://open?at=…[#key]`, or a bare space address (with or without `#key`), in
+    /// either form (`XRPCClient.spaceParts`).
     public init(parsing text: String) throws {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         var fragment: String?
@@ -27,7 +27,7 @@ public struct ShareLinkAddress: Sendable, Equatable, CustomStringConvertible {
             base = String(text[..<hash])
         }
         var space: String
-        if base.hasPrefix("at://") {
+        if base.hasPrefix("at://") || base.hasPrefix(XRPCClient.wirePrefix) {
             space = base
         } else if base.hasPrefix("atdrive://"), let components = URLComponents(string: base),
             components.host == "open" || components.path == "open" || components.path == "/open",
@@ -39,7 +39,7 @@ public struct ShareLinkAddress: Sendable, Equatable, CustomStringConvertible {
         }
         while space.hasSuffix("/") { space.removeLast() }
         guard XRPCClient.spaceParts(space) != nil else { throw ATDriveError.invalidLink(text) }
-        self.space = space
+        self.space = XRPCClient.local(space)
         if let fragment, !fragment.isEmpty {
             guard let key = Base64URL.decode(fragment), key.count == 32 else { throw SharingError.linkKeyWrong }
             self.key = key

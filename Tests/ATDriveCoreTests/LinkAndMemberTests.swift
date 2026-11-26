@@ -65,6 +65,18 @@ import Testing
         #expect(!other.isDrive)
     }
 
+    /// A link with the space in the PDS's form (`at:space/…`), as a newer client may make: the
+    /// same space, in ATDrive's form.
+    @Test func linksInThePDSsFormOpenTheSameSpace() throws {
+        let space = XRPCClient.spaceURI(authority: "did:plc:abc", type: Lexicon.driveSpace, key: "k1")
+        let wire = "at:space/did:plc:abc/\(Lexicon.driveSpace)/k1"
+        #expect(try ShareLinkAddress(parsing: wire).space == space)
+        #expect(
+            try ShareLinkAddress(parsing: "atdrive://open?at=at%3Aspace%2Fdid%3Aplc%3Aabc%2F\(Lexicon.driveSpace)%2Fk1")
+                .space == space)
+        #expect(throws: ATDriveError.self) { try ShareLinkAddress(parsing: "at:space/did:plc:abc/only-two") }
+    }
+
     /// A link to your own share is refused, though the share is in your drive (as yours).
     @Test func yourOwnLinkIsRefused() async throws {
         let mount = try await sharedPhotos()

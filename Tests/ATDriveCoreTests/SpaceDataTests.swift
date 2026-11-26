@@ -251,7 +251,13 @@ import Testing
     @Test func addressesAreChecked() {
         #expect(SpacesSettings.isAddress("at://alice.test/space/my.bulletin.board/home"))
         #expect(SpacesSettings.isAddress("at://did:plc:abc/space/my.bulletin.board/home"))
-        for bad in ["https://x", "at://alice.test/my.bulletin.board/home", "at://alice.test/space//home", "at://"] {
+        // The PDS's form.
+        #expect(SpacesSettings.isAddress("at:space/alice.test/my.bulletin.board/home"))
+        #expect(SpacesSettings.isAddress("at:space/did:plc:abc/my.bulletin.board/home"))
+        for bad in [
+            "https://x", "at://alice.test/my.bulletin.board/home", "at://alice.test/space//home", "at://",
+            "at:space/alice.test/my.bulletin.board", "at:space/", "at:space/did:plc:abc//home",
+        ] {
             #expect(!SpacesSettings.isAddress(bad), "\(bad)")
         }
     }
