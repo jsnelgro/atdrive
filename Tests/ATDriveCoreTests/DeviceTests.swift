@@ -130,8 +130,11 @@ import Testing
         let waiting = try await listed(phone, by: laptop)
         #expect(!waiting.approved)
         let code = try waiting.pairingCode(with: try #require(laptop.identity))
-        // The phone, while it waits, shows the same code for the laptop.
-        let fromPhone = try await phone.devices().first { $0.name == "laptop" }
+        // The phone, while it waits, shows the same code for the laptop (by its ID: the name of
+        // an approved device is sealed).
+        let laptopID = try #require(laptop.identity?.id)
+        let fromPhone = try await phone.devices().first { $0.id == laptopID }
+        #expect(fromPhone?.name == "device \(laptopID)")
         #expect(try fromPhone?.pairingCode(with: try #require(phone.identity)) == code)
 
         try await laptop.approve(waiting)

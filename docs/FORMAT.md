@@ -103,7 +103,8 @@ settings again and redo the change. Every write that changes the settings does t
 with the device and recovery records it writes (switching modes, replacing the keys, a new
 recovery key). Readers ignore the markers.
 
-`device` (encrypted drives; key: the device's ID, a TID): `name`, `publicKey` (raw X25519),
+`device` (encrypted drives; key: the device's ID, a TID): `name?` (only while it waits to be
+approved; dropped when it is, since the name is in `member`), `publicKey` (raw X25519),
 `keyring?` (the keyring wrapped for it), `member?` (sealed `{id, name, publicKey}`),
 `approvedBy?`, `createdAt`. Key `recovery`: `recoveryKeyring`.
 

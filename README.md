@@ -857,7 +857,8 @@ See [PLAN.md](PLAN.md) for the roadmap and design notes.
   them) until you run `atdrive encryption on` again, which offers to encrypt and keep them.
 - **Removing a device doesn't sign it out of your account.** Revoke its session in your
   account's settings too. See [Encryption](#encryption) for what removal does and doesn't do.
-- **Device names aren't encrypted,** even on an encrypted drive: the PDS sees what your devices
-  are called.
+- **A device's name is readable while it waits to be approved,** on an encrypted drive: the
+  device approving it shows the name beside the pairing code. Once approved, the name is
+  encrypted, and a device that's still waiting lists the approved ones by ID.
 
 </details>

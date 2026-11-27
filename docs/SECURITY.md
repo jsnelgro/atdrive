@@ -14,7 +14,7 @@ encrypted drive with anything that matters (#41).
 | Who | Plain drive (the default) | Encrypted drive |
 |---|---|---|
 | Other atproto accounts, the public | Kept out by the space's policy (the PDS enforces it) | Same |
-| Whoever runs the PDS, or breaks into it | **Can read and change everything.** That's the deal | Can't read file contents, names, folders, sizes of small parts, or history. Can't forge or alter a record without it showing. **Can** delete, withhold, or serve an older copy; sees record counts, chunk sizes, timing, which chunks are shared, and device names |
+| Whoever runs the PDS, or breaks into it | **Can read and change everything.** That's the deal | Can't read file contents, names, folders, sizes of small parts, or history. Can't forge or alter a record without it showing. **Can** delete, withhold, or serve an older copy; sees record counts, chunk sizes, timing, which chunks are shared, and the name of a device waiting to be approved |
 | Someone with a device's secrets (`session.json` and `device.json`, or their Keychain items) | Has the account's session until it's revoked | Also has that device's key, so the drive, until the device is removed |
 | A removed device | n/a | Keeps what it downloaded. Once the drive is re-encrypted (`devices rm` does it), its keys open nothing on the PDS, and what it writes with them is refused. Can still delete records until it's signed out on the PDS (#14) |
 
@@ -121,7 +121,11 @@ Ordered by how much they matter. None is new on this branch unless it says so.
   the PDS gains by changing.
 - **Times come from device clocks** (#40: TIDs), and decide which side of a race lost and what
   pruning keeps. A device with a wrong clock, or a removed one, can skew both.
-- **Device names are readable** on an encrypted drive (#39).
+- **Device names were readable** on an encrypted drive (#39). Fixed: approving a device drops
+  the name from its record; the one shown is sealed in its membership. A device's name is
+  readable only while it waits to be approved (the approving device shows it beside the pairing
+  code, which is what's compared). Records written before keep theirs until the next change of
+  keys rewrites them.
 - **Pairing codes are 16 digits compared by eye.** Sound (see `PairingCode`), but people skip
   comparing. The recovery key path avoids it.
 - **Turning encryption off publishes every key the drive has had.** That's the design. Once

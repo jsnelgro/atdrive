@@ -179,6 +179,10 @@ public struct DeviceEntry: Sendable, Equatable, Identifiable {
     public var id: String
     public var cid: String
     public var record: DeviceRecord
+
+    /// What its record calls it, for messages only (the PDS can change it); its ID once it's
+    /// approved, since the record names it no more.
+    var displayName: String { record.name.map { "“\($0)”" } ?? "device \(id)" }
 }
 
 /// A device in the drive, as `Drive.devices()` lists it.
@@ -230,7 +234,7 @@ struct KeyRecords {
 
     /// What a sender's device record calls it, for messages only: the PDS can change it.
     func name(of sender: Bytes) -> String {
-        devices.values.first { $0.record.publicKey == sender }.map { "“\($0.record.name)”" } ?? "an unknown device"
+        devices.values.first { $0.record.publicKey == sender }.map { $0.displayName } ?? "an unknown device"
     }
 }
 
@@ -358,8 +362,9 @@ extension Drive {
         for member: RosterEntry, keyring: Keyring, from sender: DeviceIdentity, existing: DeviceRecord? = nil
     ) throws -> DeviceRecord {
         let publicKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: member.publicKey.data)
-        var record = existing ?? DeviceRecord(name: member.name, publicKey: member.publicKey)
-        record.name = member.name
+        var record = existing ?? DeviceRecord(name: nil, publicKey: member.publicKey)
+        // Its name is in `member`, sealed.
+        record.name = nil
         record.publicKey = member.publicKey
         record.keyring = try keyring.wrapped(for: publicKey, from: sender.privateKey, space: space)
         record.member = try keyring.seal(member, space: space, collection: Lexicon.device, rkey: member.id)
@@ -654,7 +659,8 @@ extension Drive {
         return records.devices.values.map { entry in
             let member = roster?.first { $0.id == entry.id }
             return DeviceInfo(
-                id: entry.id, name: member?.name ?? entry.record.name, publicKey: entry.record.publicKey,
+                id: entry.id, name: member?.name ?? entry.record.name ?? "device \(entry.id)",
+                publicKey: entry.record.publicKey,
                 approved: roster == nil ? entry.record.keyring != nil : member != nil, isThisDevice: entry.id == me)
         }.sorted { ($0.approved ? 0 : 1, $0.name, $0.id) < ($1.approved ? 0 : 1, $1.name, $1.id) }
     }
