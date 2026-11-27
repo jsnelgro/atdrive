@@ -18,6 +18,10 @@ public struct DeviceIdentity: Codable, Sendable, Equatable, CustomStringConverti
     /// What this device trusts, by drive (its space's URI). Trust in one says nothing about
     /// another.
     public var trust: [String: DeviceTrust]
+    /// The drives (their spaces' URIs) the user said they expect not to be encrypted, when this
+    /// device first found them plain, or that this device saw its own devices turn encryption off
+    /// (`Drive.plainDriveCheck`).
+    public var confirmedPlain: [String]
 
     /// A new device: a new ID and key pair.
     public init(name: String = DeviceName.current) {
@@ -25,6 +29,7 @@ public struct DeviceIdentity: Codable, Sendable, Equatable, CustomStringConverti
         self.name = name
         privateKeyData = Bytes(Curve25519.KeyAgreement.PrivateKey().rawRepresentation)
         trust = [:]
+        confirmedPlain = []
     }
 
     public var privateKey: Curve25519.KeyAgreement.PrivateKey {
@@ -40,7 +45,7 @@ public struct DeviceIdentity: Codable, Sendable, Equatable, CustomStringConverti
     private enum CodingKeys: String, CodingKey {
         case id, name
         case privateKeyData = "privateKey"
-        case trust
+        case trust, confirmedPlain
     }
 
     public init(from decoder: Decoder) throws {
@@ -55,6 +60,7 @@ public struct DeviceIdentity: Codable, Sendable, Equatable, CustomStringConverti
             // That fails closed: an encrypted drive asks to approve this device again.
             trust = [:]
         }
+        confirmedPlain = try container.decodeIfPresent([String].self, forKey: .confirmedPlain) ?? []
         guard (try? Curve25519.KeyAgreement.PrivateKey(rawRepresentation: privateKeyData.data)) != nil else {
             throw DecodingError.dataCorruptedError(
                 forKey: .privateKeyData, in: container, debugDescription: "not a Curve25519 private key")

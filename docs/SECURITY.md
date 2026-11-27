@@ -14,7 +14,7 @@ encrypted drive with anything that matters (#41).
 | Who | Plain drive (the default) | Encrypted drive |
 |---|---|---|
 | Other atproto accounts, the public | Kept out by the space's policy (the PDS enforces it) | Same |
-| Whoever runs the PDS, or breaks into it | **Can read and change everything.** That's the deal | Can't read file contents, names, folders, sizes of small parts, or history. Can't forge or alter a record without it showing. **Can** delete, withhold, or serve an older copy; sees record counts, chunk sizes, timing, which chunks are shared, and device names |
+| Whoever runs the PDS, or breaks into it | **Can read and change everything.** That's the deal | Can't read file contents, names, folders, sizes of small parts, or history. Can't forge or alter a record without it showing. **Can** delete, withhold, or serve an older copy; sees record counts, chunk sizes, timing, which chunks are shared, and the name of a device waiting to be approved |
 | Someone with a device's secrets (`session.json` and `device.json`, or their Keychain items) | Has the account's session until it's revoked | Also has that device's key, so the drive, until the device is removed |
 | A removed device | n/a | Keeps what it downloaded. Once the drive is re-encrypted (`devices rm` does it), its keys open nothing on the PDS, and what it writes with them is refused. Can still delete records until it's signed out on the PDS (#14) |
 
@@ -86,37 +86,65 @@ Ordered by how much they matter. None is new on this branch unless it says so.
 **Medium**
 
 - **A device that never held the keys can't tell an encrypted drive from a plain one** (#35, new).
-  The PDS decides what a new device sees first: shown plain settings, it will use the drive
-  unencrypted, and what it writes is readable. Other devices then ignore those records, which
-  is how it shows. `atdrive login` says which kind of drive it opened; nothing more can be done
-  without a secret the new device already shares with the drive. Related: a device that was
-  offline while encryption was turned off and on again can be shown the old, genuine "off"
-  settings.
+  The PDS decides what a new device sees first: shown plain settings, it would use the drive
+  unencrypted, and what it writes would be readable. Nothing the new device can read settles it,
+  so the user does: the first time a device opens a plain drive, `atdrive login` and the Mac app
+  ask whether that's expected, and stop before writing anything if not (`Drive.plainDriveCheck`,
+  remembered per device). They also point out a plain drive that still has device records.
+  Accepted as the limit of trusting a PDS with first contact: someone who says yes without
+  thinking, and a device that was offline while encryption was turned off and on again, which
+  can be shown the old, genuine "off" settings.
 - **The OAuth scope is `space:*`** (#33): every space the account has, not just ATDrive's. It's that
   way until the lexicons are published (PLAN.md, *Protocol notes*). Narrow it then.
 - **`.atdrive/drive.json` holds decrypted metadata** for an encrypted drive, including chunk
   IDs, which decrypt chunks (#15). Now owner-only, but still in backups of the folder.
 - **Converting writes each file to the system's temporary folder** in the clear (#15; mode 600,
   deleted afterwards; left behind by a crash). Use a private folder beside the session.
-- **Rollback** (#36). The PDS can serve an older copy of the whole drive, or of single records. The
-  settings' generation covers only the settings, and only on devices that have seen newer ones.
-  A drive-wide fix needs a signed head that every write advances, which spaces can't do without
-  compare-and-swap.
-- **Two devices changing the keys at the same moment** (#37). Turning encryption on: each makes
-  a keyring; the last settings write wins, and what the other device sealed meanwhile is
-  unreadable to everyone else (it's held, not lost, while that device still runs). Removing
-  devices: two rotations can leave a device refusing its keyring, until the recovery key gets
-  it out. Rare; a re-read after the write would catch both.
+- **Rollback** (#36). The PDS can serve an older copy of the whole drive, or of single records,
+  and nothing it serves proves it's the newest (that needs a signed head every write advances,
+  which spaces can't do without compare-and-swap). Partly addressed, and only on devices that
+  saw the newer state: `Drive.update` refuses a drive older than the snapshot it holds
+  (`DriveRolledBack`), the settings' generation is refused if older than one the device read,
+  and a keyring missing a key the device accepted is refused. The whole-drive check holds only
+  until the PDS writes on top of the old copy; after that a rollback looks like a compacted
+  change feed.
+  - **Rolling back a key rotation** (removing a device, `encryption rotate`): a device that read
+    the rotated settings or took the new keyring refuses the old settings and the old keyring,
+    and once the rotation is converted it refuses records sealed with the old keys. A new device
+    approved by one of those gets the new keys. Two gaps:
+    - A device that hasn't synced since the rotation can be shown the drive from before it, and
+      would go on writing with keys the removed device has. Nothing it can read proves a
+      rotation happened.
+    - A new device set up with the recovery key: the PDS can serve it the old recovery record,
+      which opens the old keys. So a rotation makes a new recovery key by default (the Mac app
+      always does), and the old record doesn't open with it. Keeping the old key (typing it at
+      `devices rm` or `encryption rotate`) leaves this open, and says so. Either way, a device
+      that took the old keys shows as not approved on devices that saw the rotation
+      (`atdrive devices`).
+- **Two devices changing the keys at the same moment** (#37). Turning encryption on: each made
+  a keyring, and the last settings write won. Removing devices: two rotations could leave a
+  device refusing its keyring, until the recovery key got it out. Fixed: every change to the
+  settings creates a marker record keyed by the new generation and deletes the one it read,
+  in the same transaction, which makes it a compare-and-swap (`Drive.applyChangingSettings`).
+  The second device's write fails whole; it reads the drive again and decides again (turning
+  encryption on: it's already on; rotating: it rotates from the first one's keys). The PDS can
+  still delete markers, but that only brings back the race, which it could cause anyway by
+  dropping writes.
 
 **Low**
 
-- **The `iss` check at sign-in is skipped when the response has no `iss`** (#34). atproto servers
-  must send it; require it.
-- **Settings sealed when encryption is turned on come from the plain record** (#38), which the PDS
-  could have changed (a short retention, say) beforehand. Show them when turning it on.
+- **Settings sealed when encryption is turned on come from the plain record**, which the PDS
+  could have changed beforehand. Fixed for the retention (#38): `encryption on` and the Mac app
+  show the retention they'll seal, and one under a week is replaced by the default unless the
+  user typed it (`--retention-days`). The rest (the drive ID, sharing fields) isn't something
+  the PDS gains by changing.
 - **Times come from device clocks** (#40: TIDs), and decide which side of a race lost and what
   pruning keeps. A device with a wrong clock, or a removed one, can skew both.
-- **Device names are readable** on an encrypted drive (#39).
+- **Device names were readable** on an encrypted drive (#39). Fixed: approving a device drops
+  the name from its record; the one shown is sealed in its membership. A device's name is
+  readable only while it waits to be approved (the approving device shows it beside the pairing
+  code, which is what's compared). Records written before keep theirs until the next change of
+  keys rewrites them.
 - **Pairing codes are 16 digits compared by eye.** Sound (see `PairingCode`), but people skip
   comparing. The recovery key path avoids it.
 - **Turning encryption off publishes every key the drive has had.** That's the design. Once
@@ -137,7 +165,8 @@ Ordered by how much they matter. None is new on this branch unless it says so.
 - **Tampering tests** (`EncryptionTests`, `DeviceTests`, `SwitchingTests`): changed, moved,
   replayed and forged records, device records, settings and keyrings; what the PDS stores on
   each kind of drive; that nothing unreadable is ever taken for deleted.
-- **Sign-in:** PKCE (S256), `state`, the issuer, that the token's `sub` is the account asked for,
+- **Sign-in:** PKCE (S256), `state`, the issuer (`iss` is required in the redirect, and servers
+  that don't promise it are refused, #34), that the token's `sub` is the account asked for,
   DPoP-bound tokens, the redirect listener on 127.0.0.1 only.
 - **Files written:** permissions of the session, device identity and sync state; that keys,
   chunk IDs and recovery keys don't appear in logs or descriptions.

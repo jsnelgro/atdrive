@@ -206,6 +206,27 @@ import Testing
         #expect(snapshot.verified)
     }
 
+    /// The PDS serving an older copy of the drive than this device has seen (#36) is refused,
+    /// after a restart too. A device that never saw the newer copy can't tell.
+    @Test func anOlderCopyOfTheDriveIsRefused() async throws {
+        try await put("a", "a.txt")
+        let old = pds.saveRepo()
+        let before = try await drive.update(nil)
+        try await put("b", "b.txt")
+        let seen = try await drive.update(before)
+        #expect(seen.tree.nodes["b"] != nil)
+
+        pds.rollBack(to: old)
+        for snapshot in [seen, try reloaded(seen)] {
+            await #expect(throws: DriveRolledBack.self) { try await drive.update(snapshot) }
+            // Listed from scratch (as every hour) the same.
+            await #expect(throws: DriveRolledBack.self) {
+                try await drive.update(snapshot, now: Date() + 2 * DriveSnapshot.fullListingInterval)
+            }
+        }
+        #expect(try await drive.update(nil).tree.nodes["b"] == nil)
+    }
+
     @Test func aSavedSnapshotThatVerifiesIsntListedAgain() async throws {
         try await put("3aaaaaaaaaaa2", "a")
         let snapshot = try await drive.update(nil)

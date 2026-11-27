@@ -8,25 +8,30 @@ import Foundation
 extension Drive {
     /// Changes the home drive's settings, keeping them in the drive's form (sealed on an
     /// encrypted drive), and remembers the new record so it isn't taken for someone else's change.
+    /// If another device changes them at the same moment, `change` is made again, to theirs.
     func updateSettings(_ change: (inout DriveSettings) -> Void) async throws -> DriveSettings {
-        guard let mode else { throw DriveAccessError.notOpened }
-        guard let record = try await settingsRecord(),
-            var settings = settings(stored: record.value, keyring: mode == .encrypted ? keyring : nil)
-        else { throw DriveAccessError.damaged("settings") }
-        if mode == .encrypted, keyring == nil { throw DriveAccessError.locked }
-        change(&settings)
-        settings.generation += 1
-        let cids = try await apply([
-            .update(
-                collection: Lexicon.settings, rkey: Lexicon.settingsKey,
-                value: try stored(settings, with: mode == .encrypted ? keyring : nil))
-        ])
-        if mode == .encrypted, let keyring, let me = identity {
-            accept(keyring, as: me, settings: settings, deviceRecord: keys.value.deviceRecord, settingsRecord: cids[0])
-        } else if mode == .plain {
-            becomePlain(settings, settingsRecord: cids[0])
+        try await retryingSettingsRaces(reopening: true) {
+            guard let mode else { throw DriveAccessError.notOpened }
+            guard let record = try await settingsRecord(),
+                var settings = settings(stored: record.value, keyring: mode == .encrypted ? keyring : nil)
+            else { throw DriveAccessError.damaged("settings") }
+            if mode == .encrypted, keyring == nil { throw DriveAccessError.locked }
+            change(&settings)
+            settings.generation += 1
+            let cids = try await applyChangingSettings(
+                [
+                    .update(
+                        collection: Lexicon.settings, rkey: Lexicon.settingsKey,
+                        value: try stored(settings, with: mode == .encrypted ? keyring : nil))
+                ], generation: settings.generation, read: record)
+            if mode == .encrypted, let keyring, let me = identity {
+                accept(
+                    keyring, as: me, settings: settings, deviceRecord: keys.value.deviceRecord, settingsRecord: cids[0])
+            } else if mode == .plain {
+                becomePlain(settings, settingsRecord: cids[0])
+            }
+            return settings
         }
-        return settings
     }
 }
 
@@ -76,7 +81,10 @@ extension JoinedDrive {
         var settings = try await home.settings()
         if settings?.sharingKey == nil {
             let key = Curve25519.KeyAgreement.PrivateKey()
-            settings = try await home.updateSettings { $0.sharingKey = Bytes(key.rawRepresentation) }
+            // Another device may make one meanwhile: theirs is kept.
+            settings = try await home.updateSettings {
+                if $0.sharingKey == nil { $0.sharingKey = Bytes(key.rawRepresentation) }
+            }
         }
         guard let pair = settings?.sharingKeyPair(encrypted: encrypted) else {
             throw DriveAccessError.damaged("settings")
@@ -132,7 +140,8 @@ extension JoinedDrive {
         -> [InviteFailure]
     {
         let (info, share) = try await ownShare(mount)
-        if case .members = try await home.client.getSpacePolicy(info.space) {} else {
+        if case .members = try await home.client.getSpacePolicy(info.space) {
+        } else {
             // Unshared since (`personalspace`): members again, link off.
             try await home.client.updateSpace(info.space, policy: .members(publicRead: false))
         }

@@ -90,6 +90,18 @@ import Testing
         #expect(session.accessJwt == "access-1")
     }
 
+    @Test func aServerThatDoesntSendTheIssuerIsRefused() async {
+        let server = FakeAuthorizationServer()
+        server.omitsIssuerSupport = true
+        let resolver = IdentityResolver(environment: ["ATDRIVE_PLC_URL": "https://plc.test"], transport: server)
+        await #expect(throws: ATDriveError.self) {
+            _ = try await OAuthLogin.prepare(
+                identifier: "did:plc:alice", redirectURI: "http://127.0.0.1:5555/", resolver: resolver,
+                environment: [:], transport: server)
+        }
+        #expect(server.parRequests == 0)
+    }
+
     @Test func fullSignInAgainstAFakeServer() async throws {
         let server = FakeAuthorizationServer()
         let resolver = IdentityResolver(environment: ["ATDRIVE_PLC_URL": "https://plc.test"], transport: server)
@@ -108,6 +120,15 @@ import Testing
         await #expect(throws: ATDriveError.self) {
             _ = try await pending.complete(with: ["state": "forged", "code": "c"], transport: server)
         }
+        // So is one that doesn't say which server sent it, or names another (RFC 9207).
+        await #expect(throws: ATDriveError.loginFailed("the response doesn't say which server sent it (no `iss`)")) {
+            _ = try await pending.complete(with: ["state": par["state"]!, "code": "the-code"], transport: server)
+        }
+        await #expect(throws: ATDriveError.self) {
+            _ = try await pending.complete(
+                with: ["state": par["state"]!, "code": "the-code", "iss": "https://elsewhere.test"], transport: server)
+        }
+        #expect(server.lastToken.isEmpty)  // neither got as far as the code
         let session = try await pending.complete(
             with: ["state": par["state"]!, "code": "the-code", "iss": "https://pds.test"], transport: server)
         #expect(session.did == "did:plc:alice")
@@ -137,6 +158,8 @@ final class FakeAuthorizationServer: HTTPTransport, @unchecked Sendable {
     private(set) var lastToken: [String: String] = [:]
     private(set) var resourceAuthorizations: [String] = []
     var expireNextResourceRequest = false
+    /// Metadata that doesn't promise `iss` in the redirect.
+    var omitsIssuerSupport = false
     private var issued = 0
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
@@ -165,6 +188,7 @@ final class FakeAuthorizationServer: HTTPTransport, @unchecked Sendable {
                 "authorization_endpoint": "https://pds.test/oauth/authorize",
                 "token_endpoint": "https://pds.test/oauth/token",
                 "revocation_endpoint": "https://pds.test/oauth/revoke",
+                "authorization_response_iss_parameter_supported": !omitsIssuerSupport,
             ])
         case (_, "/oauth/par"):
             parRequests += 1

@@ -286,6 +286,9 @@ public struct MountInfo: Codable, Sendable, Equatable {
 /// trusted with everything anyway.
 public struct DriveSettings: Codable, Sendable, Equatable {
     public static let defaultRetentionDays = 30
+    /// The shortest retention taken from a plain settings record when encryption is turned on
+    /// (`Drive.settingsToSeal`): the PDS could have written a shorter one.
+    public static let minimumUntypedRetentionDays = 7
 
     /// How long history is kept (versions, and the trash).
     public var retentionDays: Int
@@ -458,7 +461,11 @@ public struct RosterEntry: Codable, Sendable, Equatable {
 /// change (which rewrites them all), so two devices approving different devices at the same
 /// moment don't overwrite each other.
 public struct DeviceRecord: Codable, Sendable, Equatable {
-    public var name: String
+    /// The device's name, readable by the PDS: only while it waits to be approved, for the
+    /// approving device to show. Approving it drops it (the name is sealed in `member`), so the
+    /// PDS doesn't learn what the drive's devices are called (#39). Records from before that
+    /// still have one.
+    public var name: String?
     /// The device's raw Curve25519 public key.
     public var publicKey: Bytes
     /// The drive's keyring, wrapped for this device. `nil` while it waits to be approved.
@@ -471,7 +478,7 @@ public struct DeviceRecord: Codable, Sendable, Equatable {
     public var createdAt: String
 
     public init(
-        name: String, publicKey: Bytes, keyring: WrappedKeyring? = nil, approvedBy: String? = nil,
+        name: String?, publicKey: Bytes, keyring: WrappedKeyring? = nil, approvedBy: String? = nil,
         member: SealedValue? = nil, createdAt: Date = Date()
     ) {
         self.name = name
@@ -489,7 +496,7 @@ public struct DeviceRecord: Codable, Sendable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        name = try container.decode(String.self, forKey: .name)
+        name = try container.decodeIfPresent(String.self, forKey: .name)
         publicKey = try container.decode(Bytes.self, forKey: .publicKey)
         keyring = try container.decodeIfPresent(WrappedKeyring.self, forKey: .keyring)
         approvedBy = try container.decodeIfPresent(String.self, forKey: .approvedBy)
@@ -500,7 +507,7 @@ public struct DeviceRecord: Codable, Sendable, Equatable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(Lexicon.device, forKey: .type)
-        try container.encode(name, forKey: .name)
+        try container.encodeIfPresent(name, forKey: .name)
         try container.encode(publicKey, forKey: .publicKey)
         try container.encodeIfPresent(keyring, forKey: .keyring)
         try container.encodeIfPresent(approvedBy, forKey: .approvedBy)

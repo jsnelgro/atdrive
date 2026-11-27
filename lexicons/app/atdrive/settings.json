@@ -4,8 +4,8 @@
   "defs": {
     "main": {
       "type": "record",
-      "key": "literal:self",
-      "description": "The drive's settings, which every device follows. How this record is stored is what says whether the drive is encrypted: sealed (only the sealed field) on an encrypted drive, plain on one that isn't. Written when the drive is created, when encryption is turned on or off, and when a device is removed.",
+      "key": "any",
+      "description": "The drive's settings, which every device follows, in the record keyed `self`. How this record is stored is what says whether the drive is encrypted: sealed (only the sealed field) on an encrypted drive, plain on one that isn't. Written when the drive is created, when encryption is turned on or off, and when a device is removed. Each change to it also creates an empty record keyed `generation-<n>`, n being its new generation, and deletes the one before, in the same transaction: two devices changing the settings at once can't both succeed (see docs/FORMAT.md).",
       "record": {
         "type": "object",
         "properties": {

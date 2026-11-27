@@ -130,8 +130,11 @@ import Testing
         let waiting = try await listed(phone, by: laptop)
         #expect(!waiting.approved)
         let code = try waiting.pairingCode(with: try #require(laptop.identity))
-        // The phone, while it waits, shows the same code for the laptop.
-        let fromPhone = try await phone.devices().first { $0.name == "laptop" }
+        // The phone, while it waits, shows the same code for the laptop (by its ID: the name of
+        // an approved device is sealed).
+        let laptopID = try #require(laptop.identity?.id)
+        let fromPhone = try await phone.devices().first { $0.id == laptopID }
+        #expect(fromPhone?.name == "device \(laptopID)")
         #expect(try fromPhone?.pairingCode(with: try #require(phone.identity)) == code)
 
         try await laptop.approve(waiting)
@@ -324,6 +327,91 @@ import Testing
         #expect(phone.keyring == keyring)
         #expect(try await contents(try #require(view.tree.nodes[node.id]), drive: phone) == "aaaabbbb")
         #expect(try await unlocked("fresh").keyring == keyring)
+    }
+
+    /// Two devices replacing the keys at the same moment, one removing a device: the second
+    /// one's write fails, and it replaces the keys again, from the first one's. One keyring that
+    /// every device left accepts, and nothing unreadable once it's converted (#37).
+    @Test func twoDevicesReplacingTheKeysAtOnce() async throws {
+        let phone = try await unlocked("phone")
+        let tablet = try await unlocked("tablet")
+        let sleeper = try await unlocked("sleeper")  // offline throughout
+        let node = try await laptop.upload(try file("aaaabbbb"), as: "a.txt", in: nil)
+        let original = try #require(laptop.keyring)
+        let (laptop, recoveryKey) = (laptop, recoveryKey)
+        pds.meanwhile { try await laptop.rotateKeys(recoveryKey: recoveryKey) }
+        #expect(try await phone.remove(try #require(tablet.identity?.id), recoveryKey: recoveryKey))
+        pds.onRequest = nil
+        let first = try #require(laptop.keyring)
+        let keyring = try #require(phone.keyring)
+        #expect(keyring.keys.count == 1 && first != keyring && first != original)
+        #expect(original.key(id: keyring.current.id) == nil && first.key(id: keyring.current.id) == nil)
+        let settings = try #require(try await phone.settings())
+        #expect(settings.rotating)
+        #expect(
+            Set(settings.retiredKeys) == Set((original.keys + first.keys).map { Bytes($0.rawRepresentation) }))
+
+        // The laptop writes with the keys it made, before it notices.
+        let between = try await laptop.upload(try file("ccccdddd"), as: "between.txt", in: nil)
+        #expect(try await opened(laptop) == keyring)
+        #expect(try await opened(restarted(laptop)) == keyring)
+        #expect(try await opened(restarted(phone)) == keyring)
+        #expect(try await opened(restarted(sleeper)) == keyring)
+        #expect(try await laptop.devices().filter(\.approved).map(\.name) == ["laptop", "phone", "sleeper"])
+        #expect(try await unlocked("fresh").keyring == keyring)
+
+        let status = try await phone.convert()
+        #expect(status.isSettled && status.unreadable == 0)
+        for device in [laptop, phone] {
+            let view = try await device.update(nil)
+            #expect(view.tree.unreadable.isEmpty && view.history.unreadable.isEmpty)
+            #expect(try await contents(try #require(view.tree.nodes[node.id]), drive: device) == "aaaabbbb")
+            #expect(try await contents(try #require(view.tree.nodes[between.id]), drive: device) == "ccccdddd")
+        }
+        await #expect(throws: DriveAccessError.self) { try await restarted(tablet).open() }
+    }
+
+    /// One device converting while another replaces the keys again: it doesn't end the other's
+    /// rotation when it's done with its own; it carries on under the new keys.
+    @Test func convertingWhileAnotherDeviceReplacesTheKeys() async throws {
+        let phone = try await unlocked("phone")
+        let node = try await laptop.upload(try file("aaaabbbb"), as: "a.txt", in: nil)
+        try await laptop.rotateKeys(recoveryKey: recoveryKey)
+        _ = try await opened(phone)
+        let (laptop, recoveryKey) = (laptop, recoveryKey)
+        pds.meanwhile { try await laptop.rotateKeys(recoveryKey: recoveryKey) }
+        let status = try await phone.convert()
+        pds.onRequest = nil
+        let keyring = try #require(laptop.keyring)
+        #expect(status.isSettled && status.unreadable == 0 && phone.keyring == keyring)
+        let settings = try #require(try await laptop.settings())
+        #expect(!settings.rotating && settings.retiredKeys.isEmpty)
+        for device in [laptop, phone] {
+            let view = try await device.update(nil)
+            #expect(view.tree.unreadable.isEmpty && view.history.unreadable.isEmpty)
+            #expect(try await contents(try #require(view.tree.nodes[node.id]), drive: device) == "aaaabbbb")
+        }
+    }
+
+    /// A change to the settings writes a marker beside them, and deletes the one before: two
+    /// devices that read the same settings can't both change them.
+    @Test func aChangeToTheSettingsReplacesItsMarker() async throws {
+        let read = try #require(try await laptop.settingsRecord())
+        try await laptop.rotateKeys(recoveryKey: recoveryKey)
+        let after = try #require(try await laptop.settingsRecord())
+        let generation = try #require(try await laptop.settings()).generation
+        #expect(after.markers == [SettingsRecord.marker(generation)])
+        // A write based on what was read before is refused, and changes nothing.
+        let stale = try #require(laptop.keyring)
+        await #expect(throws: DriveAccessError.settingsChanged) {
+            try await laptop.applyChangingSettings(
+                [
+                    .update(
+                        collection: Lexicon.settings, rkey: Lexicon.settingsKey,
+                        value: try laptop.stored(DriveSettings(generation: generation), with: stale))
+                ], generation: generation, read: read)
+        }
+        #expect(try await laptop.settingsRecord()?.cid == after.cid)
     }
 
     @Test func droppingHistoryLeavesTheDriveAsItIs() async throws {

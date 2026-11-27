@@ -107,6 +107,24 @@ import Testing
         }
     }
 
+    /// Nor what the drive's devices are called, once they're approved (#39). A device's name is
+    /// readable only while it waits, for the device approving it to show.
+    @Test func thePDSDoesntLearnDeviceNames() async throws {
+        let name = "Johnny's MacBook Pro"
+        let mac = pds.device(name)
+        try await mac.requestAccess()
+        #expect(pds.everythingStored.contains { $0.range(of: Data(name.utf8)) != nil })
+        let waiting = try #require(try await laptop.devices().first { $0.name == name })
+        #expect(!waiting.approved)
+
+        try await laptop.approve(waiting)
+        #expect(!pds.everythingStored.contains { $0.range(of: Data(name.utf8)) != nil })
+        // The devices still know it, from its sealed membership.
+        #expect(try await laptop.devices().map(\.name) == [name, "laptop"])
+        try await mac.accept(try #require(try await mac.arrivedKeyring()))
+        #expect(try await mac.devices().filter(\.approved).map(\.name) == [name, "laptop"])
+    }
+
     // MARK: Tampering
 
     @Test func aSealedValueMovedToAnotherRecordIsUnreadable() async throws {

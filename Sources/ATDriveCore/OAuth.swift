@@ -190,11 +190,16 @@ public struct PendingAuthorization: Sendable {
         async throws -> Session
     {
         guard params["state"] == state else { throw ATDriveError.loginFailed("unexpected sign-in response") }
+        // Which server answered (RFC 9207), so one server's response can't be passed off as
+        // another's. atproto requires it, on errors too.
+        guard let issuer = params["iss"] else {
+            throw ATDriveError.loginFailed("the response doesn't say which server sent it (no `iss`)")
+        }
+        guard issuer == server.issuer else {
+            throw ATDriveError.loginFailed("response came from \(issuer), expected \(server.issuer)")
+        }
         if let error = params["error"] {
             throw ATDriveError.loginFailed(params["error_description"] ?? error)
-        }
-        if let issuer = params["iss"], issuer != server.issuer {
-            throw ATDriveError.loginFailed("response came from \(issuer), expected \(server.issuer)")
         }
         guard let code = params["code"] else { throw ATDriveError.loginFailed("no authorization code") }
 
@@ -290,11 +295,19 @@ struct AuthorizationServer: Sendable {
             var authorization_endpoint: URL
             var token_endpoint: URL
             var revocation_endpoint: URL?
+            var authorization_response_iss_parameter_supported: Bool?
         }
         let metadata: Metadata = try await fetchJSON(
             issuerURL.appendingPathComponent(".well-known/oauth-authorization-server"), transport: transport)
         guard metadata.issuer == issuer else {
             throw ATDriveError.identity("authorization server \(metadata.issuer) doesn't match \(issuer)")
+        }
+        // atproto's OAuth profile requires it: without `iss` in the redirect, a response from
+        // another server couldn't be told apart (`PendingAuthorization.complete`).
+        guard metadata.authorization_response_iss_parameter_supported == true else {
+            throw ATDriveError.identity(
+                "authorization server \(metadata.issuer) doesn't say which server answers a sign-in "
+                    + "(authorization_response_iss_parameter_supported), which atproto requires")
         }
         return AuthorizationServer(
             issuer: metadata.issuer, pushedAuthorizationRequestEndpoint: metadata.pushed_authorization_request_endpoint,

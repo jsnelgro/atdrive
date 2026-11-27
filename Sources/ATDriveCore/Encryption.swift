@@ -50,12 +50,30 @@ extension Drive {
     ///
     /// What's in the drive is still plain afterwards: run `convert` to encrypt it. The PDS has
     /// had it in the clear, so this protects it from now on, not from copies already made.
-    public func enableEncryption() async throws -> RecoveryKey {
-        guard try await open() == .plain else { throw DriveAccessError.alreadyEncrypted }
+    ///
+    /// The settings sealed are the plain ones (`settingsToSeal`): `retentionDays` is how long to
+    /// keep history, if the user typed it.
+    ///
+    /// Two devices turning it on at once: one wins, and the other gets `alreadyEncrypted` (and
+    /// has to be approved), having written nothing.
+    public func enableEncryption(retentionDays: Int? = nil) async throws -> RecoveryKey {
+        try await retryingSettingsRaces { try await turnEncryptionOn(retentionDays: retentionDays) }
+    }
+
+    private func turnEncryptionOn(retentionDays: Int?) async throws -> RecoveryKey {
+        let mode: DriveMode
+        do {
+            mode = try await open()
+        } catch is DriveAccessError where keys.value.mode == .encrypted {
+            // Encrypted, by another device (this one doesn't have the keys yet).
+            throw DriveAccessError.alreadyEncrypted
+        }
+        guard mode == .plain else { throw DriveAccessError.alreadyEncrypted }
         guard let me = identity else { throw DriveAccessError.notApproved(pending: false) }
         guard let records = try await keyRecords(),
-            var settings = settings(stored: records.settings.value, keyring: nil)
+            let plain = settings(stored: records.settings.value, keyring: nil)
         else { throw DriveAccessError.damaged("settings") }
+        var settings = Self.settingsToSeal(plain, retentionDays: retentionDays)
         settings.converting = true
         settings.rotating = false
         settings.formerKeys = []
@@ -69,9 +87,31 @@ extension Drive {
                 SpaceWrite.update(
                     collection: Lexicon.settings, rkey: Lexicon.settingsKey, value: try stored(settings, with: keyring))
             ] + (try keyWrites(keyring: keyring, recoveryKey: recoveryKey, me: me, existing: records))
-        let cids = try await apply(writes)
+        let cids = try await applyChangingSettings(writes, generation: settings.generation, read: records.settings)
         accept(keyring, as: me, settings: settings, deviceRecord: cids[2], settingsRecord: cids[0])
         return recoveryKey
+    }
+
+    /// The settings that turning encryption on would seal, for showing first: the plain ones,
+    /// which the PDS could have changed. Once sealed, every device trusts them, so a retention
+    /// shorter than `DriveSettings.minimumUntypedRetentionDays` isn't taken from there: the
+    /// default is sealed instead, unless the user typed one (`retentionDays`).
+    public func settingsToSeal(retentionDays: Int? = nil) async throws -> DriveSettings {
+        guard try await open() == .plain else { throw DriveAccessError.alreadyEncrypted }
+        guard let record = try await settingsRecord(), let plain = settings(stored: record.value, keyring: nil) else {
+            throw DriveAccessError.damaged("settings")
+        }
+        return Self.settingsToSeal(plain, retentionDays: retentionDays)
+    }
+
+    static func settingsToSeal(_ plain: DriveSettings, retentionDays: Int?) -> DriveSettings {
+        var settings = plain
+        if let retentionDays {
+            settings.retentionDays = max(retentionDays, 1)
+        } else if settings.retentionDays < DriveSettings.minimumUntypedRetentionDays {
+            settings.retentionDays = DriveSettings.defaultRetentionDays
+        }
+        return settings
     }
 
     /// Turns encryption off: the settings become plain and publish the drive's keys, and the
@@ -82,11 +122,18 @@ extension Drive {
     /// The published keys are also how the drive's other devices know this wasn't the PDS's
     /// doing (`open`).
     public func disableEncryption() async throws {
+        try await retryingSettingsRaces { try await turnEncryptionOff() }
+    }
+
+    private func turnEncryptionOff() async throws {
         guard try await open() == .encrypted else { throw DriveAccessError.notEncrypted }
         guard let keyring else { throw DriveAccessError.locked }
-        guard let records = try await keyRecords(),
-            var settings = settings(stored: records.settings.value, keyring: keyring)
-        else { throw DriveAccessError.damaged("settings") }
+        guard let records = try await keyRecords() else { throw DriveAccessError.noDrive }
+        // Changed since `open`: the keyring may not be theirs.
+        guard records.settings.cid == keys.value.settingsRecord else { throw DriveAccessError.settingsChanged }
+        guard var settings = settings(stored: records.settings.value, keyring: keyring) else {
+            throw DriveAccessError.damaged("settings")
+        }
         settings.converting = false
         settings.rotating = false
         // Only of use on an encrypted drive, and they'd be readable.
@@ -100,9 +147,9 @@ extension Drive {
         var writes: [SpaceWrite] = [
             .update(collection: Lexicon.settings, rkey: Lexicon.settingsKey, value: try stored(settings, with: nil))
         ]
-        if records.recovery != nil { writes.append(.delete(collection: Lexicon.device, rkey: Lexicon.recoveryKey)) }
+        if records.recoveryStored { writes.append(.delete(collection: Lexicon.device, rkey: Lexicon.recoveryKey)) }
         for id in records.devices.keys.sorted() { writes.append(.delete(collection: Lexicon.device, rkey: id)) }
-        let cids = try await apply(writes)
+        let cids = try await applyChangingSettings(writes, generation: settings.generation, read: records.settings)
         becomePlain(settings, settingsRecord: cids[0])
     }
 
@@ -156,24 +203,31 @@ extension Drive {
         if mode == .encrypted, keyring == nil { throw DriveAccessError.locked }
         var found = try await survey(mode)
         if mode == .encrypted, adoptUnsealed, found.unsealed > 0, !keys.value.converting {
-            try await setConverting(true)
+            guard try await setConverting(true) else { throw DriveAccessError.settingsChanged }
             found = try await survey(mode)
         }
         var done = 0
-        let total = found.pending
-        // A pass can leave work behind (a record another device rewrote meanwhile), so it's
-        // surveyed again, a few times at most.
-        for _ in 0..<4 where found.pending > 0 {
-            let before = found.pending
-            try await convert(found, mode: mode) {
-                done += 1
-                progress?(min(done, total), total)
+        var total = found.pending
+        // Another device can change the keys meanwhile (`rotateKeys`): then there's more to do,
+        // under its keys, before converting is done.
+        for _ in 0..<3 {
+            // A pass can leave work behind (a record another device rewrote meanwhile), so it's
+            // surveyed again, a few times at most.
+            for _ in 0..<4 where found.pending > 0 {
+                let before = found.pending
+                try await convert(found, mode: mode) {
+                    done += 1
+                    progress?(min(done, total), total)
+                }
+                found = try await survey(mode)
+                if found.pending >= before { break }
             }
+            guard mode == .encrypted, found.pending == 0, keys.value.converting || keys.value.rotating,
+                try await !setConverting(false)
+            else { break }
+            guard try await open() == mode else { break }
             found = try await survey(mode)
-            if found.pending >= before { break }
-        }
-        if mode == .encrypted, found.pending == 0, keys.value.converting || keys.value.rotating {
-            try await setConverting(false)
+            total = done + found.pending
         }
         return found.status(mode, keys: keys.value)
     }
@@ -181,20 +235,38 @@ extension Drive {
     /// Sets an encrypted drive's `converting` flag, in its sealed settings. Turning it off ends
     /// rotating too, once everything is sealed with the current keys: the retired keys are
     /// dropped (`DriveSettings.forgetRetiredKeys`), and nothing sealed with them is read again.
-    private func setConverting(_ converting: Bool) async throws {
-        guard let me = identity, let keyring, let record = try await settingsRecord(),
-            var settings = settings(stored: record.value, keyring: keyring)
-        else { throw DriveAccessError.damaged("settings") }
+    ///
+    /// Only if the settings are the ones the drive was opened with, which the survey went by:
+    /// returns `false`, having written nothing, if another device changed them since. Open the
+    /// drive and survey it again.
+    @discardableResult
+    private func setConverting(_ converting: Bool) async throws -> Bool {
+        guard let me = identity, let keyring, let record = try await settingsRecord() else {
+            throw DriveAccessError.damaged("settings")
+        }
+        guard record.cid == keys.value.settingsRecord else { return false }
+        guard var settings = settings(stored: record.value, keyring: keyring) else {
+            throw DriveAccessError.damaged("settings")
+        }
         settings.converting = converting
         if !converting {
             settings.rotating = false
             settings.forgetRetiredKeys()
         }
         settings.generation += 1
-        let cids = try await apply([
-            .update(collection: Lexicon.settings, rkey: Lexicon.settingsKey, value: try stored(settings, with: keyring))
-        ])
+        let cids: [String?]
+        do {
+            cids = try await applyChangingSettings(
+                [
+                    .update(
+                        collection: Lexicon.settings, rkey: Lexicon.settingsKey,
+                        value: try stored(settings, with: keyring))
+                ], generation: settings.generation, read: record)
+        } catch DriveAccessError.settingsChanged {
+            return false
+        }
         accept(keyring, as: me, settings: settings, deviceRecord: keys.value.deviceRecord, settingsRecord: cids[0])
+        return true
     }
 
     /// Every record of the drive as stored, and how each stands against the drive's mode.

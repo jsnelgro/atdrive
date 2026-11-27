@@ -12,7 +12,7 @@
           "name": {
             "type": "string",
             "maxLength": 255,
-            "description": "The device's name, shown in device lists and pairing prompts."
+            "description": "The device's name, for the pairing prompt, while it waits to be approved. Approving it drops this: the name shown from then on is the one sealed in member, so the PDS doesn't see what the drive's devices are called."
           },
           "publicKey": {
             "type": "bytes",

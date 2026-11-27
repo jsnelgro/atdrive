@@ -150,7 +150,24 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
     }
 
     /// Called with each method name before it's handled (e.g. to change something mid-sync).
-    var onRequest: (@Sendable (String) -> Void)?
+    var onRequest: (@Sendable (String) async -> Void)?
+
+    /// Runs `action` the next time `method` is requested, before it's handled, once: what
+    /// another device did at that very moment. Requests `action` makes don't run it again.
+    func meanwhile(
+        before method: String = "com.atproto.space.applyWrites", _ action: @escaping @Sendable () async throws -> Void
+    ) {
+        let done = Locked(false)
+        onRequest = { requested in
+            guard requested == method else { return }
+            let first = done.update { done in
+                defer { done = true }
+                return !done
+            }
+            guard first else { return }
+            do { try await action() } catch { Issue.record(error, "meanwhile") }
+        }
+    }
 
     // MARK: Accounts
 
@@ -198,7 +215,7 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
     // MARK: Handling requests
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        onRequest?(request.url!.lastPathComponent)
+        await onRequest?(request.url!.lastPathComponent)
         let latency = lock.withLock {
             atOnce += 1
             mostAtOnce = max(mostAtOnce, atOnce)
@@ -810,6 +827,23 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
     }
 
     private func parse(_ json: Data) -> Any { try! JSONSerialization.jsonObject(with: json) }
+
+    private var savedRepos: [Int: Repo] = [:]
+
+    /// A copy of a space's repo as it is now, to serve again later (`rollBack(to:)`).
+    func saveRepo(space: String = FakePDS.space) -> Int {
+        lock.withLock {
+            let token = savedRepos.count
+            savedRepos[token] = repos[RepoKey(space: space, did: owner(of: space))]
+            return token
+        }
+    }
+
+    /// Serves a saved copy of the repo from now on, as a PDS could: records, change feed and
+    /// commit all as they were (#36).
+    func rollBack(to token: Int, space: String = FakePDS.space) {
+        lock.withLock { repos[RepoKey(space: space, did: owner(of: space))] = savedRepos[token] }
+    }
 
     /// Stores a record exactly as given, bypassing `Drive`, to set up odd states. It goes
     /// through the change feed like any write. Creates the space if it doesn't exist.

@@ -59,6 +59,22 @@ public struct ChangeFeedGap: Error, CustomStringConvertible, Equatable {
     public var description: String
 }
 
+/// The server served the drive at an older revision than this device has seen (#36): an old
+/// copy, played back, which would undo changes made since. `Drive.update` refuses it, and the
+/// snapshot this device has stays as it was.
+public struct DriveRolledBack: Error, CustomStringConvertible, Equatable {
+    /// The newest revision this device has seen, and the one served.
+    public var seen: String
+    public var served: String
+
+    public var description: String {
+        "the server returned an older copy of the drive (revision \(served); this device has seen \(seen)). "
+            + "Nothing was changed here. If your PDS was restored from a backup, that's expected: to take "
+            + "the drive as it is now, delete what this device saved of it (in a synced folder, "
+            + "`.atdrive/drive.json`)"
+    }
+}
+
 /// The drive as this device last fetched it: every record's CID (`repo`), the file tree
 /// (`tree`, with the node records it can't read), its history (`history`) and its `settings`.
 /// `Drive.update` keeps it current by applying the change feed, and lists everything again when

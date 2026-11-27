@@ -6,7 +6,8 @@ public enum Lexicon {
     public static let node = "app.atdrive.node"
     /// Record collection holding one record per change to a file or folder: the history.
     public static let version = "app.atdrive.version"
-    /// Record collection holding the drive's settings, in one record (`settingsKey`).
+    /// Record collection holding the drive's settings, in one record (`settingsKey`), and the
+    /// marker that makes changing them a compare-and-swap (`Drive.applyChangingSettings`).
     public static let settings = "app.atdrive.settings"
     /// Record key of the drive's settings record.
     public static let settingsKey = "self"

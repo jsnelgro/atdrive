@@ -155,14 +155,26 @@ struct RemoveDevice: AsyncParsableCommand {
 
 /// Replacing the drive's keys (`devices rm`, `encryption rotate`).
 enum KeyRotation {
-    /// The recovery key to wrap the new keys for: the current one, typed, or a new one, shown.
-    /// Only the recovery key itself can wrap them.
+    /// The recovery key to wrap the new keys for: a new one, shown (the default), or the current
+    /// one, typed. Only the recovery key itself can wrap them.
+    ///
+    /// A new one is safer: the PDS keeps the old recovery record, which opens the old keys, and
+    /// can hand it to a device set up with the recovery key later. With a new key it doesn't
+    /// open (#36).
     static func recoveryKey(for drive: Drive) async throws -> RecoveryKey {
-        print("\nThe recovery key has to open the drive's new key too.")
-        let typed = Prompt.secret("Type your recovery key, or press Enter to make a new one instead: ")
+        print(
+            """
+
+            The drive's new key gets a new recovery key too: the old one stops working. (A server
+            could otherwise give a device set up with the old one the keys from before this change.)
+            """)
+        let typed = Prompt.secret("Press Enter for a new recovery key, or type your current one to keep it: ")
         if let typed, !typed.trimmingCharacters(in: .whitespaces).isEmpty {
             let recoveryKey = try RecoveryKey(parsing: typed)
             guard try await drive.isRecoveryKey(recoveryKey) else { throw DriveAccessError.wrongRecoveryKey }
+            Output.warn(
+                "keeping the recovery key: whoever runs your PDS could give a device you set up with it the "
+                    + "keys from before this change. Check new devices from one you have (`atdrive devices`)")
             return recoveryKey
         }
         let recoveryKey = RecoveryKey()
@@ -236,6 +248,31 @@ struct RotateRecoveryKey: AsyncParsableCommand {
 /// Opening the drive on this device after signing in (`atdrive login`), and getting it an
 /// encrypted drive's keys (`atdrive encryption unlock`).
 enum KeySetup {
+    /// The first time this device opens the drive and finds it plain, asks whether that's
+    /// expected (#35): the PDS says whether a drive is encrypted, and a new device can't check.
+    /// Remembers a yes; a no stops before this device writes anything.
+    private static func confirmPlain(_ context: Context) async throws {
+        var drive = context.drive
+        guard let check = try await drive.plainDriveCheck() else { return }
+        if check.leftoverKeyRecords { Output.warn("this unencrypted drive has records left from encryption") }
+        print("\n\(check.question)\n")
+        guard Prompt.isInteractive else {
+            Output.warn("not asking without a terminal; `atdrive login` asks again")
+            return
+        }
+        guard Prompt.confirm("Do you expect your drive not to be encrypted?") else {
+            throw CommandError(
+                "stopped: if your drive is encrypted, don't use this device with it. On a device that has "
+                    + "its keys, check that it's still encrypted (`atdrive whoami`), then sign in here again")
+        }
+        if drive.identity == nil {
+            // Where the answer is kept (a plain drive doesn't need one otherwise).
+            drive = try await Context.locked(makingIdentity: true).drive
+            try await drive.open()
+        }
+        drive.confirmPlain()
+    }
+
     /// Opens the drive on this device; creates it if the account has none, asking whether to
     /// encrypt it (and showing an encrypted one's recovery key); or, for an encrypted drive this
     /// device has no keys for, asks for them: from another device, or with the recovery key.
@@ -245,6 +282,7 @@ enum KeySetup {
         do {
             switch try await drive.open() {
             case .plain:
+                try await confirmPlain(context)
                 print("✓ Your drive is ready. It isn't encrypted (`atdrive encryption on` turns encryption on).")
             case .encrypted:
                 print("✓ Your drive is encrypted, and this device has its keys.")

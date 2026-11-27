@@ -492,12 +492,18 @@ On a Mac, the same switch is in the app's **Settings…**.
   how much before it starts. It can be interrupted: `atdrive encryption on` again picks up where
   it stopped, and until it's done your devices read both kinds. Your other devices have to be
   approved again. Whoever runs your PDS could read what was there until then: this protects it
-  from then on, not from copies already made.
+  from then on, not from copies already made. It also shows how long history will be kept: the
+  drive's settings are sealed then, and every device follows them, so a retention under a week
+  in the unencrypted settings (which the PDS could have set) is replaced by the default 30 days
+  unless you pass `--retention-days`.
 - **Turning it off** is immediate: the drive's keys are published in the drive itself, so
   everything in it, history included, is readable by whoever runs your PDS from that moment. That
   can't be taken back for what's already there. The files are then uploaded again unencrypted, so
   apps that can't decrypt can read them; that part can be interrupted. Your other devices carry on by themselves: they recognize the published keys, so
   they know it was one of your devices that turned encryption off, not the server.
+- **A new device asks once** when it finds your drive unencrypted: the server says whether a
+  drive is encrypted, and a device that's never had the keys can't check that on its own. If you
+  know your drive is encrypted, answer no: it signs out without writing anything.
 
 The rest of this section is about encrypted drives.
 
@@ -520,8 +526,9 @@ The rest of this section is about encrypted drives.
   keys with a new one, which the removed device never gets, and encrypts everything stored again
   with it: every record and every file, history included. That uploads the whole drive again; it
   can be interrupted, and `atdrive encryption rotate` picks it up. `--drop-history` deletes the
-  history instead of re-encrypting it, which is quicker. It asks for the recovery key, which has
-  to open the new key too (or makes a new recovery key). Once it's done, the old keys open nothing
+  history instead of re-encrypting it, which is quicker. It makes a new recovery key for the new
+  key (save it; the old one stops working), or keeps the old one if you type it, which is less
+  safe: your PDS could hand a device you set up with it the old keys. Once it's done, the old keys open nothing
   on your PDS, and anything written with them since is refused. `atdrive encryption rotate` (or
   Replace Keys… in the Mac app's Settings) does the same without removing a device. What it can't
   do:
@@ -854,7 +861,8 @@ See [PLAN.md](PLAN.md) for the roadmap and design notes.
   them) until you run `atdrive encryption on` again, which offers to encrypt and keep them.
 - **Removing a device doesn't sign it out of your account.** Revoke its session in your
   account's settings too. See [Encryption](#encryption) for what removal does and doesn't do.
-- **Device names aren't encrypted,** even on an encrypted drive: the PDS sees what your devices
-  are called.
+- **A device's name is readable while it waits to be approved,** on an encrypted drive: the
+  device approving it shows the name beside the pairing code. Once approved, the name is
+  encrypted, and a device that's still waiting lists the approved ones by ID.
 
 </details>
