@@ -91,6 +91,27 @@ import Testing
         }
     }
 
+    /// The host writes the space in its form (`at:space/…`), the reader asks in ATDrive's: the
+    /// same space. Another space isn't.
+    @Test func aCommitsSpaceMatchesInEitherForm() throws {
+        let author = P256.KeyAgreement.PrivateKey()
+        let local = "at://did:plc:alice/space/app.atdrive.drive/abc"
+        let wire = "at:space/did:plc:alice/app.atdrive.drive/abc"
+        let commit = RepoCommit(
+            rev: "3kbcq3p7ad400", data: Data(repeating: 7, count: 32), ver: 1, repo: "did:plc:alice", space: wire)
+        let request = try SpaceMAC.request(kemKey: author.publicKey)
+        let headers = try SpaceMAC.responseHeaders(
+            for: commit, acceptSignature: request.acceptSignature, kemKey: author)
+        let lookup = { (name: String) in headers.first { $0.key.lowercased() == name.lowercased() }?.value }
+        try SpaceMAC.verify(commit, headers: lookup, request: request, repo: "did:plc:alice", space: local)
+        try SpaceMAC.verify(commit, headers: lookup, request: request, repo: "did:plc:alice", space: wire)
+        #expect(throws: SpaceAuthError.self) {
+            try SpaceMAC.verify(
+                commit, headers: lookup, request: request, repo: "did:plc:alice",
+                space: "at://did:plc:alice/space/app.atdrive.drive/other")
+        }
+    }
+
     @Test func signsCredentialRequests() throws {
         let signer = SpaceRequestSigner()
         let headers = try signer.headers(credential: "eyJ.cred.sig", audience: "did:plc:alice")

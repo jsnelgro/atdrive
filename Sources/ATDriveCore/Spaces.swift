@@ -3,18 +3,54 @@ import Foundation
 /// Typed wrappers for the parts of atproto spaces (`com.atproto.space.*`) ATDrive uses.
 /// The spaces API is alpha and changes weekly; keep every call to it in this file.
 extension XRPCClient {
-    /// `at://<authority-did>/space/<space-type>/<space-key>`
+    /// A space's address as ATDrive writes it: `at://<authority-did>/space/<space-type>/<space-key>`,
+    /// the spaces alpha's first form. It's in what ATDrive stores (mounts, invites, links, this
+    /// device's trust, sync state) and in what it seals: an encrypted record's associated data and
+    /// a wrapped keyring's info hold it (docs/FORMAT.md). So it stays ATDrive's form, and the
+    /// calls in this file send the PDS's (`wire`) and read spaces back as this (`local`).
     public static func spaceURI(authority: String, type: String, key: String) -> String {
         "at://\(authority)/space/\(type)/\(key)"
     }
 
-    /// The parts of a space's URI; `nil` if it isn't one.
+    /// A space's address as the PDS takes and gives it, since Nov 2026:
+    /// `at:space/<authority-did>/<space-type>/<space-key>`. Space parameters have to be in this
+    /// form (`Invalid space-ref` otherwise).
+    public static func wireSpaceURI(authority: String, type: String, key: String) -> String {
+        "\(wirePrefix)\(authority)/\(type)/\(key)"
+    }
+
+    static let wirePrefix = "at:space/"
+
+    /// The parts of a space's address, in either form (`spaceURI`, `wireSpaceURI`); `nil` if it
+    /// isn't one.
     public static func spaceParts(_ uri: String) -> (authority: String, type: String, key: String)? {
-        guard uri.hasPrefix("at://") else { return nil }
-        let parts = uri.dropFirst(5).split(separator: "/", omittingEmptySubsequences: false)
-        guard parts.count == 4, parts[1] == "space", parts[0].hasPrefix("did:"), !parts[2].isEmpty, !parts[3].isEmpty
-        else { return nil }
-        return (String(parts[0]), String(parts[2]), String(parts[3]))
+        let parts: [Substring]
+        if uri.hasPrefix(wirePrefix) {
+            parts = uri.dropFirst(wirePrefix.count).split(separator: "/", omittingEmptySubsequences: false)
+            guard parts.count == 3 else { return nil }
+        } else if uri.hasPrefix("at://") {
+            let all = uri.dropFirst(5).split(separator: "/", omittingEmptySubsequences: false)
+            guard all.count == 4, all[1] == "space" else { return nil }
+            parts = [all[0], all[2], all[3]]
+        } else {
+            return nil
+        }
+        guard parts[0].hasPrefix("did:"), !parts[1].isEmpty, !parts[2].isEmpty else { return nil }
+        return (String(parts[0]), String(parts[1]), String(parts[2]))
+    }
+
+    /// A space's address in the PDS's form, for a parameter. Anything that isn't one is sent
+    /// as it is (for the PDS to refuse).
+    public static func wire(_ space: String) -> String {
+        guard let parts = spaceParts(space) else { return space }
+        return wireSpaceURI(authority: parts.authority, type: parts.type, key: parts.key)
+    }
+
+    /// A space's address in ATDrive's form (`spaceURI`), from either form: what the PDS gives
+    /// back, or a link or setting written in its form.
+    public static func local(_ space: String) -> String {
+        guard let parts = spaceParts(space) else { return space }
+        return spaceURI(authority: parts.authority, type: parts.type, key: parts.key)
     }
 
     /// Creates a space only the authenticated account can read or write.
@@ -33,15 +69,15 @@ extension XRPCClient {
             var policy: SpacePolicy
         }
         struct Output: Decodable { var space: String }
-        return try await procedure(
-            "com.atproto.space.createSpace", Input(spaceType: type, skey: key, policy: policy), as: Output.self
-        ).space
+        let created = try await procedure(
+            "com.atproto.space.createSpace", Input(spaceType: type, skey: key, policy: policy), as: Output.self)
+        return Self.local(created.space)
     }
 
     /// A space's policy. Only its authority can read it.
     public func getSpacePolicy(_ space: String) async throws -> SpacePolicy {
         struct Output: Decodable { var policy: SpacePolicy }
-        return try await query("com.atproto.space.getSpace", ["space": space], as: Output.self).policy
+        return try await query("com.atproto.space.getSpace", ["space": Self.wire(space)], as: Output.self).policy
     }
 
     /// Replaces a space's policy. Changing its type (say from `memberspace` to `personalspace`)
@@ -51,7 +87,8 @@ extension XRPCClient {
             var space: String
             var policy: SpacePolicy
         }
-        let _: Empty = try await procedure("com.atproto.space.updateSpace", Input(space: space, policy: policy))
+        let _: Empty = try await procedure(
+            "com.atproto.space.updateSpace", Input(space: Self.wire(space), policy: policy))
     }
 
     /// Deletes a space: its authority's records in it, and everything the PDS keeps about it.
@@ -59,7 +96,7 @@ extension XRPCClient {
     public func deleteSpace(_ space: String) async throws {
         struct Input: Encodable { var space: String }
         do {
-            let _: Empty = try await procedure("com.atproto.space.deleteSpace", Input(space: space))
+            let _: Empty = try await procedure("com.atproto.space.deleteSpace", Input(space: Self.wire(space)))
         } catch let error as XRPCError where error.error == "SpaceNotFound" {}
     }
 
@@ -81,7 +118,7 @@ extension XRPCClient {
             let page = try await query(
                 "com.atproto.space.listSpaces",
                 ["spaceType": type, "spaceDid": authority, "cursor": cursor, "limit": "100"], as: Output.self)
-            spaces += page.spaces
+            spaces += page.spaces.map { SpaceView(space: Self.local($0.space), repoRev: $0.repoRev) }
             cursor = page.spaces.isEmpty ? nil : page.cursor
         } while cursor != nil
         return spaces
@@ -94,7 +131,7 @@ extension XRPCClient {
         var writers: [String: SpaceWriter] = [:]
         var cursor: String?
         repeat {
-            let output = try await queryJSON(method, ["space": space, "cursor": cursor, "limit": "1000"])
+            let output = try await queryJSON(method, ["space": Self.wire(space), "cursor": cursor, "limit": "1000"])
             guard let items = output["repos"]?.array else { throw Self.malformed(method) }
             for item in items {
                 guard let did = item["repo"]?.string else { throw Self.malformed(method) }
@@ -135,7 +172,7 @@ extension XRPCClient {
         for start in stride(from: 0, to: members.count, by: 100) {
             let batch = Array(members[start..<min(start + 100, members.count)])
             let _: Empty = try await procedure(
-                "com.atproto.memberspace.putMembers", Input(space: space, members: batch))
+                "com.atproto.memberspace.putMembers", Input(space: Self.wire(space), members: batch))
         }
     }
 
@@ -148,7 +185,7 @@ extension XRPCClient {
         for start in stride(from: 0, to: dids.count, by: 100) {
             let batch = Array(dids[start..<min(start + 100, dids.count)])
             let _: Empty = try await procedure(
-                "com.atproto.memberspace.removeMembers", Input(space: space, dids: batch))
+                "com.atproto.memberspace.removeMembers", Input(space: Self.wire(space), dids: batch))
         }
     }
 
@@ -162,7 +199,7 @@ extension XRPCClient {
         var cursor: String?
         repeat {
             let page = try await query(
-                "com.atproto.memberspace.listMembers", ["space": space, "cursor": cursor, "limit": "1000"],
+                "com.atproto.memberspace.listMembers", ["space": Self.wire(space), "cursor": cursor, "limit": "1000"],
                 as: Output.self)
             members += page.members
             cursor = page.members.isEmpty ? nil : page.cursor
@@ -177,7 +214,8 @@ extension XRPCClient {
     /// (`authorizeSpaceSync`). Single use, and good for a minute.
     public func getDelegationToken(space: String) async throws -> String {
         struct Output: Decodable { var token: String }
-        return try await query("com.atproto.space.getDelegationToken", ["space": space], as: Output.self).token
+        return try await query("com.atproto.space.getDelegationToken", ["space": Self.wire(space)], as: Output.self)
+            .token
     }
 
     /// Trades a delegation token (none for a public space) for a credential to read `space`,
@@ -191,7 +229,7 @@ extension XRPCClient {
             var delegationToken: String?
         }
         struct Output: Decodable { var credential: String }
-        let input = Input(space: space, credentialKey: credentialKey, delegationToken: delegationToken)
+        let input = Input(space: Self.wire(space), credentialKey: credentialKey, delegationToken: delegationToken)
         let data = try await send(
             "com.atproto.space.authorizeSpaceSync", body: (try Self.encoder.encode(input), "application/json"),
             auth: .none)
@@ -262,7 +300,7 @@ extension XRPCClient {
         let output = try await query(
             "com.atproto.space.listRecords",
             [
-                "space": space, "repo": repo, "collection": collection, "cursor": cursor,
+                "space": Self.wire(space), "repo": repo, "collection": collection, "cursor": cursor,
                 "limit": String(limit),
             ], as: ListRecordsOutput<Value>.self)
         return SpaceRecordPage(
@@ -281,7 +319,7 @@ extension XRPCClient {
         let output = try await queryJSON(
             method,
             [
-                "space": space, "repo": repo, "collection": collection, "cursor": cursor,
+                "space": Self.wire(space), "repo": repo, "collection": collection, "cursor": cursor,
                 "limit": String(limit),
             ])
         guard let items = output["records"]?.array else { throw Self.malformed(method) }
@@ -304,7 +342,7 @@ extension XRPCClient {
     ) async throws -> String {
         try await procedure(
             "com.atproto.space.putRecord",
-            PutRecordInput(space: space, repo: repo, collection: collection, rkey: rkey, record: record),
+            PutRecordInput(space: Self.wire(space), repo: repo, collection: collection, rkey: rkey, record: record),
             as: PutRecordOutput.self
         ).cid
     }
@@ -318,7 +356,7 @@ extension XRPCClient {
     ) async throws -> String {
         try await procedure(
             "com.atproto.space.createRecord",
-            PutRecordInput(space: space, repo: repo, collection: collection, rkey: rkey, record: record),
+            PutRecordInput(space: Self.wire(space), repo: repo, collection: collection, rkey: rkey, record: record),
             as: PutRecordOutput.self
         ).cid
     }
@@ -344,7 +382,8 @@ extension XRPCClient {
         }
         guard !writes.isEmpty else { return [] }
         let method = "com.atproto.space.applyWrites"
-        let output = try await procedure(method, Input(space: space, repo: repo, writes: writes), as: Output.self)
+        let output = try await procedure(
+            method, Input(space: Self.wire(space), repo: repo, writes: writes), as: Output.self)
         guard let results = output.results, results.count == writes.count else { throw Self.malformed(method) }
         return try zip(writes, results).map { write, result in
             if case .delete = write { return nil }
@@ -370,12 +409,12 @@ extension XRPCClient {
             var space: String
             var repo: String
         }
-        let _: Empty = try await procedure("com.atproto.space.clearRecords", Input(space: space, repo: repo))
+        let _: Empty = try await procedure("com.atproto.space.clearRecords", Input(space: Self.wire(space), repo: repo))
     }
 
     /// Fetches a blob referenced by a record in the space.
     public func getSpaceBlob(space: String, repo: String, cid: String) async throws -> Data {
-        try await queryBytes("com.atproto.space.getBlob", ["space": space, "repo": repo, "cid": cid])
+        try await queryBytes("com.atproto.space.getBlob", ["space": Self.wire(space), "repo": repo, "cid": cid])
     }
 
     /// The repo's current revision in the space, or `nil` if it holds no repo there yet.
@@ -389,7 +428,7 @@ extension XRPCClient {
         struct Output: Decodable { var commit: RepoCommit }
         do {
             return try await query(
-                "com.atproto.space.getLatestCommit", ["space": space, "repo": repo], as: Output.self
+                "com.atproto.space.getLatestCommit", ["space": Self.wire(space), "repo": repo], as: Output.self
             ).commit
         } catch let error as XRPCError where error.error == "RepoNotFound" || error.error == "SpaceNotFound" {
             return nil
@@ -406,7 +445,7 @@ extension XRPCClient {
     ) async throws -> RepoOpsPage {
         let method = "com.atproto.space.listRepoOps"
         let output = try await queryJSON(
-            method, ["space": space, "repo": repo, "since": since, "cursor": cursor, "limit": String(limit)])
+            method, ["space": Self.wire(space), "repo": repo, "since": since, "cursor": cursor, "limit": String(limit)])
         guard let items = output["ops"]?.array else { throw Self.malformed(method) }
         let ops = try items.map { item in
             guard let rev = item["rev"]?.string, let collection = item["collection"]?.string,

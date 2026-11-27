@@ -482,9 +482,14 @@ public enum SpaceMAC {
             throw SpaceAuthError.mac("the commit's MAC doesn't match: it didn't come from the repo's host")
         }
         func field(_ key: String) -> StructuredField.Item? { fields.first { $0.key == key }?.member.item }
+        // The same space in either form: the host writes its own (`XRPCClient.wire`).
+        func isSpace(_ other: String) -> Bool { XRPCClient.local(other) == XRPCClient.local(space) }
+        guard case .string(let macSpace)? = field("space"), isSpace(macSpace) else {
+            throw SpaceAuthError.mac("the commit doesn't match its MAC")
+        }
         guard field("ver") == .integer(commit.ver ?? 1), field("repo") == .string(repo),
-            field("space") == .string(space), field("rev") == .string(commit.rev), field("data") == .bytes(commit.data),
-            commit.repo.map({ $0 == repo }) ?? true, commit.space.map({ $0 == space }) ?? true
+            field("rev") == .string(commit.rev), field("data") == .bytes(commit.data),
+            commit.repo.map({ $0 == repo }) ?? true, commit.space.map(isSpace) ?? true
         else { throw SpaceAuthError.mac("the commit doesn't match its MAC") }
     }
 }

@@ -12,6 +12,11 @@ Alpha: nothing here is stable yet, and nothing is backward compatible.
 - A drive is one atproto space: `at://<did>/space/app.atdrive.drive/<key>`. The home
   drive's key is `default`. Everything below is per space: a shared folder will be another space
   of the same type, with its own settings, mode, keys, history and change feed.
+- **A space's address** is always written in that form, `at://<did>/space/<type>/<key>` (the
+  spaces alpha's first one), wherever this document puts one: in records (`mount`, `invite`,
+  `declined`), in links, and in the associated data and key-wrapping info below. The PDS has
+  addressed spaces as `at:space/<did>/<type>/<key>` since Nov 2026, and takes only that form in
+  space parameters: a client sends it there, and reads either form as the same space.
 - Collections: `node` (one record per file or folder), `version` (one per change),
   `chunks` (the rest of chunk lists too long for one record), `settings` (one record, key
   `self`), `device` (encrypted drives: one per device, plus `recovery`). All under

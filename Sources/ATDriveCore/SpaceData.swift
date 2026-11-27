@@ -34,12 +34,25 @@ public struct SpacesSettings: Sendable, Equatable, Codable {
         self.exclude = exclude
     }
 
-    /// Whether `text` looks like a space's address: `at://<handle or DID>/space/<type>/<key>`.
-    public static func isAddress(_ text: String) -> Bool {
-        guard text.hasPrefix("at://") else { return false }
-        let parts = text.dropFirst(5).split(separator: "/", omittingEmptySubsequences: false)
-        return parts.count == 4 && parts[1] == "space" && !parts[0].isEmpty && !parts[2].isEmpty
-            && !parts[3].isEmpty
+    /// Whether `text` looks like a space's address: `at://<handle or DID>/space/<type>/<key>`, or
+    /// the PDS's form, `at:space/<handle or DID>/<type>/<key>`.
+    public static func isAddress(_ text: String) -> Bool { addressParts(text) != nil }
+
+    /// A space address's parts, its authority a handle or a DID (see `isAddress`).
+    static func addressParts(_ text: String) -> (authority: String, type: String, key: String)? {
+        let parts: [Substring]
+        if text.hasPrefix(XRPCClient.wirePrefix) {
+            parts = text.dropFirst(XRPCClient.wirePrefix.count).split(separator: "/", omittingEmptySubsequences: false)
+            guard parts.count == 3 else { return nil }
+        } else if text.hasPrefix("at://") {
+            let all = text.dropFirst(5).split(separator: "/", omittingEmptySubsequences: false)
+            guard all.count == 4, all[1] == "space" else { return nil }
+            parts = [all[0], all[2], all[3]]
+        } else {
+            return nil
+        }
+        guard !parts[0].isEmpty, !parts[1].isEmpty, !parts[2].isEmpty else { return nil }
+        return (String(parts[0]), String(parts[1]), String(parts[2]))
     }
 }
 
@@ -427,19 +440,15 @@ public actor SpaceData {
     /// A space's URI from its address, the authority given by handle or DID.
     public func parse(_ address: String) async throws -> String {
         let text = address.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard text.hasPrefix("at://") else { throw SpaceDataError.notASpace(address) }
-        let parts = text.dropFirst(5).split(separator: "/", omittingEmptySubsequences: false).map(String.init)
-        guard parts.count == 4, parts[1] == "space", !parts[0].isEmpty, !parts[2].isEmpty, !parts[3].isEmpty else {
-            throw SpaceDataError.notASpace(address)
-        }
-        var authority = parts[0]
+        guard let parts = SpacesSettings.addressParts(text) else { throw SpaceDataError.notASpace(address) }
+        var authority = parts.authority
         if !authority.hasPrefix("did:") {
             guard let did = try? await access.resolver.resolve(authority).did else {
                 throw ATDriveError.identity("couldn't find \(authority)")
             }
             authority = did
         }
-        let space = XRPCClient.spaceURI(authority: authority, type: parts[2], key: parts[3])
+        let space = XRPCClient.spaceURI(authority: authority, type: parts.type, key: parts.key)
         guard XRPCClient.spaceParts(space) != nil else { throw SpaceDataError.notASpace(address) }
         guard Self.isShown(space) else { throw SpaceDataError.driveSpace }
         return space

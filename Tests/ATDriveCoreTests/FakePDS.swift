@@ -258,7 +258,13 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
             }
             return tagged.isEmpty ? nil : tagged
         }()
-        let space = (body["space"] as? String) ?? query["space"] ?? Self.space
+        // Space parameters in the PDS's form only, as the real one takes them since Nov 2026; kept
+        // here in ATDrive's (`XRPCClient.local`), so tests name spaces as ATDrive does.
+        let given = (body["space"] as? String) ?? query["space"]
+        if let given, !given.hasPrefix(XRPCClient.wirePrefix) || XRPCClient.spaceParts(given) == nil {
+            return error(400, "InvalidRequest", "Invalid \(method) params: Invalid space-ref (got \"\(given)\")")
+        }
+        let space = given.map(XRPCClient.local) ?? Self.space
         let repo = (body["repo"] as? String) ?? query["repo"] ?? caller ?? Self.defaultDID
 
         switch method {
@@ -268,7 +274,7 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
                 authority: caller, type: body["spaceType"] as! String, key: body["skey"] as? String ?? TID.next())
             if let existing = spaces[uri], !existing.deleted { return error(400, "SpaceAlreadyExists") }
             spaces[uri] = SpaceState(authority: caller, policy: policy(body["policy"]))
-            return json(["space": uri])
+            return json(["space": XRPCClient.wire(uri)])
 
         case "com.atproto.space.deleteSpace":
             guard let state = spaces[space], state.authority == caller else { return error(400, "SpaceNotFound") }
@@ -295,7 +301,8 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
                 return error(400, "SpaceNotFound")
             }
             return json([
-                "space": space, "policy": try! JSONSerialization.jsonObject(with: JSONEncoder().encode(state.policy)),
+                "space": XRPCClient.wire(space),
+                "policy": try! JSONSerialization.jsonObject(with: JSONEncoder().encode(state.policy)),
             ])
 
         case "com.atproto.space.listSpaces":
@@ -307,7 +314,7 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
             }
             return json([
                 "spaces": all.map { uri -> [String: Any] in
-                    var view: [String: Any] = ["space": uri]
+                    var view: [String: Any] = ["space": XRPCClient.wire(uri)]
                     if let rev = repos[RepoKey(space: uri, did: caller)]?.rev { view["repoRev"] = rev }
                     return view
                 }
@@ -396,7 +403,7 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
             let expires = Date().addingTimeInterval(credentialLifetime)
             let payload = Base64URL.encode(
                 try! JSONSerialization.data(withJSONObject: [
-                    "iss": state.authority, "sub": space, "exp": expires.timeIntervalSince1970,
+                    "iss": state.authority, "sub": XRPCClient.wire(space), "exp": expires.timeIntervalSince1970,
                 ]))
             let credential = "eyJ0eXAiOiJhdHByb3RvLXNwYWNlLWNyZWRlbnRpYWwrand0In0.\(payload).\(UUID().uuidString)"
             credentials[credential] = Credential(
@@ -777,7 +784,7 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
             data[0] ^= 0xFF
         }
         return [
-            "ver": 1, "repo": key.did, "space": key.space,
+            "ver": 1, "repo": key.did, "space": XRPCClient.wire(key.space),
             // Unpadded base64, as atproto writes it.
             "rev": rev, "data": ["$bytes": data.base64EncodedString().replacingOccurrences(of: "=", with: "")],
         ]
@@ -876,8 +883,8 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
         (try! JSONSerialization.data(withJSONObject: object), response(200, headers: headers))
     }
 
-    private func error(_ status: Int, _ name: String) -> (Data, HTTPURLResponse) {
-        (try! JSONSerialization.data(withJSONObject: ["error": name, "message": name]), response(status))
+    private func error(_ status: Int, _ name: String, _ message: String? = nil) -> (Data, HTTPURLResponse) {
+        (try! JSONSerialization.data(withJSONObject: ["error": name, "message": message ?? name]), response(status))
     }
 
     private func response(_ status: Int, headers: [String: String] = [:]) -> HTTPURLResponse {

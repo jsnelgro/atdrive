@@ -292,7 +292,9 @@ struct Get: AsyncParsableCommand {
     }
 
     func run() async throws {
-        if let first = paths.first, first.hasPrefix("atdrive://") || first.hasPrefix("at://") {
+        if let first = paths.first,
+            first.hasPrefix("atdrive://") || first.hasPrefix("at://") || first.hasPrefix("at:space/")
+        {
             // A link: download what it shares, once (signed out for a public link).
             guard paths.count <= 2 else { throw ValidationError("one link at a time") }
             return try await LinkDownload.run(first, to: URL(fileURLWithPath: paths.count == 2 ? paths[1] : "."))
