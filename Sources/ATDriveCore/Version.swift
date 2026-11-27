@@ -4,5 +4,5 @@
 /// Info.plists, and a release (a `v<version>` tag) fails if the tag doesn't match it. To release,
 /// change it here, merge, then tag. See "Releasing" in the README.
 public enum ATDriveVersion {
-    public static let current = "0.4.0"
+    public static let current = "0.5.0"
 }
