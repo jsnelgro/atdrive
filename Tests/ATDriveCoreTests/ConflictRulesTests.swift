@@ -58,6 +58,37 @@ import Testing
             ])
         #expect(ConflictRules.keptWhenDeleting(folder: "sub", now: seen, seen: seen).isEmpty)
     }
+
+    @Test func aDeletedFolderKeepsWhatCantBeRead() {
+        func node(_ id: String, _ name: String, in parent: String? = nil, folder: Bool = false) -> Node {
+            Node(
+                id: id, cid: "\(id)-\(name)-\(parent ?? "")",
+                record: NodeRecord(name: name, parent: parent, kind: folder ? .folder : .file, sha256: "s"))
+        }
+        func unreadable(_ id: String) -> UnreadableNode {
+            UnreadableNode(id: id, cid: "\(id)-later", reason: .newerFormat, value: nil)
+        }
+        let seen = DriveTree([
+            node("p", "project", folder: true),
+            node("old", "old.txt", in: "p"),
+            node("sub", "sub", in: "p", folder: true),
+            node("deep", "deep.txt", in: "sub"),
+            node("other", "other", in: "p", folder: true),
+            node("gone", "gone.txt", in: "other"),
+        ])
+        // `deep` was rewritten by a newer ATDrive since: its folders stay, the rest goes. `elsewhere`
+        // was never seen, so nothing says it's in there.
+        let now = DriveTree(
+            [
+                node("p", "project", folder: true),
+                node("old", "old.txt", in: "p"),
+                node("sub", "sub", in: "p", folder: true),
+                node("other", "other", in: "p", folder: true),
+                node("gone", "gone.txt", in: "other"),
+            ], unreadable: [unreadable("deep"), unreadable("elsewhere")])
+        #expect(ConflictRules.keptWhenDeleting(folder: "p", now: now, seen: seen) == ["p", "sub", "deep"])
+        #expect(ConflictRules.keptWhenDeleting(folder: "other", now: now, seen: seen).isEmpty)
+    }
 }
 
 /// The synced folder and the Mac app's rule for deleted folders agree.

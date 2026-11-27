@@ -2,6 +2,7 @@ import ATDriveCore
 import ATDriveMacSupport
 import FileProvider
 import Foundation
+import os
 
 /// The extension's view of the drive: the latest tree, plus the last few trees by revision so
 /// enumerators can report "what changed since revision X" by comparing two snapshots.
@@ -20,6 +21,10 @@ actor DriveIndex {
 
     /// Anchor for a drive nothing has been written to yet.
     static let emptyRevision = "empty"
+
+    private let logger = Logger(subsystem: Log.subsystem, category: "index")
+    /// The commit mismatches last logged, so each is logged once.
+    private var loggedMismatches: [String: String] = [:]
 
     /// The logged-in account's drive, opened (with this Mac's keys, if it's encrypted). Read
     /// lazily, so signing in (and getting the keys) after the extension starts works. Until the
@@ -84,6 +89,8 @@ actor DriveIndex {
         {
             updated = try await drive.update(updated)
         }
+        logMismatch(updated)
+        hold(updated.tree, before: current?.tree)
         snapshot = updated
         Item.spaces = (updated.spaces, spotlight)
         var revision = updated.anchor ?? Self.emptyRevision
@@ -102,6 +109,56 @@ actor DriveIndex {
         history.last { $0.revision == revision }?.tree
     }
 
+    /// The drive, or a shared folder, not matching its signed commit, in the log, once each: the
+    /// snapshot notes it (`DriveSnapshot.mismatch`) and carries on, as listing again wouldn't
+    /// help.
+    private func logMismatch(_ snapshot: JoinedSnapshot) {
+        var mismatches = snapshot.home.mismatch.map { ["the drive": String(describing: $0)] } ?? [:]
+        for (id, mount) in snapshot.mounts {
+            if let mismatch = mount.snapshot?.mismatch {
+                mismatches["shared folder \(id)"] = String(describing: mismatch)
+            }
+        }
+        for (what, mismatch) in mismatches.sorted(by: { $0.key < $1.key }) where loggedMismatches[what] != mismatch {
+            logger.error("\(what, privacy: .public) doesn't match its commit: \(mismatch, privacy: .public)")
+        }
+        loggedMismatches = mismatches
+    }
+
+    // MARK: What can't be read
+
+    /// Items the drive has but this Mac can't read now (`DriveTree.unreadable`), as this Mac last
+    /// could read them, by ID. They stay in Finder as they were, where they were, until they can
+    /// be read again: never shown as gone, which would delete their local copies, nor left out
+    /// of a full listing (after the extension restarts), which does the same. Kept in the App
+    /// Group container, without chunk IDs or keys, so a restart doesn't lose them.
+    private lazy var held: [String: Node] = HeldItems.load(account: Item.account)
+
+    /// Notes what's become unreadable since `before` (or since this Mac last listed it), and
+    /// forgets what's readable again or gone.
+    private func hold(_ tree: DriveTree, before: DriveTree?) {
+        var updated = held.filter { tree.unreadable[$0.key] != nil }
+        for id in tree.unreadable.keys where updated[id] == nil {
+            if let before, let node = before.nodes[id] {
+                updated[id] = HeldItems.stripped(node, parent: before.parent(of: id))
+            } else if let node = seen?[id] {
+                updated[id] = HeldItems.stripped(node, parent: node.record.parent)
+            }
+        }
+        guard updated != held else { return }
+        let added = updated.keys.filter { held[$0] == nil }.count
+        if added > 0 { logger.notice("\(added, privacy: .public) item(s) can't be read now: kept as they were") }
+        held = updated
+        HeldItems.save(updated, account: Item.account)
+    }
+
+    /// An item that can't be read now, as this Mac last saw it (`record.parent` is the folder it
+    /// was shown in); `nil` if it never could.
+    func heldNode(_ id: String) -> Node? { held[id] }
+
+    /// Every such item.
+    func heldNodes() -> [Node] { Array(held.values) }
+
     // MARK: What this Mac has seen
 
     /// The drive as the system last heard about it: the last tree given to it in full through
@@ -113,8 +170,11 @@ actor DriveIndex {
     /// they didn't change: things a delete here didn't remove, so the system puts them back.
     private var resend: Set<String> = []
 
+    /// What can't be read now stays as it was last seen (`held`).
     func markSeen(_ tree: DriveTree) {
-        seen = tree.nodes
+        var nodes = tree.nodes
+        for (id, node) in held where tree.unreadable[id] != nil { nodes[id] = node }
+        seen = nodes
     }
 
     /// Records an item as the system now knows it (from a reply to one of its requests).
@@ -183,6 +243,54 @@ extension DriveIndex {
         let text = String(decoding: data, as: UTF8.self)
         rememberIgnoreText(text, for: node.cid)
         return text
+    }
+}
+
+/// Where `DriveIndex.held` is kept: `held-items.json` in the App Group container, for one account.
+enum HeldItems {
+    private struct Stored: Codable {
+        var account: String
+        var items: [String: Item]
+        struct Item: Codable {
+            var cid: String
+            var record: NodeRecord
+        }
+    }
+
+    private static var file: URL? { AppGroup.containerURL?.appendingPathComponent("held-items.json") }
+
+    static func load(account: String?) -> [String: Node] {
+        guard let account, let file, let data = try? Data(contentsOf: file),
+            let stored = try? JSONDecoder().decode(Stored.self, from: data), stored.account == account
+        else { return [:] }
+        return stored.items.reduce(into: [:]) {
+            $0[$1.key] = Node(id: $1.key, cid: $1.value.cid, record: $1.value.record)
+        }
+    }
+
+    static func save(_ nodes: [String: Node], account: String?) {
+        guard let account, let file else { return }
+        guard !nodes.isEmpty else {
+            try? FileManager.default.removeItem(at: file)
+            return
+        }
+        let stored = Stored(
+            account: account, items: nodes.mapValues { Stored.Item(cid: $0.cid, record: $0.record) })
+        guard let data = try? JSONEncoder().encode(stored) else { return }
+        try? data.write(to: file, options: .atomic)
+    }
+
+    /// What Finder needs of a node, in the folder it's shown in, and nothing that opens its
+    /// contents: no chunks (whose IDs decrypt them), and no keys of a shared folder.
+    static func stripped(_ node: Node, parent: String?) -> Node {
+        var record = node.record
+        record.parent = parent
+        record.chunks = nil
+        record.continuations = nil
+        record.continuationsFrom = nil
+        record.mount?.keyring = nil
+        record.mount?.linkKey = nil
+        return Node(id: node.id, cid: node.cid, record: record)
     }
 }
 

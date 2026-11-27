@@ -69,9 +69,12 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
     - **Mac:**
       - Try sign-in, the recovery key window and approval on a real Mac.
       - Approve and remove devices from the app (the CLI does it today).
-      - `item(for:)` answers `noSuchItem` for records it can't read.
-      - Deleting a folder in Finder ignores unreadable items inside it.
-      - Log when the drive doesn't match its commit.
+      - Records the extension can't read (#12): kept in Finder as they were last read
+        (`DriveIndex.held`, saved in the App Group container), deletes and downloads of them
+        wait, and a folder deleted in Finder stays on the drive while one is inside it. A
+        commit mismatch is logged. Compiled by CI, not yet tried on a real Mac. One gap: an item
+        that became unreadable while the extension wasn't running, and was never read by it
+        since it started, has no last state, so a full listing leaves it out.
     - **Mac:** turning encryption on and off from the app (the CLI does it today), and a way
       out of "the drive's settings can't be believed" other than the CLI.
     - **Encryption:** see *Step 3, open problems*, and `docs/SECURITY.md` for the review. A
