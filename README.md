@@ -526,8 +526,9 @@ The rest of this section is about encrypted drives.
   keys with a new one, which the removed device never gets, and encrypts everything stored again
   with it: every record and every file, history included. That uploads the whole drive again; it
   can be interrupted, and `atdrive encryption rotate` picks it up. `--drop-history` deletes the
-  history instead of re-encrypting it, which is quicker. It asks for the recovery key, which has
-  to open the new key too (or makes a new recovery key). Once it's done, the old keys open nothing
+  history instead of re-encrypting it, which is quicker. It makes a new recovery key for the new
+  key (save it; the old one stops working), or keeps the old one if you type it, which is less
+  safe: your PDS could hand a device you set up with it the old keys. Once it's done, the old keys open nothing
   on your PDS, and anything written with them since is refused. `atdrive encryption rotate` (or
   Replace Keys… in the Mac app's Settings) does the same without removing a device. What it can't
   do:

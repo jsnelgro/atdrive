@@ -155,14 +155,26 @@ struct RemoveDevice: AsyncParsableCommand {
 
 /// Replacing the drive's keys (`devices rm`, `encryption rotate`).
 enum KeyRotation {
-    /// The recovery key to wrap the new keys for: the current one, typed, or a new one, shown.
-    /// Only the recovery key itself can wrap them.
+    /// The recovery key to wrap the new keys for: a new one, shown (the default), or the current
+    /// one, typed. Only the recovery key itself can wrap them.
+    ///
+    /// A new one is safer: the PDS keeps the old recovery record, which opens the old keys, and
+    /// can hand it to a device set up with the recovery key later. With a new key it doesn't
+    /// open (#36).
     static func recoveryKey(for drive: Drive) async throws -> RecoveryKey {
-        print("\nThe recovery key has to open the drive's new key too.")
-        let typed = Prompt.secret("Type your recovery key, or press Enter to make a new one instead: ")
+        print(
+            """
+
+            The drive's new key gets a new recovery key too: the old one stops working. (A server
+            could otherwise give a device set up with the old one the keys from before this change.)
+            """)
+        let typed = Prompt.secret("Press Enter for a new recovery key, or type your current one to keep it: ")
         if let typed, !typed.trimmingCharacters(in: .whitespaces).isEmpty {
             let recoveryKey = try RecoveryKey(parsing: typed)
             guard try await drive.isRecoveryKey(recoveryKey) else { throw DriveAccessError.wrongRecoveryKey }
+            Output.warn(
+                "keeping the recovery key: whoever runs your PDS could give a device you set up with it the "
+                    + "keys from before this change. Check new devices from one you have (`atdrive devices`)")
             return recoveryKey
         }
         let recoveryKey = RecoveryKey()
