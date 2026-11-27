@@ -1,13 +1,16 @@
 import ATDriveCore
 import Foundation
 
-/// How Finder's sharing actions reach the menu-bar app. The File Provider extension can't show
-/// windows, so a custom action (Share…, Copy Link, Stop Sharing) writes a request into the App
-/// Group container and posts a Darwin notification; the app, which listens for it, reads the
-/// request and does the rest (a window, the pasteboard, a confirmation).
-public struct SharingRequest: Codable, Sendable, Equatable {
+/// How Finder's actions reach the menu-bar app. The File Provider extension can't show windows,
+/// so a custom action (Share…, Copy Link, Stop Sharing, Restore Previous Version…) writes a
+/// request into the App Group container and posts a Darwin notification; the app, which listens
+/// for it, reads the request and does the rest (a window, the pasteboard, a confirmation).
+public struct FinderRequest: Codable, Sendable, Equatable {
+    /// Each is the last part of its action's identifier (`NSExtensionFileProviderActions`).
     public enum Action: String, Codable, Sendable {
         case share, copyLink, stopSharing
+        /// Restore Previous Version…: a file's versions, or a folder's history (#11).
+        case history
     }
 
     public var action: Action
@@ -22,9 +25,9 @@ public struct SharingRequest: Codable, Sendable, Equatable {
     }
 
     /// The Darwin notification the app listens for.
-    public static let notification = "app.atdrive.sharing-request"
+    public static let notification = "app.atdrive.finder-request"
 
-    static var file: URL? { AppGroup.containerURL?.appendingPathComponent("Library/Caches/sharing-request.json") }
+    static var file: URL? { AppGroup.containerURL?.appendingPathComponent("Library/Caches/finder-request.json") }
 
     /// Hands the request to the app (from the extension).
     public func post() throws {
@@ -38,10 +41,10 @@ public struct SharingRequest: Codable, Sendable, Equatable {
 
     /// The request waiting, if any, taken so it's handled once (in the app). One older than a
     /// minute is dropped: it's from before the app was running.
-    public static func take() -> SharingRequest? {
+    public static func take() -> FinderRequest? {
         guard let file, let data = try? Data(contentsOf: file) else { return nil }
         try? FileManager.default.removeItem(at: file)
-        guard let request = try? JSONDecoder().decode(SharingRequest.self, from: data),
+        guard let request = try? JSONDecoder().decode(FinderRequest.self, from: data),
             request.requestedAt.timeIntervalSinceNow > -60
         else { return nil }
         return request

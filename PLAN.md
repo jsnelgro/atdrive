@@ -69,7 +69,6 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
     - **Mac:**
       - Try sign-in, the recovery key window and approval on a real Mac.
       - Approve and remove devices from the app (the CLI does it today).
-      - Show history and the trash ("Restore Previous Version…" from Finder).
       - `item(for:)` answers `noSuchItem` for records it can't read.
       - Deleting a folder in Finder ignores unreadable items inside it.
       - Log when the drive doesn't match its commit.
@@ -774,7 +773,8 @@ a link to pass along (`Invites.swift`, `docs/FORMAT.md`).
 
 - **Right-click actions** (File Provider custom actions, by each item's `userInfo.sharing`):
   Share…, Copy Link, Stop Sharing. The extension can't show UI, so it hands each to the menu-bar
-  app through the App Group container and a Darwin notification (`SharingRequest`).
+  app through the App Group container and a Darwin notification (`FinderRequest`). Restore
+  Previous Version… (by `userInfo.history`, #11) goes the same way.
 - **Badges:** `Sharing` decorations on your shares and on those shared with you.
 - **The Share window** (menu-bar app): people (with verified / unencrypted-drive / changed-key
   notes), adding and removing them, and the link.

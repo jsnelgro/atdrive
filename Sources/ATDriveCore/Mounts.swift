@@ -620,7 +620,7 @@ public final class JoinedDrive: Sendable {
         return (home, parent, nil)
     }
 
-    private func writable(_ mount: String, path: String) throws -> Drive {
+    func writable(_ mount: String, path: String) throws -> Drive {
         if let opened = opened.value[mount] {
             guard !opened.readOnly else { throw ATDriveError.readOnly(path: path, owner: opened.info.owner) }
             return opened.drive
@@ -673,7 +673,7 @@ public final class JoinedDrive: Sendable {
         return opened.drive
     }
 
-    private func global(_ node: Node, in mount: String?) -> Node {
+    func global(_ node: Node, in mount: String?) -> Node {
         guard let mount else { return node }
         var record = node.record
         record.parent = record.parent.map { NodeID.join(mount, $0) } ?? mount

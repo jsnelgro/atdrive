@@ -41,7 +41,20 @@ final class Item: NSObject, NSFileProviderItem, NSFileProviderItemDecorating {
     }
 
     /// For Finder's actions: which ones show (`NSExtensionFileProviderActions` in Info.plist).
-    var userInfo: [AnyHashable: Any]? { ["sharing": sharing.rawValue] }
+    var userInfo: [AnyHashable: Any]? { ["sharing": sharing.rawValue, "history": history] }
+
+    /// What Restore Previous Version… shows for it: a file's versions (`file`), a folder's history
+    /// (`folder`), or nothing (`none`). Only the spaces this account writes have history to
+    /// restore from (`JoinedSnapshot.history(of:)`): not other people's shares or Spaces, and not
+    /// a shared folder of yours (its history is what's in it) or the top of the drive.
+    private var history: String {
+        guard let node else { return "none" }
+        switch sharing {
+        case .none, .insideOwn: return node.isFolder ? "folder" : "file"
+        case .own: return node.isFolder ? "none" : "file"
+        case .other, .insideOther, .spaces: return "none"
+        }
+    }
 
     /// The `Sharing` badges, and Spaces' "can't be read" (`NSFileProviderDecorations` in
     /// Info.plist). `atdrive spaces` says why a space can't be read.

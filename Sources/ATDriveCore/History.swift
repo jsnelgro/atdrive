@@ -144,6 +144,22 @@ extension Drive {
         return try await plan.commit()
     }
 
+    /// Puts a file's contents back as `version` left them, keeping its name and place (Finder's
+    /// "Restore Previous Version…"). It's written as a new version, so it can be undone too.
+    /// Nothing is written if they're the contents it has.
+    @discardableResult
+    public func restoreContents(of id: String, from version: Version, in snapshot: DriveSnapshot) async throws
+        -> RestoreResult
+    {
+        guard let current = snapshot.tree.nodes[id], !current.isFolder, version.node == id,
+            var target = snapshot.history.record(at: version), target.kind == .file
+        else { throw ATDriveError.notFound(id) }
+        target.name = current.name
+        var plan = Restoration(drive: self, snapshot: snapshot)
+        plan.restore(id, to: target, in: snapshot.tree.parent(of: id))
+        return try await plan.commit()
+    }
+
     /// Undoes a node's latest change: puts it back as the change before left it (restores it
     /// if the latest change deleted it, and deletes it if it restored it). Undoing a folder's
     /// delete brings back what was deleted with it, as restoring it from the trash does.

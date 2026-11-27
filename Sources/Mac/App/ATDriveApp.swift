@@ -70,6 +70,7 @@ struct MenuContent: View {
                     MenuRow("Add Shared Link…", systemImage: "link.badge.plus") {
                         SharingCoordinator.shared.askForLink()
                     }
+                    MenuRow("Trash…", systemImage: "trash") { HistoryWindows.showTrash() }
                     MenuRow("Check for Changes", systemImage: "arrow.clockwise") { Task { await model.syncNow() } }
                 }
                 .padding(6)

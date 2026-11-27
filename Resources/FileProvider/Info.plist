@@ -29,8 +29,9 @@
 		<string>__APP_GROUP__</string>
 		<key>NSExtensionFileProviderSupportsEnumeration</key>
 		<true/>
-		<!-- Finder's sharing actions, by each item's userInfo.sharing (`SharingRole`). The action
-		     identifier's last part names the request handed to the app (`SharingRequest`). -->
+		<!-- Finder's actions: sharing, by each item's userInfo.sharing (`SharingRole`), and
+		     history, by its userInfo.history (`Item.history`). The action identifier's last part
+		     names the request handed to the app (`FinderRequest`). -->
 		<key>NSExtensionFileProviderActions</key>
 		<array>
 			<dict>
@@ -56,6 +57,14 @@
 				<string>Stop Sharing</string>
 				<key>NSExtensionFileProviderActionActivationRule</key>
 				<string>SUBQUERY ( fileproviderItems, $fileproviderItem, $fileproviderItem.userInfo.sharing == &quot;own&quot; ).@count == 1 AND fileproviderItems.@count == 1</string>
+			</dict>
+			<dict>
+				<key>NSExtensionFileProviderActionIdentifier</key>
+				<string>__BUNDLE_ID__.fileprovider.history</string>
+				<key>NSExtensionFileProviderActionName</key>
+				<string>Restore Previous Version…</string>
+				<key>NSExtensionFileProviderActionActivationRule</key>
+				<string>SUBQUERY ( fileproviderItems, $fileproviderItem, $fileproviderItem.userInfo.history IN {&quot;file&quot;, &quot;folder&quot;} ).@count == 1 AND fileproviderItems.@count == 1</string>
 			</dict>
 		</array>
 		<!-- Badges for shares (`Item.decorations`). -->

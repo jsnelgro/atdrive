@@ -384,10 +384,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         return FileProviderErrors.map(error)
     }
 
-    // MARK: Sharing actions
+    // MARK: Finder's actions
 
-    /// Finder's Share…, Copy Link and Stop Sharing (`NSExtensionFileProviderActions`): handed to
-    /// the menu-bar app, which can show windows (`SharingRequest`).
+    /// Finder's Share…, Copy Link, Stop Sharing and Restore Previous Version…
+    /// (`NSExtensionFileProviderActions`): handed to the menu-bar app, which can show windows
+    /// (`FinderRequest`).
     func performAction(
         identifier actionIdentifier: NSFileProviderExtensionActionIdentifier,
         onItemsWithIdentifiers itemIdentifiers: [NSFileProviderItemIdentifier],
@@ -396,15 +397,15 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         let progress = Progress(totalUnitCount: 1)
         defer { progress.completedUnitCount = 1 }
         let name = actionIdentifier.rawValue.split(separator: ".").last.map(String.init) ?? ""
-        guard let action = SharingRequest.Action(rawValue: name), let item = itemIdentifiers.first else {
+        guard let action = FinderRequest.Action(rawValue: name), let item = itemIdentifiers.first else {
             completionHandler(CocoaError(.featureUnsupported))
             return progress
         }
         do {
-            try SharingRequest(action: action, item: item.rawValue).post()
+            try FinderRequest(action: action, item: item.rawValue).post()
             completionHandler(nil)
         } catch {
-            completionHandler(fail("sharing action", error))
+            completionHandler(fail("Finder action", error))
         }
         return progress
     }

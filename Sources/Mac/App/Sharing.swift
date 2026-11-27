@@ -6,8 +6,9 @@ import SwiftUI
 import os
 
 /// Sharing in the menu-bar app: Finder's actions (handed over by the extension as a
-/// `SharingRequest`), `atdrive://` links, and the windows for both: Share… (who has access, the
-/// link) and Open Link (what's shared, from whom, Add to My Drive or Download…).
+/// `FinderRequest`), `atdrive://` links, and the windows for both: Share… (who has access, the
+/// link) and Open Link (what's shared, from whom, Add to My Drive or Download…). Restore Previous
+/// Version… comes this way too, and opens its window from `History.swift`.
 @MainActor
 final class SharingCoordinator {
     static let shared = SharingCoordinator()
@@ -23,16 +24,16 @@ final class SharingCoordinator {
         CFNotificationCenterAddObserver(
             CFNotificationCenterGetDarwinNotifyCenter(), observer,
             { _, _, _, _, _ in Task { @MainActor in SharingCoordinator.shared.handleRequest() } },
-            SharingRequest.notification as CFString, nil, .deliverImmediately)
+            FinderRequest.notification as CFString, nil, .deliverImmediately)
         handleRequest()  // one written while the app wasn't running
     }
 
     func handleRequest() {
-        guard let request = SharingRequest.take() else { return }
+        guard let request = FinderRequest.take() else { return }
         Task { await handle(request) }
     }
 
-    private func handle(_ request: SharingRequest) async {
+    private func handle(_ request: FinderRequest) async {
         guard let drive = await makeDrive?() else { return alert("Sign in to ATDrive first.") }
         do {
             let snapshot = try await drive.update(nil)
@@ -57,9 +58,13 @@ final class SharingCoordinator {
                 else { return }
                 try await drive.unshare(node)
                 await Self.refreshFinder()
+            case .history:
+                show(
+                    VersionsView(model: VersionsModel(drive: drive, node: node, snapshot: snapshot)),
+                    title: node.isFolder ? "History of “\(node.name)”" : "Versions of “\(node.name)”")
             }
         } catch {
-            logger.error("sharing request failed: \(String(describing: error), privacy: .public)")
+            logger.error("Finder request failed: \(String(describing: error), privacy: .public)")
             alert(String(describing: error))
         }
     }
@@ -108,8 +113,9 @@ final class SharingCoordinator {
             }, title: "Add Shared Link")
     }
 
+    /// A window of the app's, in front.
     @discardableResult
-    private func show<Content: View>(_ view: Content, title: String) -> NSWindow {
+    func show<Content: View>(_ view: Content, title: String) -> NSWindow {
         let window = NSWindow(contentViewController: NSHostingController(rootView: view))
         window.title = title
         window.isReleasedWhenClosed = false
@@ -121,7 +127,7 @@ final class SharingCoordinator {
         return window
     }
 
-    private func alert(_ text: String, detail: String? = nil) {
+    func alert(_ text: String, detail: String? = nil) {
         let alert = NSAlert()
         alert.messageText = text
         if let detail { alert.informativeText = detail }
