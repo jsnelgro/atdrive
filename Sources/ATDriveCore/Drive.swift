@@ -184,8 +184,16 @@ public final class Drive: Sendable {
     /// If the settings or this device's record changed (encryption was turned on or off, or
     /// another device rotated the keyring), the drive is opened again first, and every record is
     /// read again as the drive now reads them (`refreshKeys`).
+    ///
+    /// A drive served at an older revision than `snapshot`'s throws `DriveRolledBack`: the PDS
+    /// (or a backup it was restored from) playing back an old copy, which would undo what
+    /// changed since. Revisions only go forward. This catches it on a device that saw the newer
+    /// one, not on one that didn't, nor one record rolled back alone (PLAN.md, "Rollback").
     public func update(_ snapshot: DriveSnapshot?, now: Date = Date()) async throws -> DriveSnapshot {
         var updated = try await fetch(snapshot, now: now)
+        if let seen = snapshot?.revision, let served = updated.revision, served < seen {
+            throw DriveRolledBack(seen: seen, served: served)
+        }
         _ = await refreshKeys(seeing: updated)
         if updated.revision != nil, updated.readState != keys.value.readState {
             updated = try await listEverything(now: now)

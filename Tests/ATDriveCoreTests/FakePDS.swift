@@ -828,6 +828,23 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
 
     private func parse(_ json: Data) -> Any { try! JSONSerialization.jsonObject(with: json) }
 
+    private var savedRepos: [Int: Repo] = [:]
+
+    /// A copy of a space's repo as it is now, to serve again later (`rollBack(to:)`).
+    func saveRepo(space: String = FakePDS.space) -> Int {
+        lock.withLock {
+            let token = savedRepos.count
+            savedRepos[token] = repos[RepoKey(space: space, did: owner(of: space))]
+            return token
+        }
+    }
+
+    /// Serves a saved copy of the repo from now on, as a PDS could: records, change feed and
+    /// commit all as they were (#36).
+    func rollBack(to token: Int, space: String = FakePDS.space) {
+        lock.withLock { repos[RepoKey(space: space, did: owner(of: space))] = savedRepos[token] }
+    }
+
     /// Stores a record exactly as given, bypassing `Drive`, to set up odd states. It goes
     /// through the change feed like any write. Creates the space if it doesn't exist.
     func insertRawRecord(

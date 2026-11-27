@@ -491,6 +491,22 @@ time. The format is specified in `docs/FORMAT.md`.
   out, though a PDS that lies can hide those too. Accepted as a limit: a device that was offline
   while encryption was turned off and on again can be shown the old "off" settings, which are
   genuine and publish keys it knows.
+- **Rollback** (#36): the PDS can serve an older copy of the drive, or of single records, and
+  nothing it serves can prove it's the newest. A real fix is a signed head that every write
+  advances, which needs a compare-and-swap on every write (see *What shapes the design*). What's
+  built instead, each on devices that saw the newer state, never on a new one:
+  - **The drive as a whole** (`DriveRolledBack`): revisions only go forward, so `Drive.update`
+    refuses a drive served at an older revision than the snapshot it was given (a synced
+    folder's `drive.json`, the Mac's index), and nothing is changed. Only until the PDS writes on
+    top of the old copy: a newer revision then hides the rollback, and records that disappeared
+    look like a compacted feed.
+  - **The settings** carry a generation, refused if older than one the device has read.
+  - **The keys:** a device refuses a keyring missing a key it accepted, device memberships are
+    sealed with the current key, and once a rotation is converted, records sealed with the old
+    keys are refused (`formerKeys`).
+  - Accepted for the alpha. Devices vouching for each other (sealed checkpoints of the drive's
+    set hash, compared between devices) would catch a PDS showing different devices different
+    drives; a signed head would catch the rest, if spaces get compare-and-swap.
 - **Chunks say which key named them** (`chunkKey`), so a conversion can tell a chunk encrypted
   under the current keyring from one left over from before, whatever record now points at it.
 - **Long chunk lists** are rewritten into new `chunks` records numbered after the old ones

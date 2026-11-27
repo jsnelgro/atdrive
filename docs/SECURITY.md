@@ -100,10 +100,21 @@ Ordered by how much they matter. None is new on this branch unless it says so.
   IDs, which decrypt chunks (#15). Now owner-only, but still in backups of the folder.
 - **Converting writes each file to the system's temporary folder** in the clear (#15; mode 600,
   deleted afterwards; left behind by a crash). Use a private folder beside the session.
-- **Rollback** (#36). The PDS can serve an older copy of the whole drive, or of single records. The
-  settings' generation covers only the settings, and only on devices that have seen newer ones.
-  A drive-wide fix needs a signed head that every write advances, which spaces can't do without
-  compare-and-swap.
+- **Rollback** (#36). The PDS can serve an older copy of the whole drive, or of single records,
+  and nothing it serves proves it's the newest (that needs a signed head every write advances,
+  which spaces can't do without compare-and-swap). Partly addressed, and only on devices that
+  saw the newer state: `Drive.update` refuses a drive older than the snapshot it holds
+  (`DriveRolledBack`), the settings' generation is refused if older than one the device read,
+  and a keyring missing a key the device accepted is refused. The whole-drive check holds only
+  until the PDS writes on top of the old copy; after that a rollback looks like a compacted
+  change feed.
+  - **Rolling back a key rotation** (removing a device, `encryption rotate`): a device that read
+    the rotated settings or took the new keyring refuses the old settings and the old keyring,
+    and once the rotation is converted it refuses records sealed with the old keys. But a device
+    that hasn't synced since the rotation, and a new device set up with the recovery key (whose
+    record the PDS can roll back to the old keyring, wrapped for the same recovery key), can be
+    shown the drive from before it, and would go on writing with keys the removed device has.
+    Check from a device that saw the rotation (`atdrive devices`) after setting one up.
 - **Two devices changing the keys at the same moment** (#37). Turning encryption on: each made
   a keyring, and the last settings write won. Removing devices: two rotations could leave a
   device refusing its keyring, until the recovery key got it out. Fixed: every change to the
