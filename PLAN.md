@@ -479,6 +479,18 @@ time. The format is specified in `docs/FORMAT.md`.
   - Settings carry a `generation`, and a device refuses sealed settings older than ones it has
     read, so the PDS can't replay the `converting` settings to get its own records read.
   - Other devices must be approved again: the keys are new.
+- **A new device asks whether a plain drive is expected** (#35). Whether a drive is encrypted is
+  how the PDS serves its settings, and a device that never held the keys has nothing to check
+  that against: everything it can read comes from the PDS, and a second device or the recovery
+  key, the only independent sources, are what a new device doesn't have yet. So the user, who
+  knows, is asked the first time a device opens a plain drive (`atdrive login`, the Mac app's
+  sign-in; `Drive.plainDriveCheck`), and the answer is kept with the device's identity
+  (`confirmedPlain`). No stops before the device writes anything. Not asked: the device that
+  created the drive plain, and one that saw its own devices turn encryption off. A plain drive
+  that still has device or recovery records (which turning encryption off deletes) is pointed
+  out, though a PDS that lies can hide those too. Accepted as a limit: a device that was offline
+  while encryption was turned off and on again can be shown the old "off" settings, which are
+  genuine and publish keys it knows.
 - **Chunks say which key named them** (`chunkKey`), so a conversion can tell a chunk encrypted
   under the current keyring from one left over from before, whatever record now points at it.
 - **Long chunk lists** are rewritten into new `chunks` records numbered after the old ones

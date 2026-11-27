@@ -173,6 +173,27 @@ public enum DriveAccessError: Error, Equatable, CustomStringConvertible {
     }
 }
 
+/// What to say before a device first uses a drive that isn't encrypted (`Drive.plainDriveCheck`).
+public struct PlainDriveCheck: Sendable, Equatable {
+    /// The drive has device or recovery records, which turning encryption off deletes: it may
+    /// be encrypted, and the PDS hiding it.
+    public var leftoverKeyRecords: Bool
+
+    /// The question, with why it's asked.
+    public var question: String {
+        var text =
+            "Your drive isn't encrypted: whoever runs your PDS can read it. This device can't check "
+            + "that on its own, since the PDS says whether a drive is encrypted. If your drive is "
+            + "encrypted, the PDS may be pretending it isn't, to read what this device writes."
+        if leftoverKeyRecords {
+            text +=
+                " It has records left from encryption, which turning encryption off deletes: that's a "
+                + "sign it may be encrypted after all."
+        }
+        return text
+    }
+}
+
 /// A device record as stored.
 public struct DeviceEntry: Sendable, Equatable, Identifiable {
     /// The device's ID: the record key.
@@ -329,6 +350,8 @@ extension Drive {
             accept(keys.keyring, as: keys.me, settings: settings, deviceRecord: cids[2], settingsRecord: cids[0])
         } else {
             becomePlain(settings, settingsRecord: cids[0])
+            // The user chose a plain drive: nothing to ask about it.
+            confirmPlain()
         }
         return keys?.recovery
     }
@@ -543,11 +566,42 @@ extension Drive {
         var identity = self.identity
         let hadTrust = identity?.trust[space] != nil
         identity?.trust[space] = nil
+        // It saw the drive's own devices turn encryption off (or did it): nothing to ask.
+        if hadTrust, let known = identity, !known.confirmedPlain.contains(space) {
+            identity?.confirmedPlain.append(space)
+        }
         keys.update {
             $0 = DriveKeys(
                 mode: .plain, retired: settings.retiredKeyring, identity: identity, settingsRecord: settingsRecord)
         }
         if hadTrust, let identity { saveIdentity?(identity) }
+    }
+
+    // MARK: First contact with a plain drive
+
+    /// Whether to ask the user if they expect this drive not to be encrypted (#35): `nil` if
+    /// there's nothing to ask (it's encrypted, or they said so before on this device, or this
+    /// device saw encryption turned off). Open the drive first.
+    ///
+    /// A device that never held the drive's keys can't tell an encrypted drive from a plain one
+    /// on its own: whether it's encrypted is how the PDS serves the settings record, and a PDS
+    /// could serve plain settings to a new device to read what it writes. The user knows. Ask
+    /// when a device first opens the drive (`atdrive login`, the Mac app's sign-in), and
+    /// remember the answer (`confirmPlain`).
+    public func plainDriveCheck() async throws -> PlainDriveCheck? {
+        guard mode == .plain, identity?.confirmedPlain.contains(space) != true else { return nil }
+        let records = try await keyRecords()
+        return PlainDriveCheck(
+            leftoverKeyRecords: !(records?.devices.isEmpty ?? true) || records?.recoveryStored == true)
+    }
+
+    /// The user expects this drive not to be encrypted: `plainDriveCheck` won't ask again on this
+    /// device. Needs the device's identity, where it's kept.
+    public func confirmPlain() {
+        guard var identity, !identity.confirmedPlain.contains(space) else { return }
+        identity.confirmedPlain.append(space)
+        keys.update { $0.identity = identity }
+        saveIdentity?(identity)
     }
 
     /// The drive's key records, on an encrypted drive this device has the keys of, read just now.

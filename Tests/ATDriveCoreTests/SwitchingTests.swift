@@ -449,6 +449,53 @@ import Testing
         }
     }
 
+    /// A device that never held a drive's keys can't tell a plain drive from an encrypted one
+    /// whose PDS serves it plain settings, so the user is asked, once per device (#35).
+    @Test func aNewDeviceAsksWhetherAPlainDriveIsExpected() async throws {
+        try await laptop.create()
+        // Whoever made it plain chose to.
+        #expect(try await laptop.plainDriveCheck() == nil)
+
+        let phone = device("phone")
+        #expect(try await phone.open() == .plain)
+        #expect(try await phone.plainDriveCheck() == PlainDriveCheck(leftoverKeyRecords: false))
+        phone.confirmPlain()
+        #expect(try await phone.plainDriveCheck() == nil)
+        let later = try restarted(phone)
+        try await later.open()
+        #expect(try await later.plainDriveCheck() == nil)
+        // Another device, or another drive, is asked on its own.
+        let tablet = device("tablet")
+        try await tablet.open()
+        #expect(try await tablet.plainDriveCheck() != nil)
+    }
+
+    /// A device that saw its own devices turn encryption off isn't asked. One that didn't is, and
+    /// is told if device records are left, which turning encryption off deletes.
+    @Test func aPlainDriveWithKeyRecordsLeftIsSuspicious() async throws {
+        let recoveryKey = try #require(try await laptop.create(encrypted: true))
+        let phone = device("phone")
+        try await phone.unlock(recoveryKey: recoveryKey)
+        try await laptop.disableEncryption()
+        #expect(try await phone.open() == .plain)
+        #expect(try await phone.plainDriveCheck() == nil)
+        #expect(try await laptop.plainDriveCheck() == nil)
+
+        // Encrypted again; the PDS shows a new device the old plain settings, but not the
+        // device records that came since.
+        try await laptop.enableEncryption()
+        let sealed = try #require(pds.rawRecord(rkey: Lexicon.settingsKey, collection: Lexicon.settings))
+        pds.insertRawRecord(
+            rkey: Lexicon.settingsKey, collection: Lexicon.settings,
+            try JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(DriveSettings(generation: 1))) as! [String: Any])
+        let fresh = device("fresh")
+        #expect(try await fresh.open() == .plain)
+        let check = try #require(try await fresh.plainDriveCheck())
+        #expect(check.leftoverKeyRecords && check.question.contains("records left from encryption"))
+        pds.insertRawRecord(rkey: Lexicon.settingsKey, collection: Lexicon.settings, sealed)
+    }
+
     /// Two devices turning encryption on at the same moment: the first one's keys stand. The
     /// second writes nothing, finds the drive encrypted, and gets in like any other device (#37).
     @Test func turningEncryptionOnTwiceAtOnce() async throws {

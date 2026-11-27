@@ -86,12 +86,14 @@ Ordered by how much they matter. None is new on this branch unless it says so.
 **Medium**
 
 - **A device that never held the keys can't tell an encrypted drive from a plain one** (#35, new).
-  The PDS decides what a new device sees first: shown plain settings, it will use the drive
-  unencrypted, and what it writes is readable. Other devices then ignore those records, which
-  is how it shows. `atdrive login` says which kind of drive it opened; nothing more can be done
-  without a secret the new device already shares with the drive. Related: a device that was
-  offline while encryption was turned off and on again can be shown the old, genuine "off"
-  settings.
+  The PDS decides what a new device sees first: shown plain settings, it would use the drive
+  unencrypted, and what it writes would be readable. Nothing the new device can read settles it,
+  so the user does: the first time a device opens a plain drive, `atdrive login` and the Mac app
+  ask whether that's expected, and stop before writing anything if not (`Drive.plainDriveCheck`,
+  remembered per device). They also point out a plain drive that still has device records.
+  Accepted as the limit of trusting a PDS with first contact: someone who says yes without
+  thinking, and a device that was offline while encryption was turned off and on again, which
+  can be shown the old, genuine "off" settings.
 - **The OAuth scope is `space:*`** (#33): every space the account has, not just ATDrive's. It's that
   way until the lexicons are published (PLAN.md, *Protocol notes*). Narrow it then.
 - **`.atdrive/drive.json` holds decrypted metadata** for an encrypted drive, including chunk

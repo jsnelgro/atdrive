@@ -236,6 +236,31 @@ struct RotateRecoveryKey: AsyncParsableCommand {
 /// Opening the drive on this device after signing in (`atdrive login`), and getting it an
 /// encrypted drive's keys (`atdrive encryption unlock`).
 enum KeySetup {
+    /// The first time this device opens the drive and finds it plain, asks whether that's
+    /// expected (#35): the PDS says whether a drive is encrypted, and a new device can't check.
+    /// Remembers a yes; a no stops before this device writes anything.
+    private static func confirmPlain(_ context: Context) async throws {
+        var drive = context.drive
+        guard let check = try await drive.plainDriveCheck() else { return }
+        if check.leftoverKeyRecords { Output.warn("this unencrypted drive has records left from encryption") }
+        print("\n\(check.question)\n")
+        guard Prompt.isInteractive else {
+            Output.warn("not asking without a terminal; `atdrive login` asks again")
+            return
+        }
+        guard Prompt.confirm("Do you expect your drive not to be encrypted?") else {
+            throw CommandError(
+                "stopped: if your drive is encrypted, don't use this device with it. On a device that has "
+                    + "its keys, check that it's still encrypted (`atdrive whoami`), then sign in here again")
+        }
+        if drive.identity == nil {
+            // Where the answer is kept (a plain drive doesn't need one otherwise).
+            drive = try await Context.locked(makingIdentity: true).drive
+            try await drive.open()
+        }
+        drive.confirmPlain()
+    }
+
     /// Opens the drive on this device; creates it if the account has none, asking whether to
     /// encrypt it (and showing an encrypted one's recovery key); or, for an encrypted drive this
     /// device has no keys for, asks for them: from another device, or with the recovery key.
@@ -245,6 +270,7 @@ enum KeySetup {
         do {
             switch try await drive.open() {
             case .plain:
+                try await confirmPlain(context)
                 print("✓ Your drive is ready. It isn't encrypted (`atdrive encryption on` turns encryption on).")
             case .encrypted:
                 print("✓ Your drive is encrypted, and this device has its keys.")

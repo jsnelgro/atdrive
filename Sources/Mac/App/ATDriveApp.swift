@@ -49,6 +49,7 @@ struct MenuContent: View {
                 case .choosingEncryption: choosingEncryption
                 case .showingRecoveryKey(_, let key): recoveryKey(key)
                 case .needsKeys: needsKeys
+                case .confirmingPlain(_, let check): confirmingPlain(check)
                 case .signedIn(let handle): account(handle)
                 }
                 if let message = model.message {
@@ -224,6 +225,27 @@ struct MenuContent: View {
                     .buttonStyle(.link)
                     .disabled(model.busy)
             }
+        }
+    }
+
+    /// A drive that isn't encrypted, opened here for the first time: is that expected?
+    private func confirmingPlain(_ check: PlainDriveCheck) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            StepHeader(
+                title: "Your drive isn't encrypted", systemImage: "lock.open",
+                detail: "Is that what you expect?")
+            Text(check.question)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            choice(
+                "Yes, it isn't encrypted", systemImage: "lock.open",
+                detail: "Use it on this Mac. You won't be asked again."
+            ) { model.confirmPlain(expected: true) }
+            choice(
+                "No, it's encrypted", systemImage: "exclamationmark.shield",
+                detail: "Sign out without writing anything. Check on a device that has the keys."
+            ) { model.confirmPlain(expected: false) }
         }
     }
 

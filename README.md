@@ -501,6 +501,9 @@ On a Mac, the same switch is in the app's **Settings…**.
   can't be taken back for what's already there. The files are then uploaded again unencrypted, so
   apps that can't decrypt can read them; that part can be interrupted. Your other devices carry on by themselves: they recognize the published keys, so
   they know it was one of your devices that turned encryption off, not the server.
+- **A new device asks once** when it finds your drive unencrypted: the server says whether a
+  drive is encrypted, and a device that's never had the keys can't check that on its own. If you
+  know your drive is encrypted, answer no: it signs out without writing anything.
 
 The rest of this section is about encrypted drives.
 

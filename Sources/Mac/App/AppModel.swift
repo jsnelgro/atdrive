@@ -25,6 +25,9 @@ final class AppModel {
         /// An encrypted drive this Mac has no keys for: approval from another device, or the
         /// recovery key.
         case needsKeys(handle: String)
+        /// A drive that isn't encrypted, opened here for the first time: is that what the user
+        /// expects? (#35: the PDS says whether it's encrypted, and this Mac can't check.)
+        case confirmingPlain(handle: String, check: PlainDriveCheck)
         case signedIn(handle: String)
     }
 
@@ -236,7 +239,11 @@ final class AppModel {
         }
         self.drive = drive
         do {
-            try await drive.open()
+            if try await drive.open() == .plain, let check = try await drive.plainDriveCheck() {
+                message = nil
+                state = .confirmingPlain(handle: handle, check: check)
+                return
+            }
             await finishOpening(handle: handle)
         } catch DriveAccessError.noDrive {
             message = nil
@@ -271,6 +278,23 @@ final class AppModel {
                 await openDrive(handle: handle)
             } catch {
                 message = String(describing: error)
+            }
+        }
+    }
+
+    /// The user said whether they expect their drive not to be encrypted. Yes: remembered, and
+    /// the drive is used. No: signed out before this Mac writes anything, saying why.
+    func confirmPlain(expected: Bool) {
+        guard let drive, case .confirmingPlain(let handle, _) = state else { return }
+        Task {
+            if expected {
+                drive.confirmPlain()
+                await finishOpening(handle: handle)
+            } else {
+                await signOut()
+                message =
+                    "Signed out. If your drive is encrypted, don't use this Mac with it: on a device that has "
+                    + "its keys, check that it's still encrypted, then sign in here again."
             }
         }
     }
