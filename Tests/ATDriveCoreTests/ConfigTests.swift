@@ -119,7 +119,7 @@ import Testing
         #expect(config.spacesEnabled)
         #expect(config.spacesSpotlight)
         let wrong = try configFile("[spaces]\nenabled = \"yes\"\n")
-        let error = try #require(throws: ConfigError.self) { try wrong.load() }
+        let error = try thrown(ConfigError.self) { try wrong.load() }
         #expect(error.message.contains("true or false"))
 
         let file = try configFile("[sync]\ninterval = 60\n")
@@ -136,7 +136,7 @@ import Testing
 
     @Test func wrongValuesSayWhere() throws {
         let file = try configFile("\n[sync]\ninterval = \"60\"\n")
-        let error = try #require(throws: ConfigError.self) { try file.load() }
+        let error = try thrown(ConfigError.self) { try file.load() }
         #expect(error.line == 3)
         #expect(error.message.contains("whole number"))
         let tooShort = try configFile("[sync]\ninterval = 1\n")
@@ -149,7 +149,7 @@ import Testing
             ("[t]\n[t]\n", 2), ("a = \"open\n", 1), ("a = 1 2\n", 1),
         ] {
             let file = try configFile(text)
-            let error = try #require(throws: ConfigError.self) { try file.load() }
+            let error = try thrown(ConfigError.self) { try file.load() }
             #expect(error.line == line, "\(text.debugDescription)")
         }
     }
@@ -159,7 +159,7 @@ import Testing
             "a = [1, 2]", "a = { b = 1 }", "[[a]]", "a = 1979-05-27", "\"a\" = 1", "a = \"\"\"x\"\"\"", "a = 0xff",
         ] {
             let file = try configFile(text)
-            let error = try #require(throws: ConfigError.self) { try file.load() }
+            let error = try thrown(ConfigError.self) { try file.load() }
             #expect(error.message.contains("aren't supported"), "\(text)")
         }
     }
@@ -211,7 +211,7 @@ import Testing
         for bad in ["a = [1]", "a = [\"x\" \"y\"]", "a = [\"x\"", "a = [\"x\",\n"] {
             #expect(throws: TOMLError.self, "\(bad)") { try TOMLDocument(parsing: bad) }
         }
-        let error = try #require(throws: TOMLError.self) { try TOMLDocument(parsing: "a = [\n\"x\",\n2]") }
+        let error = try thrown(TOMLError.self) { try TOMLDocument(parsing: "a = [\n\"x\",\n2]") }
         #expect(error.line == 3)
     }
 
@@ -347,4 +347,16 @@ import Testing
         #expect(try store.load() == nil)
         try store.delete()  // nothing to delete is fine
     }
+}
+
+/// The error `body` throws, which must be an `E`: `#require(throws:)` returns it only from Swift
+/// 6.1, and the tests also run on 6.0 (`scripts/setup-swift.sh`).
+private func thrown<E: Error>(_ type: E.Type, _ body: () throws -> Void) throws -> E {
+    do {
+        try body()
+    } catch let error as E {
+        return error
+    }
+    Issue.record("expected \(E.self) to be thrown")
+    throw CancellationError()
 }

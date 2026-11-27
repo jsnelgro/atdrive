@@ -26,7 +26,8 @@ final class Enumerator: NSObject, NSFileProviderEnumerator {
         Task {
             do {
                 let tree = try await index.refresh().tree
-                let items = try listing(in: tree)
+                let held = await index.heldNodes()
+                let items = try listing(in: tree, held: held)
                 for start in stride(from: 0, to: items.count, by: 200) {
                     observer.didEnumerate(Array(items[start..<min(start + 200, items.count)]))
                 }
@@ -81,9 +82,15 @@ final class Enumerator: NSObject, NSFileProviderEnumerator {
             }
         }
         let alreadyUpdated = Set(updated.map(\.id))
-        updated += resend.subtracting(alreadyUpdated).compactMap { tree.nodes[$0] }
+        let resent = resend.subtracting(alreadyUpdated)
+        updated += resent.compactMap { tree.nodes[$0] }
             .sorted { tree.path(of: $0).components.count < tree.path(of: $1).components.count }
-        if !updated.isEmpty { observer.didUpdate(updated.map { Item($0, in: tree) }) }
+        var items = updated.map { Item($0, in: tree) }
+        // Kept because it can't be read now, as it was last seen: after the folders it's in.
+        for id in resent.sorted() where tree.nodes[id] == nil && tree.unreadable[id] != nil {
+            if let held = await index.heldNode(id) { items.append(Item(node: held, parentID: held.record.parent)) }
+        }
+        if !items.isEmpty { observer.didUpdate(items) }
         if !deleted.isEmpty {
             observer.didDeleteItems(withIdentifiers: deleted.map { NSFileProviderItemIdentifier($0) })
         }
@@ -98,13 +105,23 @@ final class Enumerator: NSObject, NSFileProviderEnumerator {
         }
     }
 
-    private func listing(in tree: DriveTree) throws -> [Item] {
+    /// `held`: what can't be read now, as this Mac last saw it (`DriveIndex.heldNodes`). Listed
+    /// where it was: an item left out of a listing is one the system deletes here.
+    private func listing(in tree: DriveTree, held: [Node]) throws -> [Item] {
+        let held = held.filter { tree.unreadable[$0.id] != nil }
+        let heldIDs = Set(held.map(\.id))
+        func heldItems(in folder: String?) -> [Item] {
+            held.filter { $0.record.parent == folder }.map { Item(node: $0, parentID: folder) }
+        }
         switch scope {
         case .workingSet:
-            // Not what's inside a record this Mac can't read: it can't be placed.
-            return tree.nodes.values.filter { tree.unreadableContainer(of: $0.id) == nil }.map { Item($0, in: tree) }
+            // Not what's inside a record this Mac can't read, unless it's held: otherwise it
+            // can't be placed.
+            return tree.nodes.values.filter {
+                tree.unreadableContainer(of: $0.id).map(heldIDs.contains) ?? true
+            }.map { Item($0, in: tree) } + held.map { Item(node: $0, parentID: $0.record.parent) }
         case .container(nil):
-            return tree.children(of: nil).map { Item($0, in: tree) }
+            return tree.children(of: nil).map { Item($0, in: tree) } + heldItems(in: nil)
         case .container(let id?):
             guard let node = tree.nodes[id] else {
                 // A folder this Mac could read before but can't now: it's still there, and so is
@@ -112,11 +129,12 @@ final class Enumerator: NSObject, NSFileProviderEnumerator {
                 if let unreadable = tree.unreadable[id] {
                     // A shared folder that can't be read: not empty, just unreachable for now.
                     if unreadable.reason == .unavailable { throw NSFileProviderError(.serverUnreachable) }
-                    return tree.children(of: id).map { Item($0, in: tree) }
+                    return tree.children(of: id).map { Item($0, in: tree) } + heldItems(in: id)
                 }
                 throw NSFileProviderError(.noSuchItem)
             }
-            return node.isFolder ? tree.children(of: id).map { Item($0, in: tree) } : [Item(node, in: tree)]
+            return node.isFolder
+                ? tree.children(of: id).map { Item($0, in: tree) } + heldItems(in: id) : [Item(node, in: tree)]
         }
     }
 

@@ -38,7 +38,15 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             if identifier == .rootContainer { return completionHandler(Item.root, nil) }
             do {
                 let tree = try await index.refresh().tree
-                guard let node = tree.nodes[identifier.rawValue] else { throw NSFileProviderError(.noSuchItem) }
+                guard let node = tree.nodes[identifier.rawValue] else {
+                    // On the drive, but this Mac can't read it now: as it was last seen. Never
+                    // "no such item", which Finder would take for gone.
+                    guard tree.unreadable[identifier.rawValue] != nil else { throw NSFileProviderError(.noSuchItem) }
+                    guard let held = await index.heldNode(identifier.rawValue) else {
+                        throw NSFileProviderError(.serverUnreachable)
+                    }
+                    return completionHandler(Item(node: held, parentID: held.record.parent), nil)
+                }
                 completionHandler(Item(node, in: tree), nil)
             } catch {
                 completionHandler(nil, fail("item", error))
@@ -67,6 +75,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             do {
                 let drive = try await index.drive()
                 let tree = try await index.refresh().tree
+                // Can't be read now: tried again later, never taken for gone.
+                if tree.unreadable[itemIdentifier.rawValue] != nil { throw NSFileProviderError(.serverUnreachable) }
                 guard let node = tree.nodes[itemIdentifier.rawValue], !node.isFolder else {
                     throw NSFileProviderError(.noSuchItem)
                 }
@@ -285,6 +295,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             do {
                 let drive = try await index.drive()
                 let tree = try await index.refresh().tree
+                // On the drive, but this Mac can't read it now: not deleted. The delete is tried
+                // again later, and settled once it can be read (an edit elsewhere is kept).
+                if tree.unreadable[identifier.rawValue] != nil { throw NSFileProviderError(.serverUnreachable) }
                 // Already gone is fine: the system just removes its local copy.
                 guard let node = tree.nodes[identifier.rawValue] else { return completionHandler(nil) }
                 // Edited on the drive since this Mac saw it: the edit is kept, not deleted. A
@@ -297,7 +310,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     if !inside.isEmpty, !options.contains(.recursive) {
                         throw NSFileProviderError(.directoryNotEmpty)
                     }
-                    // Until the system has been given the whole drive, nothing inside counts as seen.
+                    // Until the system has been given the whole drive, nothing inside counts as
+                    // seen. What can't be read now keeps the folders it was last seen in.
                     let seen = await index.seenTree() ?? DriveTree([])
                     kept = ConflictRules.keptWhenDeleting(folder: node.id, now: tree, seen: seen)
                     doomed = (inside + [node]).filter { !kept.contains($0.id) }

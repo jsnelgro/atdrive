@@ -83,8 +83,19 @@ public enum ConflictRules {
     /// What's kept (node IDs) when `folder` is deleted on a device that last saw the drive as
     /// `seen`: anything added to it, moved into it or edited in it since, and the folders that
     /// lead to those, `folder` included. Empty if the whole folder goes.
+    ///
+    /// Something the drive has but this device can't read now (`DriveTree.unreadable`) can't be
+    /// deleted or placed, so it stays, and so do the folders it was in when it was last seen
+    /// (`seen` holds it as it was then): the folder isn't left out of the drive with something
+    /// still inside it. What's unreadable and was never seen inside it is nobody's to keep.
     public static func keptWhenDeleting(folder: String, now: DriveTree, seen: DriveTree) -> Set<String> {
         var kept: Set<String> = []
+        for id in now.unreadable.keys.sorted() where id != folder && seen.isInside(id, folder: folder) {
+            var current: String? = id
+            while let id = current, kept.insert(id).inserted, id != folder {
+                current = now.nodes[id] != nil ? now.parent(of: id) : seen.parent(of: id)
+            }
+        }
         for node in now.descendants(of: folder) {
             let before = seen.nodes[node.id]
             let arrived = before == nil || !seen.isInside(node.id, folder: folder)
