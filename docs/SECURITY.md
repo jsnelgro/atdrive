@@ -110,8 +110,6 @@ Ordered by how much they matter. None is new on this branch unless it says so.
 
 **Low**
 
-- **The `iss` check at sign-in is skipped when the response has no `iss`** (#34). atproto servers
-  must send it; require it.
 - **Settings sealed when encryption is turned on come from the plain record** (#38), which the PDS
   could have changed (a short retention, say) beforehand. Show them when turning it on.
 - **Times come from device clocks** (#40: TIDs), and decide which side of a race lost and what
@@ -137,7 +135,8 @@ Ordered by how much they matter. None is new on this branch unless it says so.
 - **Tampering tests** (`EncryptionTests`, `DeviceTests`, `SwitchingTests`): changed, moved,
   replayed and forged records, device records, settings and keyrings; what the PDS stores on
   each kind of drive; that nothing unreadable is ever taken for deleted.
-- **Sign-in:** PKCE (S256), `state`, the issuer, that the token's `sub` is the account asked for,
+- **Sign-in:** PKCE (S256), `state`, the issuer (`iss` is required in the redirect, and servers
+  that don't promise it are refused, #34), that the token's `sub` is the account asked for,
   DPoP-bound tokens, the redirect listener on 127.0.0.1 only.
 - **Files written:** permissions of the session, device identity and sync state; that keys,
   chunk IDs and recovery keys don't appear in logs or descriptions.
