@@ -9,6 +9,7 @@ struct Encryption: AsyncParsableCommand {
             atdrive encryption              whether it's encrypted, and what's left to convert
             atdrive encryption on           encrypt it (or finish encrypting it)
             atdrive encryption off          stop encrypting it (or finish decrypting it)
+            atdrive encryption rotate       replace its keys and encrypt everything again with the new one
 
 
             A drive isn't encrypted unless you turn encryption on. Unencrypted, whoever runs your PDS can read your files and their names, and there are no keys to look after or lose. Encrypted, only devices that hold the drive's keys can read it: each new device has to be approved, and losing every device and the recovery key loses the drive.
@@ -16,7 +17,8 @@ struct Encryption: AsyncParsableCommand {
             You can switch either way at any time. Turning it on uploads every file again, encrypted. Turning it off is immediate.
             """,
         subcommands: [
-            EncryptionStatusCommand.self, EncryptionOn.self, EncryptionOff.self, Unlock.self, RotateRecoveryKey.self,
+            EncryptionStatusCommand.self, EncryptionOn.self, EncryptionOff.self, EncryptionRotate.self, Unlock.self,
+            RotateRecoveryKey.self,
         ],
         defaultSubcommand: EncryptionStatusCommand.self
     )
@@ -92,6 +94,49 @@ struct EncryptionOn: AsyncParsableCommand {
     }
 }
 
+struct EncryptionRotate: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "rotate", abstract: "Replace the drive's keys, and encrypt everything again with the new one.",
+        discussion: """
+            Everything stored is encrypted again with a new key: every record, and every file's contents, history included (`--drop-history` deletes the history instead, which is quicker). That uploads the whole drive again. It can be interrupted: run it again to pick up where it stopped. Once it's done, the old keys open nothing on your PDS, and anything sealed with them is refused. Your devices pick up the new key by themselves.
+
+            `atdrive devices rm` does this too, for the device it removes. Shared folders have keys of their own, and are left as they are.
+
+            What it can't do: anything a device or person already downloaded or decrypted stays with them.
+            """)
+
+    @Flag(name: .shortAndLong, help: "Don't ask for confirmation.")
+    var yes = false
+
+    @Flag(help: "Delete the drive's history (old versions, the trash) instead of re-encrypting it.")
+    var dropHistory = false
+
+    func run() async throws {
+        let drive = try await Context.encrypted().drive
+        let status = try await drive.encryptionStatus()
+        if status.rotating {
+            print(
+                "The drive's keys were replaced, and \(status.pending) record\(status.pending == 1 ? " is" : "s are") left to encrypt again."
+            )
+        } else {
+            let estimate = try await drive.rotationEstimate()
+            print(
+                """
+                Replacing the drive's keys:
+                  - Everything is encrypted again with a new key: \(Output.size(estimate.pendingBytes)) of files uploaded again\(dropHistory ? "" : ", history included").
+                    It can be interrupted; `atdrive encryption rotate` again picks up where it stopped.\(dropHistory ? "\n  - The drive's history (old versions, the trash) is deleted first." : "")
+                  - Your devices pick up the new key by themselves.
+                  - Anything already downloaded or decrypted stays where it is.
+                """)
+            guard yes || Prompt.confirm("Replace the drive's keys?") else { return }
+            let recoveryKey = try await KeyRotation.recoveryKey(for: drive)
+            try await drive.rotateKeys(recoveryKey: recoveryKey)
+            print("✓ The drive has a new key.")
+        }
+        try await KeyRotation.finish(drive, dropHistory: dropHistory)
+    }
+}
+
 struct EncryptionOff: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "off", abstract: "Stop encrypting the drive, or finish decrypting it.",
@@ -137,7 +182,12 @@ enum EncryptionReport {
             }
         case .encrypted:
             print("The drive is encrypted: only devices that hold its keys can read it.")
-            if status.pending > 0 {
+            if status.rotating {
+                print(
+                    "Its keys were replaced: \(status.pending) record\(status.pending == 1 ? " is" : "s are") "
+                        + "left to encrypt again (\(Output.size(status.pendingBytes)) of files). "
+                        + "`atdrive encryption rotate` finishes the job.")
+            } else if status.pending > 0 {
                 print(
                     "\(status.pending) record\(status.pending == 1 ? " isn't" : "s aren't") encrypted yet "
                         + "(\(Output.size(status.pendingBytes)) of files). `atdrive encryption on` finishes the job.")

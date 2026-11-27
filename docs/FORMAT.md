@@ -44,11 +44,13 @@ Reading, a client accepts:
 |---|---|---|
 | Plain | yes | only while `settings.converting` |
 | Sealed with a key in the drive's keyring | (there's no keyring) | yes |
-| Sealed with a key in `settings.retiredKeys` | yes | only while `settings.converting` |
+| Sealed with a key in `settings.retiredKeys` | yes | only while `settings.converting` or `settings.rotating` |
+| Sealed with a key in `settings.formerKeys` | (there are none) | unreadable (`formerKey`) |
 | Sealed with any other key | unreadable | unreadable |
 
 On an encrypted drive, a plain record or one sealed with a retired key could have been written
-by the PDS, which is why it's refused once the drive has finished converting. A record a client
+by the PDS, or by a removed device with keys it kept, which is why it's refused once the drive
+has finished converting. A record a client
 can't read is **never treated as deleted**: it's left alone, on the drive and locally.
 
 ## Records
@@ -82,7 +84,11 @@ Chunk lists:
 
 `settings` (key `self`): `retentionDays` (default 30), `driveID` (random; a different one means
 the drive was wiped and created again), `generation` (incremented on every change), `converting`
-(encrypted drives), `retiredKeys` (raw drive keys, published when encryption was turned off),
+(encrypted drives), `retiredKeys` (raw drive keys: on a plain drive, published when encryption was
+turned off; on an encrypted one, the keys it had before, while `converting` or `rotating`),
+`rotating` (encrypted drives: its keys were replaced, and what's sealed with the old ones is
+being sealed again), `formerKeys` (encrypted drives: `{id, fingerprint}` of keys nothing is
+sealed with any more, never the keys),
 `sharingKey?` (home drives: the account's raw X25519 sharing key), `name?` (shares: the shared
 file's or folder's name), `file?` (shares: `true` when it's one file, which the space holds at
 its top; the share is shown as that file rather than a folder).
@@ -144,12 +150,13 @@ data.
 
 **The roster** is the device records whose `member` opens with the keyring's *current* key
 (associated data as for any sealed record, in the `device` collection) and names that record's
-key and `publicKey`. Removing a device rotates the key and re-seals every remaining `member`, so
-an old `member` restored by the PDS is void.
+key and `publicKey`. Removing a device replaces the keys (see *Replacing the keys*) and re-seals
+every remaining `member`, so an old `member` restored by the PDS is void.
 
-**Which keyring a device accepts** (`KeyTrust`): one that holds every key it accepted before, and
-that was wrapped by itself, or (its first) by the device whose pairing code the user compared,
-or (later) by a device in the roster. The pairing code is the first 8 bytes of
+**Which keyring a device accepts** (`KeyTrust`): one that holds every key it accepted before,
+counting as held the keys the settings it opens name in `retiredKeys` and `formerKeys` (compare
+fingerprints), and that was wrapped by itself, or (its first) by the device whose pairing code
+the user compared, or (later) by a device in the roster. The pairing code is the first 8 bytes of
 `SHA-256("atdrive pairing code v2" || both public keys, sorted)`, as a number modulo 10^16.
 
 **The recovery key** is 32 random bytes, written as 56 Crockford base32 characters: the key, then
@@ -165,6 +172,14 @@ the first 3 bytes of `SHA-256("atdrive recovery key checksum v1" || key)`.
 - **On → off:** one `applyWrites`: the settings plain, with the keyring's keys appended to
   `retiredKeys` (`generation + 1`), and every `device` record deleted. Nothing else has to be
   rewritten: what's sealed opens with the retired keys. Rewriting it as plain is optional.
+- **Replacing the keys** (removing a device, or `encryption rotate`): one `applyWrites`: the
+  settings sealed with a new keyring of one new key (`rotating: true`, the old keyring's keys
+  appended to `retiredKeys`, `generation + 1`), every remaining device's record and the
+  `recovery` record wrapping the new keyring, and the removed device's record deleted. Then
+  everything is converted as for off → on: every record not sealed with the new keyring is
+  rewritten, and every chunk list not encrypted under its first key (now the new one) is stored
+  again, history included. When none is left, `rotating` and `converting` are cleared and
+  `retiredKeys` become `formerKeys`. The PDS then deletes the old blobs, which nothing references.
 - **A device that held the keys** accepts plain settings only if `retiredKeys` holds every key it
   accepted before (compare fingerprints). The PDS can make settings plain, but can't publish
   keys it never had. It also refuses sealed settings whose `generation` is lower than one it has

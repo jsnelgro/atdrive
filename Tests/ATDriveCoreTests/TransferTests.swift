@@ -141,9 +141,9 @@ import Testing
         #expect(pds.downloads == runs)
     }
 
-    /// Keys rotate when a device is removed. Chunks are cut and named with the first key, so
-    /// the same contents come out as the same chunks, which the drive already has.
-    @Test(.enabled(if: TestMode.encrypted)) func chunksStayTheSameAfterKeysRotate() async throws {
+    /// Keys are replaced when a device is removed, and converting stores every file again with
+    /// the new key: new chunks, which the same contents uploaded afterwards then reuse.
+    @Test(.enabled(if: TestMode.encrypted)) func chunksAreStoredAgainWhenKeysRotate() async throws {
         let recoveryKey = try #require(recoveryKey)
         let data = Self.noise(200_000, seed: 5)
         let before = try await laptop.upload(try file(data), as: "a.bin", in: nil)
@@ -151,14 +151,18 @@ import Testing
         try await phone.unlock(recoveryKey: recoveryKey)
         #expect(try await laptop.remove(try #require(phone.identity?.id), recoveryKey: recoveryKey))
         let keyring = try #require(laptop.keyring)
-        #expect(keyring.keys.count == 2)
+        #expect(keyring.keys.count == 1)
+        #expect(try await laptop.convert().isSettled)
+        let converted = try #require(try await laptop.update(nil).tree.nodes[before.id])
+        let chunks = try #require(converted.record.chunks)
+        #expect(chunks.allSatisfy { $0.key == keyring.current.id })
+        #expect(Set(chunks.map(\.cid)).isDisjoint(with: Set((before.record.chunks ?? []).map(\.cid))))
+        #expect(try await contents(converted) == data)
 
         pds.resetCounts()
         let after = try await laptop.upload(try file(data), as: "again.bin", in: nil, known: try await known())
         #expect(pds.uploads == 0)
-        #expect(after.record.chunks == before.record.chunks)  // the same boundaries, IDs and blobs
-        let sealed = try #require(pds.rawRecord(rkey: after.id)?["sealed"] as? [String: Any])
-        #expect(sealed["keyID"] as? String == keyring.current.id.rawValue)  // the record, though, is new
+        #expect(after.record.chunks == chunks)  // the same boundaries, IDs and blobs
     }
 
     /// Another device purges the only file that had some chunks, after this upload decided to

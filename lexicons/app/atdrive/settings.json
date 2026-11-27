@@ -30,7 +30,19 @@
             "items": {
               "type": "bytes"
             },
-            "description": "The drive's keys from when it was last encrypted, published when encryption was turned off: what's still sealed with them stays readable, and a device that held them can tell the drive's own devices turned encryption off."
+            "description": "Keys the drive no longer seals with, while what's sealed with them is still read. Plain drives: its keys from when it was last encrypted, published when encryption was turned off, so a device that held them can tell the drive's own devices turned encryption off. Encrypted drives: the keys it had before, while it's converting or rotating."
+          },
+          "rotating": {
+            "type": "boolean",
+            "description": "Encrypted drives: its keys were replaced, and what's sealed with the old ones (retiredKeys) is still read while it's sealed again with the new one."
+          },
+          "formerKeys": {
+            "type": "array",
+            "items": {
+              "type": "ref",
+              "ref": "#formerKey"
+            },
+            "description": "Encrypted drives: keys nothing is sealed with any more. A record sealed with one is refused; a device that knew one takes a keyring without it."
           },
           "sealed": {
             "type": "ref",
@@ -50,6 +62,21 @@
             "type": "boolean",
             "description": "Shares: it's one file (the space holds just that file), shown as the file rather than a folder."
           }
+        }
+      }
+    },
+    "formerKey": {
+      "type": "object",
+      "description": "A key the drive used to have. Neither field opens anything.",
+      "required": ["id", "fingerprint"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Its key ID, as sealed records carry it."
+        },
+        "fingerprint": {
+          "type": "string",
+          "description": "Its fingerprint (hex), as devices that accepted it remember it."
         }
       }
     }

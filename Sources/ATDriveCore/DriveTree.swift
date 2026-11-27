@@ -37,6 +37,10 @@ public struct UnreadableNode: Sendable, Equatable {
         /// Not sealed with the drive's keys, on an encrypted drive: written by a device that
         /// hadn't noticed encryption was turned on, or by the server. `Drive.convert` can adopt it.
         case notSealed
+        /// Sealed with a key the drive stopped using once everything was sealed again with a new
+        /// one (`DriveSettings.formerKeys`): written since by a device that was removed, which
+        /// kept the old keys, or an old copy the server brought back.
+        case formerKey
         /// A file whose chunk list continues in `chunks` records, and one of them isn't there.
         case incomplete
         /// A shared folder that can't be read right now (`MountProblem`).
@@ -51,6 +55,9 @@ public struct UnreadableNode: Sendable, Equatable {
             case .notSealed:
                 "it isn't encrypted with the drive's keys, though the drive is: a device that hadn't noticed "
                     + "wrote it, or the server did (`atdrive encryption on` can encrypt and keep it)"
+            case .formerKey:
+                "it's sealed with a key the drive stopped using when its keys were replaced: a removed device "
+                    + "wrote it, or the server brought back an old copy"
             case .incomplete: "part of its list of contents is missing from the server"
             case .unavailable: "it's a shared folder that can't be read right now"
             }

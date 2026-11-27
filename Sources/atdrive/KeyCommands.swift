@@ -96,13 +96,18 @@ struct ApproveDevice: AsyncParsableCommand {
 
 struct RemoveDevice: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "rm", abstract: "Take a device off the drive: it gets nothing written from now on.",
+        commandName: "rm", abstract: "Take a device off the drive, and re-encrypt the drive so its keys open nothing.",
         discussion: """
-            The drive gets a new key for everything written from now on, which the removed device never gets. It can still read everything stored before now (re-encrypting that is #46), and keeps its own copies. Until you revoke its session in your account's settings, it can also still sign in and write to the drive.
+            The drive's keys are replaced with a new one, which the removed device never gets, and everything stored is encrypted again with it: every record, and every file's contents, history included (`--drop-history` deletes the history instead, which is quicker). That uploads the whole drive again, and can be interrupted: `atdrive encryption rotate` picks it up. Once it's done, the old keys open nothing on your PDS, and anything sealed with them is refused.
+
+            What it can't do: the removed device keeps whatever it downloaded or decrypted before. And it stays signed in to your account until you sign it out on your PDS's account page: until then it can delete what's in the drive, and what it writes before the re-encryption finishes is still read.
             """)
 
     @Flag(name: .shortAndLong, help: "Don't ask for confirmation.")
     var yes = false
+
+    @Flag(help: "Delete the drive's history (old versions, the trash) instead of re-encrypting it.")
+    var dropHistory = false
 
     @Argument(help: "The device's name or ID.")
     var device: String
@@ -120,30 +125,19 @@ struct RemoveDevice: AsyncParsableCommand {
             print("✓ Removed “\(target.name)”'s request.")
             return
         }
+        let estimate = try await drive.rotationEstimate()
         print(
             """
             Removing “\(target.name)” (\(target.id)):
-              - It's taken off the drive's devices, and the drive gets a new key for everything
-                written from now on. “\(target.name)” never gets it.
-              - It can still read everything stored before now, and keeps any copies it has.
-                Removing it can't take those back.
-              - It can still sign in to your account, and so write to the drive, until you revoke
-                its session in your account's settings. Until every
-                other device has seen the removal, what it writes there may still be read.
+              - The drive's keys are replaced with a new one, which “\(target.name)” never gets.
+              - Everything is encrypted again with it: \(Output.size(estimate.pendingBytes)) of files uploaded again\(dropHistory ? "" : ", history included").
+                It can be interrupted; `atdrive encryption rotate` picks it up.\(dropHistory ? "\n  - The drive's history (old versions, the trash) is deleted first." : "")
+              - “\(target.name)” keeps anything it already downloaded. Removing it can't take that back.
+              - It stays signed in to your account until you sign it out on your PDS (see below).
             """)
         guard yes || Prompt.confirm("Remove “\(target.name)”?") else { return }
 
-        // The recovery key must open the new key too, and only the recovery key itself can wrap it.
-        print("\nThe recovery key has to open the drive's new key too.")
-        let typed = Prompt.secret("Type your recovery key, or press Enter to make a new one instead: ")
-        let recoveryKey: RecoveryKey
-        if let typed, !typed.trimmingCharacters(in: .whitespaces).isEmpty {
-            recoveryKey = try RecoveryKey(parsing: typed)
-            guard try await drive.isRecoveryKey(recoveryKey) else { throw DriveAccessError.wrongRecoveryKey }
-        } else {
-            recoveryKey = RecoveryKey()
-            try RecoveryKeyNotice.show(recoveryKey, replacing: true)
-        }
+        let recoveryKey = try await KeyRotation.recoveryKey(for: drive)
         try await drive.remove(target.id, recoveryKey: recoveryKey)
         let left = devices.filter { $0.approved && $0.id != target.id }.count
         print(
@@ -154,6 +148,46 @@ struct RemoveDevice: AsyncParsableCommand {
         if (try? await context.joined.rotateSharingKey()) != nil {
             print("✓ Your sharing key is new too. People who share encrypted files with you will see it change.")
         }
+        try await KeyRotation.finish(drive, dropHistory: dropHistory)
+        KeyRotation.signOutNotice(for: target.name, issuer: try? context.store.load()?.oauth.issuer)
+    }
+}
+
+/// Replacing the drive's keys (`devices rm`, `encryption rotate`).
+enum KeyRotation {
+    /// The recovery key to wrap the new keys for: the current one, typed, or a new one, shown.
+    /// Only the recovery key itself can wrap them.
+    static func recoveryKey(for drive: Drive) async throws -> RecoveryKey {
+        print("\nThe recovery key has to open the drive's new key too.")
+        let typed = Prompt.secret("Type your recovery key, or press Enter to make a new one instead: ")
+        if let typed, !typed.trimmingCharacters(in: .whitespaces).isEmpty {
+            let recoveryKey = try RecoveryKey(parsing: typed)
+            guard try await drive.isRecoveryKey(recoveryKey) else { throw DriveAccessError.wrongRecoveryKey }
+            return recoveryKey
+        }
+        let recoveryKey = RecoveryKey()
+        try RecoveryKeyNotice.show(recoveryKey, replacing: true)
+        return recoveryKey
+    }
+
+    /// Deletes the history if asked, then encrypts everything again with the new key.
+    static func finish(_ drive: Drive, dropHistory: Bool) async throws {
+        if dropHistory {
+            let deleted = try await drive.dropHistory(in: try await drive.update(nil))
+            print("✓ Deleted the drive's history (\(deleted) version\(deleted == 1 ? "" : "s")).")
+        }
+        try await EncryptionReport.convert(drive, adoptUnsealed: false)
+    }
+
+    /// How to sign a removed device out: only the PDS can, on its account page.
+    static func signOutNotice(for name: String, issuer: String?) {
+        let page = issuer.flatMap { URL(string: $0)?.appendingPathComponent("account").absoluteString }
+        print(
+            """
+
+            “\(name)” is still signed in to your account. Sign it out on your PDS\(page.map { ": \($0)" } ?? "'s account page")
+            (look for ATDrive among the apps or devices signed in). Until then it can delete what's in the drive.
+            """)
     }
 }
 
