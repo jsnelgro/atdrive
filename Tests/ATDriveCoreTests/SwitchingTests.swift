@@ -191,6 +191,35 @@ import Testing
         #expect(try await laptop.devices().map(\.name) == ["laptop", "phone"])
     }
 
+    /// The settings sealed when encryption is turned on come from the plain record, which the
+    /// PDS could have changed: a short retention there isn't taken unless the user typed it.
+    @Test func turningEncryptionOnSealsTheRetentionShown() async throws {
+        try await laptop.create()
+        func storeRetention(_ days: Int) async throws {
+            var settings = try #require(try await laptop.update(nil).settings)
+            settings.retentionDays = days
+            try await laptop.client.putSpaceRecord(
+                space: laptop.space, repo: laptop.owner, collection: Lexicon.settings, rkey: Lexicon.settingsKey,
+                record: try laptop.stored(settings, with: nil))
+        }
+        try await storeRetention(1)  // the PDS's doing, say
+        #expect(try await laptop.settingsToSeal().retentionDays == DriveSettings.defaultRetentionDays)
+        #expect(try await laptop.settingsToSeal(retentionDays: 2).retentionDays == 2)
+        try await storeRetention(14)
+        #expect(try await laptop.settingsToSeal().retentionDays == 14)
+
+        try await storeRetention(1)
+        _ = try await laptop.enableEncryption()
+        #expect(try await laptop.update(nil).settings?.retentionDays == DriveSettings.defaultRetentionDays)
+        await #expect(throws: DriveAccessError.alreadyEncrypted) { try await laptop.settingsToSeal() }
+    }
+
+    @Test func aTypedRetentionIsSealed() async throws {
+        try await laptop.create()
+        _ = try await laptop.enableEncryption(retentionDays: 3)
+        #expect(try await laptop.update(nil).settings?.retentionDays == 3)
+    }
+
     @Test func convertingPicksUpWhereItStopped() async throws {
         try await laptop.create()
         let made = try await populate(laptop)

@@ -110,8 +110,11 @@ Ordered by how much they matter. None is new on this branch unless it says so.
 
 **Low**
 
-- **Settings sealed when encryption is turned on come from the plain record** (#38), which the PDS
-  could have changed (a short retention, say) beforehand. Show them when turning it on.
+- **Settings sealed when encryption is turned on come from the plain record**, which the PDS
+  could have changed beforehand. Fixed for the retention (#38): `encryption on` and the Mac app
+  show the retention they'll seal, and one under a week is replaced by the default unless the
+  user typed it (`--retention-days`). The rest (the drive ID, sharing fields) isn't something
+  the PDS gains by changing.
 - **Times come from device clocks** (#40: TIDs), and decide which side of a race lost and what
   pruning keeps. A device with a wrong clock, or a removed one, can skew both.
 - **Device names are readable** on an encrypted drive (#39).

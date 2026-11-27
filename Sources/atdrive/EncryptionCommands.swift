@@ -50,6 +50,13 @@ struct EncryptionOn: AsyncParsableCommand {
     @Flag(name: .shortAndLong, help: "Don't ask for confirmation.")
     var yes = false
 
+    @Option(help: "How many days of history to keep (default: what the drive says, at least a week).")
+    var retentionDays: Int?
+
+    func validate() throws {
+        if let retentionDays, retentionDays < 1 { throw ValidationError("--retention-days must be at least 1") }
+    }
+
     func run() async throws {
         let context = try await Context.locked(makingIdentity: true)
         let drive = context.drive
@@ -58,6 +65,8 @@ struct EncryptionOn: AsyncParsableCommand {
         if mode == .plain {
             guard try await SharingNotice.endSharing(context.joined, yes: yes) else { return }
             let status = try await drive.conversionEstimate(to: .encrypted)
+            let sealed = try await drive.settingsToSeal(retentionDays: retentionDays)
+            let stored = try await drive.update(nil).settings?.retentionDays
             print(
                 """
                 Turning encryption on:
@@ -69,8 +78,18 @@ struct EncryptionOn: AsyncParsableCommand {
                   - Whoever runs your PDS could read what's there until now. This protects it from
                     here on, not from copies already made.
                 """)
+            let days = sealed.retentionDays
+            print("  - History is kept for \(days) day\(days == 1 ? "" : "s") (`--retention-days` to change it).")
+            if let stored, stored != days, retentionDays == nil {
+                print(
+                    """
+                      The drive's unencrypted settings say \(stored) day\(stored == 1 ? "" : "s"). Whoever runs your PDS could have set
+                      that, and once it's encrypted every device follows it, so the default is used instead.
+                      Pass `--retention-days \(stored)` if you set it yourself.
+                    """)
+            }
             guard yes || Prompt.confirm("Turn encryption on?") else { return }
-            let recoveryKey = try await drive.enableEncryption()
+            let recoveryKey = try await drive.enableEncryption(retentionDays: sealed.retentionDays)
             print("✓ The drive is encrypted from now on.")
             try RecoveryKeyNotice.show(recoveryKey, replacing: false)
         } else {

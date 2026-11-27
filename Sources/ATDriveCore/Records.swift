@@ -286,6 +286,9 @@ public struct MountInfo: Codable, Sendable, Equatable {
 /// trusted with everything anyway.
 public struct DriveSettings: Codable, Sendable, Equatable {
     public static let defaultRetentionDays = 30
+    /// The shortest retention taken from a plain settings record when encryption is turned on
+    /// (`Drive.settingsToSeal`): the PDS could have written a shorter one.
+    public static let minimumUntypedRetentionDays = 7
 
     /// How long history is kept (versions, and the trash).
     public var retentionDays: Int

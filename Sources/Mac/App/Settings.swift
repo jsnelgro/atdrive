@@ -17,6 +17,9 @@ final class EncryptionModel {
         var endsSharing: [String]
         /// File contents to upload again, in bytes.
         var bytes: Int
+        /// Turning it on: the history retention the settings will be sealed with, as shown
+        /// (`Drive.settingsToSeal`).
+        var retentionDays: Int?
     }
 
     private(set) var status: EncryptionStatus?
@@ -83,7 +86,8 @@ final class EncryptionModel {
                     ends.append("“\(snapshot.tree.path(of: node))”, shared with you, is removed from your drive.")
                 }
                 let bytes = encrypt ? try await joined.home.conversionEstimate(to: .encrypted).pendingBytes : 0
-                pending = Switch(encrypt: encrypt, endsSharing: ends, bytes: bytes)
+                let retention = encrypt ? try await joined.home.settingsToSeal().retentionDays : nil
+                pending = Switch(encrypt: encrypt, endsSharing: ends, bytes: bytes, retentionDays: retention)
             } catch {
                 message = String(describing: error)
             }
@@ -129,7 +133,8 @@ final class EncryptionModel {
         run { joined in
             if !change.endsSharing.isEmpty { _ = try await joined.endSharing() }
             if change.encrypt {
-                self.recoveryKey = try await joined.home.enableEncryption().formatted
+                self.recoveryKey = try await joined.home.enableEncryption(retentionDays: change.retentionDays)
+                    .formatted
             } else {
                 try await joined.home.disableEncryption()
             }
@@ -364,6 +369,9 @@ struct SettingsView: View {
                 "You get a recovery key to keep safe. Lose it and every device that has the drive's keys, and nobody can read the drive again."
             )
             lines.append("Your other devices must be approved again before they can use the drive.")
+            if let days = change.retentionDays {
+                lines.append("History is kept for \(days) day\(days == 1 ? "" : "s").")
+            }
             lines.append(
                 "Whoever runs your server could read what's there until now. This protects it from here on, not copies already made."
             )

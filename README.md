@@ -492,7 +492,10 @@ On a Mac, the same switch is in the app's **Settings…**.
   how much before it starts. It can be interrupted: `atdrive encryption on` again picks up where
   it stopped, and until it's done your devices read both kinds. Your other devices have to be
   approved again. Whoever runs your PDS could read what was there until then: this protects it
-  from then on, not from copies already made.
+  from then on, not from copies already made. It also shows how long history will be kept: the
+  drive's settings are sealed then, and every device follows them, so a retention under a week
+  in the unencrypted settings (which the PDS could have set) is replaced by the default 30 days
+  unless you pass `--retention-days`.
 - **Turning it off** is immediate: the drive's keys are published in the drive itself, so
   everything in it, history included, is readable by whoever runs your PDS from that moment. That
   can't be taken back for what's already there. The files are then uploaded again unencrypted, so

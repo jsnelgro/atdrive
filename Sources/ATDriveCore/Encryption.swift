@@ -50,12 +50,16 @@ extension Drive {
     ///
     /// What's in the drive is still plain afterwards: run `convert` to encrypt it. The PDS has
     /// had it in the clear, so this protects it from now on, not from copies already made.
-    public func enableEncryption() async throws -> RecoveryKey {
+    ///
+    /// The settings sealed are the plain ones (`settingsToSeal`): `retentionDays` is how long to
+    /// keep history, if the user typed it.
+    public func enableEncryption(retentionDays: Int? = nil) async throws -> RecoveryKey {
         guard try await open() == .plain else { throw DriveAccessError.alreadyEncrypted }
         guard let me = identity else { throw DriveAccessError.notApproved(pending: false) }
         guard let records = try await keyRecords(),
-            var settings = settings(stored: records.settings.value, keyring: nil)
+            let plain = settings(stored: records.settings.value, keyring: nil)
         else { throw DriveAccessError.damaged("settings") }
+        var settings = Self.settingsToSeal(plain, retentionDays: retentionDays)
         settings.converting = true
         settings.rotating = false
         settings.formerKeys = []
@@ -72,6 +76,28 @@ extension Drive {
         let cids = try await apply(writes)
         accept(keyring, as: me, settings: settings, deviceRecord: cids[2], settingsRecord: cids[0])
         return recoveryKey
+    }
+
+    /// The settings that turning encryption on would seal, for showing first: the plain ones,
+    /// which the PDS could have changed. Once sealed, every device trusts them, so a retention
+    /// shorter than `DriveSettings.minimumUntypedRetentionDays` isn't taken from there: the
+    /// default is sealed instead, unless the user typed one (`retentionDays`).
+    public func settingsToSeal(retentionDays: Int? = nil) async throws -> DriveSettings {
+        guard try await open() == .plain else { throw DriveAccessError.alreadyEncrypted }
+        guard let record = try await settingsRecord(), let plain = settings(stored: record.value, keyring: nil) else {
+            throw DriveAccessError.damaged("settings")
+        }
+        return Self.settingsToSeal(plain, retentionDays: retentionDays)
+    }
+
+    static func settingsToSeal(_ plain: DriveSettings, retentionDays: Int?) -> DriveSettings {
+        var settings = plain
+        if let retentionDays {
+            settings.retentionDays = max(retentionDays, 1)
+        } else if settings.retentionDays < DriveSettings.minimumUntypedRetentionDays {
+            settings.retentionDays = DriveSettings.defaultRetentionDays
+        }
+        return settings
     }
 
     /// Turns encryption off: the settings become plain and publish the drive's keys, and the
