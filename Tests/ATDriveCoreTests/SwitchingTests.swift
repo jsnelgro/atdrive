@@ -449,6 +449,33 @@ import Testing
         }
     }
 
+    /// Two devices turning encryption on at the same moment: the first one's keys stand. The
+    /// second writes nothing, finds the drive encrypted, and gets in like any other device (#37).
+    @Test func turningEncryptionOnTwiceAtOnce() async throws {
+        try await laptop.create()
+        let made = try await populate(laptop)
+        let phone = device("phone")
+        try await phone.open()
+        let laptop = laptop
+        let laptopsKey = Locked<RecoveryKey?>(nil)
+        pds.meanwhile {
+            let key = try await laptop.enableEncryption()
+            laptopsKey.update { $0 = key }
+        }
+        await #expect(throws: DriveAccessError.alreadyEncrypted) { try await phone.enableEncryption() }
+        pds.onRequest = nil
+        let recoveryKey = try #require(laptopsKey.value)
+        #expect(phone.mode == .encrypted && phone.keyring == nil)
+        #expect(try await laptop.devices().map(\.name) == ["laptop"])
+
+        try await phone.unlock(recoveryKey: recoveryKey)
+        #expect(phone.keyring == laptop.keyring)
+        #expect(try await restarted(laptop).open() == .encrypted)
+        #expect(try await laptop.convert().isSettled)
+        try await expectIntact(phone, made)
+        try await expectIntact(laptop, made)
+    }
+
     /// Removing a device changes the key, and memberships are sealed with the current key: the
     /// PDS can't bring a removed device back by restoring its old record.
     @Test func aRemovedDeviceCannotBeBroughtBack() async throws {

@@ -331,14 +331,56 @@ public final class Drive: Sendable {
 
     /// The settings record as stored, or `nil` if there's none: no settings means no drive
     /// (creating one writes them first).
-    func settingsRecord() async throws -> (cid: String, value: JSONValue?)? {
-        let page: XRPCClient.SpaceRecordPage<JSONValue>
+    func settingsRecord() async throws -> SettingsRecord? {
+        var found: (cid: String, value: JSONValue?)?
+        var markers: [String] = []
+        var cursor: String?
+        repeat {
+            let page: XRPCClient.SpaceRecordPage<JSONValue>
+            do {
+                page = try await client.listRawSpaceRecords(
+                    space: space, repo: owner, collection: Lexicon.settings, cursor: cursor)
+            } catch let error as XRPCError where Self.isMissing(error) {
+                return nil
+            }
+            for record in page.records {
+                if record.rkey == Lexicon.settingsKey {
+                    found = (record.cid, record.value)
+                } else if record.rkey.hasPrefix(SettingsRecord.markerPrefix) {
+                    markers.append(record.rkey)
+                }
+            }
+            cursor = page.records.isEmpty ? nil : page.cursor
+        } while cursor != nil
+        return found.map { SettingsRecord(cid: $0.cid, value: $0.value, markers: markers.sorted()) }
+    }
+
+    /// Writes `writes`, which change the settings record to `generation`, as one transaction
+    /// that fails if another device changed the settings since `read` was read. Throws
+    /// `DriveAccessError.settingsChanged` then, and nothing is written: read them again, and
+    /// decide again.
+    ///
+    /// The PDS has no compare-and-swap, so the transaction makes one: it also creates a marker
+    /// record next to the settings, keyed by the new generation (`generation-<n>`), and deletes
+    /// the markers that were there when `read` was read. Two devices that read the same settings
+    /// create the same marker, and the second one's transaction fails; one that read settings
+    /// replaced since deletes a marker that's gone, and fails too. (A drive written to before
+    /// markers existed has none to delete, the first time.)
+    @discardableResult
+    func applyChangingSettings(_ writes: [SpaceWrite], generation: Int, read: SettingsRecord) async throws
+        -> [String?]
+    {
+        var all = writes
+        all.append(
+            .create(
+                collection: Lexicon.settings, rkey: SettingsRecord.marker(generation),
+                value: .object(["$type": .string(Lexicon.settings)])))
+        all += read.markers.map { .delete(collection: Lexicon.settings, rkey: $0) }
         do {
-            page = try await client.listRawSpaceRecords(space: space, repo: owner, collection: Lexicon.settings)
-        } catch let error as XRPCError where Self.isMissing(error) {
-            return nil
+            return try await apply(all)
+        } catch let error as XRPCError where Self.isRace(error) {
+            throw DriveAccessError.settingsChanged
         }
-        return page.records.first { $0.rkey == Lexicon.settingsKey }.map { ($0.cid, $0.value) }
     }
 
     @discardableResult
@@ -671,6 +713,22 @@ public final class Drive: Sendable {
         switch write {
         case .create(_, _, let value), .update(_, _, let value): return overhead + value.serialized().count
         case .delete: return overhead
+        }
+    }
+
+    /// Runs `body`, which reads the settings and changes them (`applyChangingSettings`), again
+    /// if another device changed them first: up to three times. `reopening` opens the drive
+    /// again before each retry, so a `body` that doesn't open it itself sees what changed, the
+    /// keys included.
+    func retryingSettingsRaces<T>(reopening: Bool = false, _ body: () async throws -> T) async throws -> T {
+        var attempt = 1
+        while true {
+            do {
+                return try await body()
+            } catch DriveAccessError.settingsChanged where attempt < 3 {
+                attempt += 1
+                if reopening { try await open() }
+            }
         }
     }
 

@@ -93,6 +93,16 @@ sealed with any more, never the keys),
 file's or folder's name), `file?` (shares: `true` when it's one file, which the space holds at
 its top; the share is shown as that file rather than a folder).
 
+**Changing the settings** is a compare-and-swap that spaces don't have, made with markers: the
+`applyWrites` that updates `settings/self` to generation `n` also creates `settings/generation-<n>`
+(`{"$type": "app.atdrive.settings"}`, nothing else) and deletes every `settings/generation-*`
+that was there when the settings were read. Two writers that read the same settings create the
+same marker, so the second fails (`RecordAlreadyExists`); a writer that read settings replaced
+since deletes a marker that's gone (`RecordNotFound`). Either way nothing is written: read the
+settings again and redo the change. Every write that changes the settings does this, along
+with the device and recovery records it writes (switching modes, replacing the keys, a new
+recovery key). Readers ignore the markers.
+
 `device` (encrypted drives; key: the device's ID, a TID): `name`, `publicKey` (raw X25519),
 `keyring?` (the keyring wrapped for it), `member?` (sealed `{id, name, publicKey}`),
 `approvedBy?`, `createdAt`. Key `recovery`: `recoveryKeyring`.

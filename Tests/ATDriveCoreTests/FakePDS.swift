@@ -150,7 +150,24 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
     }
 
     /// Called with each method name before it's handled (e.g. to change something mid-sync).
-    var onRequest: (@Sendable (String) -> Void)?
+    var onRequest: (@Sendable (String) async -> Void)?
+
+    /// Runs `action` the next time `method` is requested, before it's handled, once: what
+    /// another device did at that very moment. Requests `action` makes don't run it again.
+    func meanwhile(
+        before method: String = "com.atproto.space.applyWrites", _ action: @escaping @Sendable () async throws -> Void
+    ) {
+        let done = Locked(false)
+        onRequest = { requested in
+            guard requested == method else { return }
+            let first = done.update { done in
+                defer { done = true }
+                return !done
+            }
+            guard first else { return }
+            do { try await action() } catch { Issue.record(error, "meanwhile") }
+        }
+    }
 
     // MARK: Accounts
 
@@ -198,7 +215,7 @@ final class FakePDS: HTTPTransport, @unchecked Sendable {
     // MARK: Handling requests
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        onRequest?(request.url!.lastPathComponent)
+        await onRequest?(request.url!.lastPathComponent)
         let latency = lock.withLock {
             atOnce += 1
             mostAtOnce = max(mostAtOnce, atOnce)

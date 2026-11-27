@@ -102,11 +102,15 @@ Ordered by how much they matter. None is new on this branch unless it says so.
   settings' generation covers only the settings, and only on devices that have seen newer ones.
   A drive-wide fix needs a signed head that every write advances, which spaces can't do without
   compare-and-swap.
-- **Two devices changing the keys at the same moment** (#37). Turning encryption on: each makes
-  a keyring; the last settings write wins, and what the other device sealed meanwhile is
-  unreadable to everyone else (it's held, not lost, while that device still runs). Removing
-  devices: two rotations can leave a device refusing its keyring, until the recovery key gets
-  it out. Rare; a re-read after the write would catch both.
+- **Two devices changing the keys at the same moment** (#37). Turning encryption on: each made
+  a keyring, and the last settings write won. Removing devices: two rotations could leave a
+  device refusing its keyring, until the recovery key got it out. Fixed: every change to the
+  settings creates a marker record keyed by the new generation and deletes the one it read,
+  in the same transaction, which makes it a compare-and-swap (`Drive.applyChangingSettings`).
+  The second device's write fails whole; it reads the drive again and decides again (turning
+  encryption on: it's already on; rotating: it rotates from the first one's keys). The PDS can
+  still delete markers, but that only brings back the race, which it could cause anyway by
+  dropping writes.
 
 **Low**
 

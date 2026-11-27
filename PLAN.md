@@ -889,7 +889,9 @@ the drive.
     that.
   - Spaces are **not** end-to-end encrypted.
 - **No compare-and-swap** on space writes, so conflict detection has to happen on the client.
-  Creates do fail if the record exists (`RecordAlreadyExists`).
+  Creates do fail if the record exists (`RecordAlreadyExists`), which is how changes to the
+  settings are made one at a time: each creates a marker for its generation, in the same
+  transaction (`Drive.applyChangingSettings`, #37).
 - **Change feed:** `listRepoOps(since:)` lists writes after a revision. Since 2026-11-12 every
   page carries the current commit (with its MAC), and the feed ends at the page with no cursor.
   See *Storage v2*.

@@ -103,6 +103,9 @@ public enum DriveAccessError: Error, Equatable, CustomStringConvertible {
     case encryptionRemoved
     /// The drive's settings are older than ones this device has read: an old copy.
     case settingsRolledBack
+    /// Another device changed the drive's settings (or its keys) at the same moment, and its
+    /// change came first. Nothing was written.
+    case settingsChanged
     /// Turning encryption on, on a drive that's encrypted; or off, on one that isn't.
     case alreadyEncrypted
     case notEncrypted
@@ -147,6 +150,8 @@ public enum DriveAccessError: Error, Equatable, CustomStringConvertible {
         case .settingsRolledBack:
             "the server returned an older copy of the drive's settings than this device has seen. Nothing "
                 + "was written"
+        case .settingsChanged:
+            "another device changed the drive's settings at the same moment. Nothing was written: try again"
         case .alreadyEncrypted:
             "the drive is already encrypted"
         case .notEncrypted:
@@ -204,11 +209,24 @@ public struct ArrivedKeyring: Sendable, Equatable {
     public var cid: String
 }
 
+/// The settings record as stored, and the markers beside it (`Drive.applyChangingSettings`).
+struct SettingsRecord: Sendable {
+    var cid: String
+    var value: JSONValue?
+    /// The record keys of the markers there were, in the settings collection.
+    var markers: [String]
+
+    static let markerPrefix = "generation-"
+    static func marker(_ generation: Int) -> String { "\(markerPrefix)\(generation)" }
+}
+
 /// The drive's key records as stored.
 struct KeyRecords {
-    var settings: (cid: String, value: JSONValue?)
+    var settings: SettingsRecord
     var devices: [String: DeviceEntry]
     var recovery: RecoveryRecord?
+    /// There's a recovery record, whether or not it reads as one.
+    var recoveryStored = false
 
     /// What a sender's device record calls it, for messages only: the PDS can change it.
     func name(of sender: Bytes) -> String {
@@ -533,6 +551,8 @@ extension Drive {
         guard let me = identity else { throw DriveAccessError.notApproved(pending: false) }
         guard let keyring else { throw DriveAccessError.locked }
         guard let records = try await keyRecords() else { throw DriveAccessError.noDrive }
+        // Changed since `open`: the keyring may not be theirs.
+        guard records.settings.cid == keys.value.settingsRecord else { throw DriveAccessError.settingsChanged }
         return (me, keyring, records)
     }
 
@@ -646,6 +666,10 @@ extension Drive {
     /// Pass the device as listed when its pairing code was shown and the user confirmed it
     /// matches: its key is the one compared, so it's the one used, whatever the record says now.
     public func approve(_ device: DeviceInfo) async throws {
+        try await retryingSettingsRaces { try await approveOnce(device) }
+    }
+
+    private func approveOnce(_ device: DeviceInfo) async throws {
         let (me, keyring, records) = try await unlockedRecords()
         let existing = records.devices[device.id]
         let member = RosterEntry(id: device.id, name: device.name, publicKey: device.publicKey)
@@ -670,8 +694,15 @@ extension Drive {
     /// The removed device keeps what it downloaded, and its account session: until that's signed
     /// out on the PDS, it can delete records, and what it writes until `convert` is done is
     /// still read.
+    ///
+    /// Two devices changing the keys at once (removing devices, `rotateKeys`): the one that comes
+    /// second reads the drive again and replaces the keys the first one made.
     @discardableResult
     public func remove(_ id: String, recoveryKey: RecoveryKey?) async throws -> Bool {
+        try await retryingSettingsRaces { try await removeOnce(id, recoveryKey: recoveryKey) }
+    }
+
+    private func removeOnce(_ id: String, recoveryKey: RecoveryKey?) async throws -> Bool {
         let (me, keyring, records) = try await unlockedRecords()
         guard id != me.id else { throw DriveAccessError.cannotRemoveThisDevice }
         let heldKeys =
@@ -696,8 +727,10 @@ extension Drive {
     ///
     /// Shared folders are spaces of their own, with their own keys, and are left as they are.
     public func rotateKeys(recoveryKey: RecoveryKey) async throws {
-        let (me, keyring, records) = try await unlockedRecords()
-        try await rotate(keyring, records: records, me: me, removing: nil, recoveryKey: recoveryKey)
+        try await retryingSettingsRaces {
+            let (me, keyring, records) = try await unlockedRecords()
+            try await rotate(keyring, records: records, me: me, removing: nil, recoveryKey: recoveryKey)
+        }
     }
 
     private func rotate(
@@ -716,6 +749,7 @@ extension Drive {
         }
         settings.rotating = true
         settings.generation += 1
+        let read = records.settings
 
         var writes: [SpaceWrite] = []
         if let removed, records.devices[removed] != nil {
@@ -741,7 +775,7 @@ extension Drive {
         let settingsWrite = writes.count
         writes.append(
             .update(collection: Lexicon.settings, rkey: Lexicon.settingsKey, value: try stored(settings, with: fresh)))
-        let cids = try await apply(writes)
+        let cids = try await applyChangingSettings(writes, generation: settings.generation, read: read)
         accept(fresh, as: me, settings: settings, deviceRecord: cids[mine], settingsRecord: cids[settingsWrite])
     }
 
@@ -756,17 +790,32 @@ extension Drive {
 
     /// Wraps the keyring with a new recovery key, replacing the old one, which stops working.
     /// Returns the new key, to show once (or make it first, and show it before it's in effect).
+    ///
+    /// It counts as a change to the settings (they're written again, unchanged but for their
+    /// `generation`), so it can't land on top of another device replacing the keys, which would
+    /// leave the recovery key with the old ones.
     @discardableResult
     public func replaceRecoveryKey(with recoveryKey: RecoveryKey = RecoveryKey()) async throws -> RecoveryKey {
-        let (_, keyring, _) = try await unlockedRecords()
-        let record = RecoveryRecord(keyring: try keyring.wrapped(for: recoveryKey, space: space))
-        do {
-            try await client.putSpaceRecord(
-                space: space, repo: owner, collection: Lexicon.device, rkey: Lexicon.recoveryKey, record: record)
-        } catch let error as XRPCError where Self.isMissing(error) {
-            throw DriveAccessError.noDrive
+        try await retryingSettingsRaces {
+            let (me, keyring, records) = try await unlockedRecords()
+            guard var settings = settings(stored: records.settings.value, keyring: keyring) else {
+                throw DriveAccessError.damaged("settings")
+            }
+            settings.generation += 1
+            let recovery = try JSONValue(
+                encoding: RecoveryRecord(keyring: try keyring.wrapped(for: recoveryKey, space: space)))
+            let cids = try await applyChangingSettings(
+                [
+                    .update(
+                        collection: Lexicon.settings, rkey: Lexicon.settingsKey,
+                        value: try stored(settings, with: keyring)),
+                    !records.recoveryStored
+                        ? .create(collection: Lexicon.device, rkey: Lexicon.recoveryKey, value: recovery)
+                        : .update(collection: Lexicon.device, rkey: Lexicon.recoveryKey, value: recovery),
+                ], generation: settings.generation, read: records.settings)
+            accept(keyring, as: me, settings: settings, deviceRecord: keys.value.deviceRecord, settingsRecord: cids[0])
+            return recoveryKey
         }
-        return recoveryKey
     }
 
     // MARK: Records
@@ -777,6 +826,7 @@ extension Drive {
         guard let settings = try await settingsRecord() else { return nil }
         var devices: [String: DeviceEntry] = [:]
         var recovery: RecoveryRecord?
+        var recoveryStored = false
         var cursor: String?
         repeat {
             let page: XRPCClient.SpaceRecordPage<JSONValue>
@@ -789,6 +839,7 @@ extension Drive {
             for item in page.records {
                 guard let value = item.value else { continue }
                 if item.rkey == Lexicon.recoveryKey {
+                    recoveryStored = true
                     recovery = try? value.decode(as: RecoveryRecord.self)
                 } else if let record = try? value.decode(as: DeviceRecord.self) {
                     devices[item.rkey] = DeviceEntry(id: item.rkey, cid: item.cid, record: record)
@@ -796,6 +847,6 @@ extension Drive {
             }
             cursor = page.records.isEmpty ? nil : page.cursor
         } while cursor != nil
-        return KeyRecords(settings: settings, devices: devices, recovery: recovery)
+        return KeyRecords(settings: settings, devices: devices, recovery: recovery, recoveryStored: recoveryStored)
     }
 }
