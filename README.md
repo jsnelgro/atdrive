@@ -286,6 +286,7 @@ atdrive rm -r /archive/taxes
 | `restore <path> [--at <when>]` | Bring something back from the trash, or undo its latest change; with `--at`, as it was then |
 | `trash`, `trash empty [path…]` | What was deleted in the last 30 days; delete it (or just these) for good, with its history |
 | `encryption`, `encryption on`, `encryption off` | Whether the drive is encrypted, and turning encryption on or off (see [Encryption](#encryption)) |
+| `encryption rotate [--drop-history]` | Replace the drive's keys, and encrypt everything again with the new one |
 | `encryption unlock`, `encryption rotate-recovery-key` | Give this device the drive's keys with the recovery key; replace the recovery key |
 | `devices`, `devices approve [name]`, `devices rm <name>` | An encrypted drive's devices; give a new one the keys (after comparing a code), or take one off |
 | `dev reset`, `dev du`, `dev lexicons publish` | For development: delete everything, as if ATDrive had never been used; space used by files and history; publish the schemas |
@@ -515,15 +516,21 @@ The rest of this section is about encrypted drives.
   Both devices show a 16-digit code. Approve only if they match: if they don't, something between
   them swapped in a key of its own. The new device then shows the code of the one that approved
   it, to confirm once more.
-- **Removing a device** (`atdrive devices rm <name>`, say for a lost laptop) gives the drive
-  a new key for everything written from then on, which the removed device never gets. It asks for
-  the recovery key, which has to open the new key too (or makes a new recovery key). What removal
-  can't do:
-  - The removed device can still read everything stored before, and keeps its own copies.
-    Re-encrypting what's stored under a new key is planned (#46).
-  - It can still sign in to your account until you revoke its session (in your account's settings,
-    or by signing it out there). Until every other device has seen the removal, what it
-    writes may still be read.
+- **Removing a device** (`atdrive devices rm <name>`, say for a lost laptop) replaces the drive's
+  keys with a new one, which the removed device never gets, and encrypts everything stored again
+  with it: every record and every file, history included. That uploads the whole drive again; it
+  can be interrupted, and `atdrive encryption rotate` picks it up. `--drop-history` deletes the
+  history instead of re-encrypting it, which is quicker. It asks for the recovery key, which has
+  to open the new key too (or makes a new recovery key). Once it's done, the old keys open nothing
+  on your PDS, and anything written with them since is refused. `atdrive encryption rotate` (or
+  Replace Keys… in the Mac app's Settings) does the same without removing a device. What it can't
+  do:
+  - Anything the removed device already downloaded or decrypted stays with it.
+  - It stays signed in to your account until you sign it out on your PDS's account page (the
+    command prints the address). Until then it can delete what's in the drive, and what it writes
+    before the re-encryption finishes is still read. ATDrive can't sign it out for you: the PDS
+    offers no way for one app to end another's session.
+  - Shared folders have keys of their own and are left as they are.
 - **What the PDS still sees:** how many files and folders there are, roughly how big each file
   is, when things are created and changed, which files share contents, and your devices' names.
   It can't read or change your files without it showing, but it can delete them, or serve an older

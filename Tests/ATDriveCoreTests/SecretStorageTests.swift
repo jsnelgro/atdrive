@@ -143,10 +143,15 @@ import Testing
         #expect(throws: SecretServiceError.self) { try elsewhere.read("session") }
         // A locked or missing keyring says what it said.
         tool.reachable = false
-        let error = try #require(throws: SecretServiceError.self) {
-            try SecretStorage.linux(directory: directory, secretTool: tool.runner).read("session")
+        // Caught by hand: `#require(throws:)` returns the error only from Swift 6.1.
+        var error: SecretServiceError?
+        do {
+            _ = try SecretStorage.linux(directory: directory, secretTool: tool.runner).read("session")
+        } catch let thrown as SecretServiceError {
+            error = thrown
         }
-        #expect("\(error)".contains("org.freedesktop.secrets"))
+        let message = "\(try #require(error))"
+        #expect(message.contains("org.freedesktop.secrets"))
     }
 
     @Test func theSyncServiceGetsTheSameStorage() {

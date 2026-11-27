@@ -12,6 +12,9 @@ public struct EncryptionStatus: Sendable, Equatable {
     public var pendingBytes: Int
     /// Encrypted drives: whether such records are still read (`DriveSettings.converting`).
     public var converting: Bool
+    /// Encrypted drives: whether its keys were replaced and what's sealed with the old ones is
+    /// still being sealed again (`DriveSettings.rotating`). Those records count as `pending`.
+    public var rotating: Bool = false
     /// Encrypted drives that have finished converting: records that aren't sealed with the
     /// drive's keys, so they're ignored. A device that hadn't noticed encryption was turned on
     /// wrote them, or the PDS did. `Drive.convert(adoptUnsealed:)` encrypts and keeps them.
@@ -21,7 +24,7 @@ public struct EncryptionStatus: Sendable, Equatable {
     public var unreadable: Int
 
     /// Nothing left to convert.
-    public var isSettled: Bool { pending == 0 && !converting }
+    public var isSettled: Bool { pending == 0 && !converting && !rotating }
 }
 
 /// Turning encryption on and off. See PLAN.md, "Encryption".
@@ -54,6 +57,8 @@ extension Drive {
             var settings = settings(stored: records.settings.value, keyring: nil)
         else { throw DriveAccessError.damaged("settings") }
         settings.converting = true
+        settings.rotating = false
+        settings.formerKeys = []
         settings.generation += 1
         // The sharing key was readable until now: a new one is made (`ensureSharingKey`).
         settings.sharingKey = nil
@@ -83,6 +88,9 @@ extension Drive {
             var settings = settings(stored: records.settings.value, keyring: keyring)
         else { throw DriveAccessError.damaged("settings") }
         settings.converting = false
+        settings.rotating = false
+        // Only of use on an encrypted drive, and they'd be readable.
+        settings.formerKeys = []
         settings.generation += 1
         // It would be readable from now on: a new one is made (`ensureSharingKey`).
         settings.sharingKey = nil
@@ -103,7 +111,7 @@ extension Drive {
     /// Where the drive stands: its mode, and how much is left to convert. Lists the whole drive.
     public func encryptionStatus() async throws -> EncryptionStatus {
         let mode = try await open()
-        return try await survey(mode).status(mode, converting: keys.value.converting)
+        return try await survey(mode).status(mode, keys: keys.value)
     }
 
     /// What converting would have to do if the drive were switched to `mode`: for a warning
@@ -113,7 +121,14 @@ extension Drive {
         let current = keys.value.mode
         // Nothing is under the keys an encrypted drive would get, so everything counts.
         return try await survey(mode, firstKey: current == mode ? keyring?.keys.first?.id : nil)
-            .status(mode, converting: false)
+            .status(mode, keys: nil)
+    }
+
+    /// What converting would have to do if the drive's keys were replaced (`rotateKeys`): all of
+    /// it, since nothing is sealed with a key that doesn't exist yet. Lists the whole drive.
+    public func rotationEstimate() async throws -> EncryptionStatus {
+        guard try await open() == .encrypted else { throw DriveAccessError.notEncrypted }
+        return try await survey(.encrypted, firstKey: nil).status(.encrypted, keys: nil)
     }
 
     /// Rewrites everything that isn't stored the way the drive now stores things: each record
@@ -157,16 +172,24 @@ extension Drive {
             found = try await survey(mode)
             if found.pending >= before { break }
         }
-        if mode == .encrypted, found.pending == 0, keys.value.converting { try await setConverting(false) }
-        return found.status(mode, converting: keys.value.converting)
+        if mode == .encrypted, found.pending == 0, keys.value.converting || keys.value.rotating {
+            try await setConverting(false)
+        }
+        return found.status(mode, keys: keys.value)
     }
 
-    /// Sets an encrypted drive's `converting` flag, in its sealed settings.
+    /// Sets an encrypted drive's `converting` flag, in its sealed settings. Turning it off ends
+    /// rotating too, once everything is sealed with the current keys: the retired keys are
+    /// dropped (`DriveSettings.forgetRetiredKeys`), and nothing sealed with them is read again.
     private func setConverting(_ converting: Bool) async throws {
         guard let me = identity, let keyring, let record = try await settingsRecord(),
             var settings = settings(stored: record.value, keyring: keyring)
         else { throw DriveAccessError.damaged("settings") }
         settings.converting = converting
+        if !converting {
+            settings.rotating = false
+            settings.forgetRetiredKeys()
+        }
         settings.generation += 1
         let cids = try await apply([
             .update(collection: Lexicon.settings, rkey: Lexicon.settingsKey, value: try stored(settings, with: keyring))
@@ -203,10 +226,12 @@ extension Drive {
                 + parts.count
         }
 
-        func status(_ mode: DriveMode, converting: Bool) -> EncryptionStatus {
+        /// `keys`: how the drive reads its records now; `nil` for an estimate.
+        func status(_ mode: DriveMode, keys: DriveKeys?) -> EncryptionStatus {
             EncryptionStatus(
                 mode: mode, pending: pending, pendingBytes: contents.reduce(0) { $0 + $1.size },
-                converting: converting, unsealed: unsealed, unreadable: unreadable)
+                converting: keys?.converting ?? false, rotating: keys?.rotating ?? false, unsealed: unsealed,
+                unreadable: unreadable)
         }
     }
 

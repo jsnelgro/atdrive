@@ -16,7 +16,7 @@ encrypted drive with anything that matters (#41).
 | Other atproto accounts, the public | Kept out by the space's policy (the PDS enforces it) | Same |
 | Whoever runs the PDS, or breaks into it | **Can read and change everything.** That's the deal | Can't read file contents, names, folders, sizes of small parts, or history. Can't forge or alter a record without it showing. **Can** delete, withhold, or serve an older copy; sees record counts, chunk sizes, timing, which chunks are shared, and device names |
 | Someone with a device's secrets (`session.json` and `device.json`, or their Keychain items) | Has the account's session until it's revoked | Also has that device's key, so the drive, until the device is removed |
-| A removed device | n/a | Keeps what it could read. Can't read what's written afterwards. Can still write until its session is revoked (#14) |
+| A removed device | n/a | Keeps what it downloaded. Once the drive is re-encrypted (`devices rm` does it), its keys open nothing on the PDS, and what it writes with them is refused. Can still delete records until it's signed out on the PDS (#14) |
 
 A plain drive is as private as a Dropbox or Google Drive account: private to you, readable by
 the operator. Everything below about keys applies only to encrypted drives.
@@ -64,11 +64,15 @@ Ordered by how much they matter. None is new on this branch unless it says so.
 
 **High**
 
-- **A removed device can still write, and delete** (#14). Removal rotates the key, but the
-  device keeps an account session. It can delete every record, or write records sealed with old
-  keys, which other devices still read. Fix: revoke its OAuth session as part of `devices
-  remove` if the PDS offers that, and have devices that have seen a rotation refuse records
-  sealed with an older key that are newer than the rotation.
+- **A removed device can still delete** (#14). Removal replaces the drive's keys and seals
+  everything again with the new one (#46): afterwards the old keys open nothing the PDS serves,
+  and a record sealed with one is refused (`formerKey`), so the device can't read or write the
+  drive any more. But it keeps an account session, and can delete every record until the user
+  signs it out on the PDS's account page; no API lets one client revoke another's OAuth session,
+  so `devices rm` prints where to do it. Two narrower gaps: what it writes with the old keys
+  while the re-encryption runs is read, and sealed again with the new key; and a device that was
+  offline for the whole removal can't tell the new keyring from one the removed device made up
+  (as before: it knows only the old keys).
 - **Secrets are plain files for the Mac app, and on Linux without a keyring** (#54). An `atdrive`
   built on its own keeps them in the login Keychain on a Mac; on Linux they're in the Secret
   Service where the session bus offers one. The Mac app, its extension and the `atdrive` inside
@@ -137,6 +141,15 @@ Ordered by how much they matter. None is new on this branch unless it says so.
   DPoP-bound tokens, the redirect listener on 127.0.0.1 only.
 - **Files written:** permissions of the session, device identity and sync state; that keys,
   chunk IDs and recovery keys don't appear in logs or descriptions.
+
+**Replacing the keys (#46).** `devices rm` and `encryption rotate` make a keyring of one new key,
+retire the old ones (sealed in the settings, so only the drive's devices can read them) and
+convert the drive as `encryption on` does, history included. A device takes a keyring missing
+keys it knew only if the settings that keyring opens name those keys as retired or former, so
+the removed device can't use this: it never had the new key, and a device that saw the removal
+knows it. When the conversion is done, the retired keys are dropped and only their IDs and
+fingerprints are kept. What anyone already downloaded or decrypted stays with them, and shared
+folders keep their own keys.
 
 Not checked: the Mac app and extension at run time, anything against a real PDS, side channels,
 and the PDS's own enforcement of space policies.

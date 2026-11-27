@@ -371,9 +371,12 @@ extension Drive {
     /// was stored. Throws `Unreadable`.
     ///
     /// A sealed record opens with the drive's keyring, or with its retired keys (published when
-    /// encryption was turned off). On an encrypted drive, a record that's plain or sealed with a
-    /// retired key is one the PDS could have written, so it's read only while the drive says
-    /// such records are still being encrypted (`DriveSettings.converting`).
+    /// encryption was turned off, or replaced by new ones). On an encrypted drive, a record
+    /// that's plain is one the PDS could have written, so it's read only while the drive says
+    /// such records are still being encrypted (`DriveSettings.converting`); one sealed with a
+    /// retired key, only while that or the keys' replacement is under way
+    /// (`DriveSettings.rotating`). One sealed with a key the drive has stopped using altogether
+    /// (`DriveSettings.formerKeys`) is refused.
     func unseal<Payload: Decodable>(_ value: JSONValue?, as type: Payload.Type, collection: String, rkey: String)
         throws -> (payload: Payload, chunks: [BlobRef]?, form: StoredForm)
     {
@@ -392,8 +395,12 @@ extension Drive {
         if let current = keys.keyring, current.key(id: stored.sealed.keyID) != nil {
             (keyring, form) = (current, .sealed(stored.sealed.keyID))
         } else if let retired = keys.retired, retired.key(id: stored.sealed.keyID) != nil {
-            guard keys.acceptsUnsealed else { throw Unreadable(reason: .notSealed) }
+            guard keys.acceptsRetired else { throw Unreadable(reason: .notSealed) }
             (keyring, form) = (retired, .retired(stored.sealed.keyID))
+        } else if keys.former.contains(stored.sealed.keyID) {
+            // Nothing the drive keeps is sealed with it any more: a device that was removed
+            // wrote it since, with a key it kept, or the PDS is serving an old copy.
+            throw Unreadable(reason: .formerKey)
         } else {
             throw Unreadable(reason: .missingKey)
         }

@@ -255,11 +255,24 @@ extension Drive {
     @discardableResult
     public func prune(_ snapshot: DriveSnapshot, now: Date = Date()) async throws -> Int {
         let cutoff = now - snapshot.retention
+        return try await prune(snapshot, cutoff: cutoff, leftoversBefore: cutoff)
+    }
+
+    /// Deletes every version that isn't needed for the drive as it is now, the trash included,
+    /// as pruning would with a retention period ending now: before its keys are replaced, say,
+    /// so there's less to seal again (`rotateKeys`). Returns how many versions it deleted.
+    @discardableResult
+    public func dropHistory(in snapshot: DriveSnapshot, now: Date = Date()) async throws -> Int {
+        // Leftover `chunks` records from the last hour may be a change still being written.
+        try await prune(snapshot, cutoff: now, leftoversBefore: now - 60 * 60)
+    }
+
+    private func prune(_ snapshot: DriveSnapshot, cutoff: Date, leftoversBefore: Date) async throws -> Int {
         let doomed = snapshot.history.pruneable(current: snapshot.tree, cutoff: cutoff)
         let continuations = snapshot.continuationKeys()
         var groups = doomed.map { Self.deletes($0, continuations) }
         let versions = snapshot.repo.records[Lexicon.version] ?? [:]
-        let cutoffID = TID.lowest(at: cutoff)
+        let cutoffID = TID.lowest(at: leftoversBefore)
         for (version, keys) in continuations.sorted(by: { $0.key < $1.key })
         where versions[version] == nil && TID.date(version) != nil && version < cutoffID {
             groups.append(keys.map { .delete(collection: Lexicon.chunks, rkey: $0) })

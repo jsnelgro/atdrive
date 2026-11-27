@@ -298,11 +298,25 @@ public struct DriveSettings: Codable, Sendable, Equatable {
     /// (`Drive.convert`), and it ends when that's done: from then on, such a record is one the
     /// PDS could have made, and is ignored.
     public var converting: Bool
-    /// The drive's keys from when it was last encrypted, published when encryption was turned
-    /// off, so everything sealed with them stays readable. They're no secret any more. Holding
-    /// them also proves the drive's own devices turned encryption off, not the PDS
-    /// (`Drive.open`). Dropped once nothing is sealed with them.
+    /// Keys the drive no longer seals with, while what's sealed with them is still read:
+    ///
+    /// - On a plain drive, its keys from when it was last encrypted, published when encryption
+    ///   was turned off, so everything sealed with them stays readable. They're no secret any
+    ///   more. Holding them also proves the drive's own devices turned encryption off, not the PDS
+    ///   (`Drive.open`).
+    /// - On an encrypted drive, while it's `converting` or `rotating`: the keys it had before, so
+    ///   what's still sealed with them reads until `Drive.convert` has sealed it again. Then
+    ///   they're dropped, and only remembered in `formerKeys`.
     public var retiredKeys: [Bytes]
+    /// Encrypted drives: its keys were replaced (`Drive.rotateKeys`, or removing a device), and
+    /// what's sealed with the old ones (`retiredKeys`) is still read while `Drive.convert` seals
+    /// it again with the new key. Unlike `converting`, records that aren't sealed at all aren't.
+    public var rotating: Bool
+    /// Encrypted drives: keys the drive used to have and that nothing is sealed with any more,
+    /// by ID and fingerprint, never the keys themselves. A record sealed with one is refused
+    /// (`UnreadableNode.Reason.formerKey`), and a device that knew one takes a keyring without
+    /// it (`KeyTrust`).
+    public var formerKeys: [FormerKey]
     /// Counts the changes to these settings. On an encrypted drive, a device refuses settings
     /// older than ones it has read (`DeviceTrust.settingsGeneration`): the PDS can't forge sealed
     /// settings, but it could serve an old copy, say one from while `converting` was on.
@@ -319,8 +333,8 @@ public struct DriveSettings: Codable, Sendable, Equatable {
 
     public init(
         retentionDays: Int = defaultRetentionDays, driveID: String? = DriveSettings.newDriveID(),
-        converting: Bool = false, retiredKeys: [Bytes] = [], generation: Int = 0, sharingKey: Bytes? = nil,
-        name: String? = nil, file: Bool = false
+        converting: Bool = false, retiredKeys: [Bytes] = [], rotating: Bool = false, formerKeys: [FormerKey] = [],
+        generation: Int = 0, sharingKey: Bytes? = nil, name: String? = nil, file: Bool = false
     ) {
         self.sharingKey = sharingKey
         self.name = name
@@ -330,6 +344,8 @@ public struct DriveSettings: Codable, Sendable, Equatable {
         self.generation = generation
         self.converting = converting
         self.retiredKeys = retiredKeys
+        self.rotating = rotating
+        self.formerKeys = formerKeys
     }
 
     public var retention: TimeInterval { Double(max(retentionDays, 1)) * 24 * 60 * 60 }
@@ -347,7 +363,7 @@ public struct DriveSettings: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case retentionDays, driveID, converting, retiredKeys, generation, sharingKey, name, file
+        case retentionDays, driveID, converting, retiredKeys, rotating, formerKeys, generation, sharingKey, name, file
     }
 
     public init(from decoder: Decoder) throws {
@@ -356,6 +372,8 @@ public struct DriveSettings: Codable, Sendable, Equatable {
         driveID = try container.decodeIfPresent(String.self, forKey: .driveID)
         converting = try container.decodeIfPresent(Bool.self, forKey: .converting) ?? false
         retiredKeys = try container.decodeIfPresent([Bytes].self, forKey: .retiredKeys) ?? []
+        rotating = try container.decodeIfPresent(Bool.self, forKey: .rotating) ?? false
+        formerKeys = try container.decodeIfPresent([FormerKey].self, forKey: .formerKeys) ?? []
         generation = try container.decodeIfPresent(Int.self, forKey: .generation) ?? 0
         sharingKey = try container.decodeIfPresent(Bytes.self, forKey: .sharingKey)
         name = try container.decodeIfPresent(String.self, forKey: .name)
@@ -368,10 +386,26 @@ public struct DriveSettings: Codable, Sendable, Equatable {
         try container.encodeIfPresent(driveID, forKey: .driveID)
         if converting { try container.encode(converting, forKey: .converting) }
         if !retiredKeys.isEmpty { try container.encode(retiredKeys, forKey: .retiredKeys) }
+        if rotating { try container.encode(rotating, forKey: .rotating) }
+        if !formerKeys.isEmpty { try container.encode(formerKeys, forKey: .formerKeys) }
         try container.encode(generation, forKey: .generation)
         try container.encodeIfPresent(sharingKey, forKey: .sharingKey)
         try container.encodeIfPresent(name, forKey: .name)
         if file { try container.encode(file, forKey: .file) }
+    }
+
+    /// Every key these settings name as having been the drive's, retired or former, by
+    /// fingerprint (`DriveKey.fingerprint`).
+    var pastKeyFingerprints: Set<String> {
+        Set((retiredKeyring?.keys.map(\.fingerprint) ?? []) + formerKeys.map(\.fingerprint))
+    }
+
+    /// The retired keys become former ones: nothing is sealed with them any more.
+    mutating func forgetRetiredKeys() {
+        for key in retiredKeyring?.keys ?? [] where !formerKeys.contains(where: { $0.id == key.id }) {
+            formerKeys.append(FormerKey(key))
+        }
+        retiredKeys = []
     }
 
     /// The sharing key pair, if there is one. `encrypted`: whether these settings are stored sealed.
@@ -379,6 +413,18 @@ public struct DriveSettings: Codable, Sendable, Equatable {
         guard let sharingKey, let key = try? Curve25519.KeyAgreement.PrivateKey(rawRepresentation: sharingKey.data)
         else { return nil }
         return SharingKeyPair(privateKey: key, protected: encrypted)
+    }
+}
+
+/// A key a drive used to have (`DriveSettings.formerKeys`): its ID, which records sealed with it
+/// carry, and its fingerprint, which devices that accepted it remember. Neither opens anything.
+public struct FormerKey: Codable, Sendable, Equatable {
+    public var id: KeyID
+    public var fingerprint: String
+
+    public init(_ key: DriveKey) {
+        id = key.id
+        fingerprint = key.fingerprint
     }
 }
 

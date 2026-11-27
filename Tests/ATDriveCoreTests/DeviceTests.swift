@@ -208,8 +208,8 @@ import Testing
         try await laptop.remove(try #require(tablet.identity?.id), recoveryKey: recoveryKey)
         let running = try restarted(phone)
         let rotated = try #require(try await opened(running))
-        #expect(rotated.keys.count == 2 && rotated == laptop.keyring)
-        let updated = try restarted(running)  // its trust now knows both keys
+        #expect(rotated.keys.count == 1 && rotated == laptop.keyring)
+        let updated = try restarted(running)  // its trust now knows the new key
         // The old keyring played back: missing the new key, so it's refused.
         pds.insertRawRecord(rkey: me.id, collection: Lexicon.device, old)
         await #expect(throws: DriveAccessError.keyringMissingKeys) { try await updated.open() }
@@ -220,10 +220,13 @@ import Testing
     @Test func removeThenRotate() async throws {
         let phone = try await unlocked("phone")
         let tablet = try await unlocked("tablet")
+        let sleeper = try await unlocked("sleeper")  // offline from now until the end
         let before = try await laptop.upload(try file("aaaabbbb"), as: "before.txt", in: nil)
+        _ = try await laptop.upload(try file("aaaabbbb, edited"), as: "before.txt", in: nil, replacing: before)
         var phoneView = try await phone.update(nil)
         var tabletView = try await tablet.update(nil)
         let tabletID = try #require(tablet.identity?.id)
+        let oldKeyring = try #require(laptop.keyring)
 
         await #expect(throws: DriveAccessError.recoveryKeyNeeded) {
             try await laptop.remove(tabletID, recoveryKey: nil)
@@ -232,32 +235,38 @@ import Testing
             try await laptop.remove(try #require(laptop.identity?.id), recoveryKey: recoveryKey)
         }
         #expect(try await laptop.remove(tabletID, recoveryKey: recoveryKey))
+        // A new keyring of one new key: the old keys are retired, and still read while what's
+        // sealed with them is sealed again.
         let keyring = try #require(laptop.keyring)
-        #expect(keyring.keys.count == 2)
-        #expect(try await laptop.devices().map(\.name) == ["laptop", "phone"])
+        #expect(keyring.keys.count == 1 && oldKeyring.key(id: keyring.current.id) == nil)
+        #expect(try await laptop.devices().map(\.name) == ["laptop", "phone", "sleeper"])
+        var status = try await laptop.encryptionStatus()
+        #expect(status.rotating && status.pending > 0 && !status.converting)
 
-        // New records are sealed with the new key; chunks keep their IDs (the first key's).
+        // New records are sealed with the new key, and its chunks are named with it.
         let after = try await laptop.upload(try file("aaaabbbb"), as: "after.txt", in: nil)
         let sealed = try #require(pds.rawRecord(rkey: after.id)?["sealed"] as? [String: Any])
         #expect(sealed["keyID"] as? String == keyring.current.id.rawValue)
-        #expect(after.record.chunks == before.record.chunks)
+        #expect(after.record.chunks?.allSatisfy { $0.key == keyring.current.id } == true)
 
         // The phone, still running, picks up the new keyring and reads everything.
         phoneView = try await phone.update(phoneView)
         #expect(phone.keyring == keyring)
         #expect(phoneView.tree.unreadable.isEmpty && phoneView.history.unreadable.isEmpty)
         #expect(try await contents(try #require(phoneView.tree.nodes[after.id]), drive: phone) == "aaaabbbb")
-        #expect(try await contents(try #require(phoneView.tree.nodes[before.id]), drive: phone) == "aaaabbbb")
+        #expect(
+            try await contents(try #require(phoneView.tree.nodes[before.id]), drive: phone) == "aaaabbbb, edited")
 
         // The tablet still reads what was there before, but nothing sealed since.
         tabletView = try await tablet.update(tabletView)
-        #expect(tablet.keyring?.keys.count == 1)
+        #expect(tablet.keyring == oldKeyring)
         #expect(tabletView.tree.nodes[before.id] != nil)
         #expect(tabletView.tree.unreadable[after.id]?.reason == .missingKey)
         #expect(tabletView.settings == nil)
         await #expect(throws: DriveAccessError.notApproved(pending: false)) { try await restarted(tablet).open() }
         // A keyring it wraps for the phone now is refused: it lacks the new key.
         let phoneIdentity = try #require(phone.identity)
+        let phoneRecord = try #require(pds.rawRecord(rkey: phoneIdentity.id, collection: Lexicon.device))
         var record = try await laptop.devices().first { $0.id == phoneIdentity.id }.map {
             DeviceRecord(name: $0.name, publicKey: $0.publicKey)
         }
@@ -265,10 +274,71 @@ import Testing
             for: phoneIdentity.publicKey, from: try #require(tablet.identity).privateKey, space: FakePDS.space)
         try await overwrite(Lexicon.device, phoneIdentity.id, with: try #require(record))
         await #expect(throws: DriveAccessError.keyringMissingKeys) { try await restarted(phone).open() }
+        pds.insertRawRecord(rkey: phoneIdentity.id, collection: Lexicon.device, phoneRecord)
+
+        // Sealing everything again, history included: nothing is under the old keys any more.
+        status = try await laptop.convert()
+        #expect(status.isSettled && status.unreadable == 0)
+        let stored = try await laptop.update(nil)
+        let chunks =
+            stored.tree.nodes.values.flatMap { $0.record.chunks ?? [] }
+            + stored.history.versions(of: before.id).flatMap { $0.record.chunks ?? [] }
+        #expect(!chunks.isEmpty && chunks.allSatisfy { $0.key == keyring.current.id })
+        #expect(stored.history.versions(of: before.id).count == 2 && stored.history.unreadable.isEmpty)
+        for id in [before.id, after.id] {
+            let sealed = try #require(pds.rawRecord(rkey: id)?["sealed"] as? [String: Any])
+            #expect(sealed["keyID"] as? String == keyring.current.id.rawValue)
+        }
+        let settings = try #require(stored.settings)
+        #expect(settings.retiredKeys.isEmpty && !settings.rotating)
+        #expect(Set(settings.formerKeys.map(\.id)) == Set(oldKeyring.keys.map(\.id)))
+
+        // What the removed device writes now, with the key it kept, is refused, not read.
+        let late = try await tablet.upload(try file("from the tablet"), as: "late.txt", in: nil)
+        phoneView = try await phone.update(phoneView)
+        #expect(phoneView.tree.nodes[late.id] == nil)
+        #expect(phoneView.tree.unreadable[late.id]?.reason == .formerKey)
+        #expect(try await contents(try #require(phoneView.tree.nodes[before.id]), drive: phone) == "aaaabbbb, edited")
+        // A device that was offline throughout still takes the new keyring: the settings name
+        // the keys it knew as the drive's former ones.
+        #expect(try await opened(try restarted(sleeper)) == keyring)
 
         // The recovery key opens the new keyring.
         let fresh = try await unlocked("fresh")
         #expect(fresh.keyring == keyring)
+    }
+
+    @Test func rotatingTheKeysWithoutRemovingADevice() async throws {
+        let phone = try await unlocked("phone")
+        let node = try await laptop.upload(try file("aaaabbbb"), as: "a.txt", in: nil)
+        let oldKeyring = try #require(laptop.keyring)
+        #expect(try await laptop.encryptionStatus().pending == 0)
+        let estimate = try await laptop.rotationEstimate()
+        #expect(estimate.pending == 2 && estimate.pendingBytes == 8)  // the node and its version
+        try await laptop.rotateKeys(recoveryKey: recoveryKey)
+        let keyring = try #require(laptop.keyring)
+        #expect(keyring != oldKeyring && keyring.keys.count == 1)
+        #expect(try await laptop.devices().filter(\.approved).map(\.name) == ["laptop", "phone"])
+        #expect(try await laptop.convert().isSettled)
+        let view = try await phone.update(nil)
+        #expect(phone.keyring == keyring)
+        #expect(try await contents(try #require(view.tree.nodes[node.id]), drive: phone) == "aaaabbbb")
+        #expect(try await unlocked("fresh").keyring == keyring)
+    }
+
+    @Test func droppingHistoryLeavesTheDriveAsItIs() async throws {
+        let first = try await laptop.upload(try file("one"), as: "a.txt", in: nil)
+        let node = try await laptop.upload(try file("two"), as: "a.txt", in: nil, replacing: first)
+        let gone = try await laptop.upload(try file("gone"), as: "b.txt", in: nil)
+        try await laptop.delete([gone])
+        let snapshot = try await laptop.update(nil)
+        #expect(snapshot.history.versions(of: node.id).count == 2)
+        #expect(try await laptop.dropHistory(in: snapshot) > 0)
+        let after = try await laptop.update(snapshot)
+        #expect(after.history.versions(of: node.id).count == 1)
+        #expect(after.history.versions(of: gone.id).isEmpty)
+        #expect(after.trash().isEmpty)
+        #expect(try await contents(try #require(after.tree.nodes[node.id]), drive: laptop) == "two")
     }
 
     @Test func removingAWaitingDeviceOnlyDeletesItsRequest() async throws {

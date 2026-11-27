@@ -23,6 +23,9 @@ final class EncryptionModel {
     /// Why the status couldn't be read, or the last switch failed.
     private(set) var message: String?
     private(set) var pending: Switch?
+    /// Replacing the drive's keys, waiting for the user to confirm it: the file contents to
+    /// upload again, in bytes.
+    private(set) var pendingRotation: Int?
     /// While converting: records done, and how many there are.
     private(set) var progress: (done: Int, total: Int)?
     private(set) var working = false
@@ -41,6 +44,9 @@ final class EncryptionModel {
     /// What's left to convert, in words: `nil` once there's nothing.
     var unfinished: String? {
         guard let status, !working else { return nil }
+        if status.mode == .encrypted, status.rotating {
+            return "Some of the drive is still encrypted with its old keys."
+        }
         if status.mode == .encrypted, status.pending > 0 || status.converting {
             return "Some of the drive isn't encrypted yet."
         }
@@ -86,6 +92,34 @@ final class EncryptionModel {
 
     func cancel() {
         pending = nil
+        pendingRotation = nil
+    }
+
+    /// The user asked to replace the drive's keys (as `atdrive encryption rotate`): work out how
+    /// much is to upload again, for them to confirm.
+    func requestRotation() {
+        guard !working, isEncrypted else { return }
+        message = nil
+        Task {
+            guard let joined = await app?.joinedDrive() else { return }
+            do {
+                pendingRotation = try await joined.home.rotationEstimate().pendingBytes
+            } catch {
+                message = String(describing: error)
+            }
+        }
+    }
+
+    /// The user confirmed replacing the keys: a new key and a new recovery key (shown once), then
+    /// everything is encrypted again with it.
+    func confirmRotation() {
+        guard pendingRotation != nil, !working else { return }
+        pendingRotation = nil
+        run { joined in
+            let recoveryKey = RecoveryKey()
+            try await joined.home.rotateKeys(recoveryKey: recoveryKey)
+            self.recoveryKey = recoveryKey.formatted
+        }
     }
 
     /// The user confirmed `pending`: end sharing, switch, then convert.
@@ -238,6 +272,17 @@ struct SettingsView: View {
         } message: { change in
             Text(Self.consequences(of: change))
         }
+        .alert(
+            "Replace the drive's keys?",
+            isPresented: Binding(
+                get: { encryption.pendingRotation != nil }, set: { if !$0 { encryption.cancel() } }),
+            presenting: encryption.pendingRotation
+        ) { _ in
+            Button("Replace Keys") { encryption.confirmRotation() }
+            Button("Cancel", role: .cancel) { encryption.cancel() }
+        } message: { bytes in
+            Text(Self.rotationConsequences(bytes: bytes))
+        }
     }
 
     @ViewBuilder private var encryptionControls: some View {
@@ -272,7 +317,26 @@ struct SettingsView: View {
                 Spacer()
                 Button(encryption.isEncrypted ? "Finish Encrypting" : "Finish Decrypting") { encryption.finish() }
             }
+        } else if encryption.isEncrypted {
+            HStack {
+                Text("A new key, with everything encrypted again: the old keys then open nothing.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Replace Keys…") { encryption.requestRotation() }
+                    .disabled(encryption.pendingRotation != nil)
+            }
         }
+    }
+
+    static func rotationConsequences(bytes: Int) -> String {
+        [
+            "Everything is encrypted again with a new key, history included"
+                + (bytes > 0 ? " (\(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)))" : "")
+                + ". If it's interrupted, it picks up where it stopped.",
+            "You get a new recovery key to keep safe. The old one stops working.",
+            "Your other devices pick up the new key by themselves.",
+            "Anything a device already downloaded stays where it is. To take a device off the drive, use `atdrive devices rm`, which does this too.",
+        ].joined(separator: "\n\n")
     }
 
     /// The intervals offered, and whatever config.toml says if it's none of them.

@@ -78,7 +78,8 @@ all three platforms and is memory-safe by default (Swift 6 adds data-race checki
     - **Mac:** turning encryption on and off from the app (the CLI does it today), and a way
       out of "the drive's settings can't be believed" other than the CLI.
     - **Encryption:** see *Step 3, open problems*, and `docs/SECURITY.md` for the review. A
-      removed device keeps its session, and `.atdrive/drive.json` holds decrypted metadata.
+      removed device keeps its session until it's signed out on the PDS, and `.atdrive/drive.json`
+      holds decrypted metadata.
 - [x] **Phase 5, sharing** (see *Sharing* below): share a file or folder with specific people, or
   with anyone who has its link, read-only, from Finder and the CLI, on encrypted and unencrypted
   drives alike. Tracked in #26; built in #42.
@@ -347,9 +348,9 @@ operator.
 - **Chunks: keyed convergent encryption,** as in Tahoe-LAFS and borg:
   - A chunk's ID is HMAC(drive key, plaintext), and its key is derived from that ID. Each key
     encrypts exactly one plaintext, so AES-GCM can use a fixed nonce.
-  - Chunk IDs, and step 4's chunker seed, always come from the drive's **first** key, even after
-    rotations. Otherwise every file's chunks would get new IDs and boundaries after a device is
-    removed, and nothing would be reused.
+  - Chunk IDs, and step 4's chunker seed, always come from the keyring's **first** key. Replacing
+    the keys (#46) makes a keyring of one new key and stores every file again under it, so the
+    old keys name and open nothing.
   - Identical chunks encrypt to identical bytes, so they're stored once and step 4 can skip them.
     Without the drive key, the server can't test for known files.
   - Chunk IDs go in the sealed metadata. Sharing a folder later can hand over those, not the
@@ -390,13 +391,15 @@ operator.
       - 16 digits, because the PDS sees the keys first. Against a shorter code, it could try keys
         of its own until one matched.
   - **Removing a device:**
-    - Delete its record, and add a new drive key for new records. Wrap the keyring again for the
-      remaining devices and the recovery key.
-    - What the removed device already had stays readable to it.
-    - It also keeps the first key, so it can still test whether the drive holds a chunk it already
-      knows. That's the price of keeping chunk IDs stable.
-    - It still holds a session for the account, so it can still write records. Remaining devices
-      ignore keyrings it wraps.
+    - Delete its record, and replace the drive's keys with a new one (#46): wrap it for the
+      remaining devices and the recovery key, then seal every record and store every file again
+      under it, history included (or delete the history first, `--drop-history`). The old keys
+      are retired while that runs, then forgotten but for their IDs and fingerprints
+      (`formerKeys`): a record sealed with one is refused (#14).
+    - What the removed device already downloaded stays with it.
+    - It still holds a session for the account, so it can still delete records, until it's signed
+      out on the PDS's account page (no API lets one client revoke another's OAuth session).
+      Remaining devices ignore keyrings it wraps.
   - Losing every device and the recovery key loses the data. Creating the drive says so, next to
     the recovery key.
   - **Creating a drive is interactive,** because it has to show the recovery key: `atdrive login`
@@ -432,8 +435,8 @@ operator.
   - **Approving and removing devices** is CLI-only for now. The Mac app can create a drive, show
     the recovery key, unlock with it, and be approved.
   - **Open problems:**
-    - A removed device keeps an account session, and records it writes with old keys are still
-      read.
+    - A removed device keeps an account session until it's signed out on the PDS, and records it
+      writes with old keys are read until the re-encryption finishes.
     - `.atdrive/drive.json` holds decrypted metadata next to the synced files.
 
 
@@ -550,6 +553,7 @@ record has only `chunks` and `sealed`.
 | `encryption` / `encryption on` / `encryption off` | Whether the drive is encrypted; turn it on (and convert what's there) or off |
 | `devices` | The devices that hold an encrypted drive's key |
 | `devices approve [name]` / `devices rm <name>` | Add or remove one |
+| `encryption rotate` | Replace the drive's keys and encrypt everything again with the new one |
 | `encryption unlock` / `encryption rotate-recovery-key` | Set up this device with the recovery key / replace the recovery key |
 
 Retention is applied once a day by `atdrive sync` and by the Mac app.
